@@ -4,6 +4,8 @@
 ---
 ### Ethan Charest
 
+### Tyler Bagent
+
 ## 1. Purpose and Scope
 
 This document defines the target architecture for a personal-safety application that aggregates publicly available, incident-level crime data from six initial metropolitan police departments — **Philadelphia, Chicago, Seattle, Los Angeles, Austin, and Washington, DC** — and presents it to users as *relative reported-crime activity* within roughly 500-meter geographic cells, rather than as an address-level "risk score."
