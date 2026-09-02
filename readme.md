@@ -2,11 +2,15 @@
 ## System Design Document — Data Architecture & Multi-City Platform
 
 ---
+### Contributors
+
 ### Ethan Charest
 
 ### Tyler Bagent
 
 ### Liam Cahill
+
+### Ryan Fioravnti
 
 ## 1. Purpose and Scope
 
