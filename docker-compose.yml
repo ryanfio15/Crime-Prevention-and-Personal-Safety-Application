@@ -1,0 +1,50 @@
+# Phase 1 local stack (design doc S9.1).
+#
+# The image is the official PostGIS build. It does NOT ship the h3-pg extension,
+# so H3 indexes are computed in Python at ingestion time and stored as text
+# columns. That matches S6 ("Precomputed H3 index at resolution 8 and resolution
+# 9 -- computed once at ingestion, never recomputed at query time") and S10
+# (cell membership is a pure function of lat/lng, so no spatial query is needed
+# to resolve a point to a cell). PostGIS is still used for what it is uniquely
+# good at: point/polygon storage, the GiST index behind map-viewport bbox
+# filtering, and ad hoc spatial queries for the research segment (S9.1).
+#
+# Redis (S9.5) is deliberately not started in Phase 1; the API uses a small
+# in-process TTL cache with the same invalidate-on-ETL-refresh semantics.
+
+services:
+  db:
+    image: postgis/postgis:17-3.5
+    container_name: safety_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-safety}
+      POSTGRES_USER: ${POSTGRES_USER:-safety}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-safety_dev_pw}
+      # Timestamps are stored as timestamptz; keep the server in UTC and do
+      # local-time work explicitly with AT TIME ZONE.
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      # Host port is non-default so this never collides with a locally
+      # installed PostgreSQL.
+      - "${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - safety_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-safety} -d ${POSTGRES_DB:-safety}"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - work_mem=32MB
+      - -c
+      - max_parallel_workers_per_gather=2
+
+volumes:
+  safety_db_data:

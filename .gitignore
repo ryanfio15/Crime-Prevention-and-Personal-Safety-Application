@@ -1,1 +1,9 @@
 .idea/
+.venv/
+__pycache__/
+*.pyc
+.env
+
+# Bronze layer snapshots (design doc S9.2: raw pulls belong in object storage,
+# not in version control). Regenerate with `python -m safety.etl.run backfill`.
+data/

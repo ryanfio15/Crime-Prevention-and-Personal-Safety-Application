@@ -1,0 +1,31 @@
+crosswalk_version,source_id,raw_offense_code,raw_offense_text,raw_source_category,nibrs_code,nibrs_offense_name,nibrs_group,nibrs_crime_against,ucr_part,severity_bucket,product_category,mapping_confidence,effective_from,effective_to,notes
+phl_v1,phl,100,Homicide - Criminal,Part I,09A,Murder and Nonnegligent Manslaughter,A,person,I,part_i_violent,violent,exact,2006-01-01,,
+phl_v1,phl,200,Rape,Part I,11A,Rape,A,person,I,part_i_violent,violent,exact,2006-01-01,,
+phl_v1,phl,300,Robbery Firearm,Part I,120,Robbery,A,property,I,part_i_violent,violent,exact,2006-01-01,,NIBRS files robbery under Crimes Against Property; UCR files it as Part I violent. product_category follows UCR because a personal-safety product must present robbery as violent.
+phl_v1,phl,300,Robbery No Firearm,Part I,120,Robbery,A,property,I,part_i_violent,violent,exact,2006-01-01,,See note on Robbery Firearm.
+phl_v1,phl,400,Aggravated Assault Firearm,Part I,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2006-01-01,,
+phl_v1,phl,400,Aggravated Assault No Firearm,Part I,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2006-01-01,,
+phl_v1,phl,500,Burglary Residential,Part I,220,Burglary/Breaking and Entering,A,property,I,part_i_property,property,exact,2006-01-01,,
+phl_v1,phl,500,Burglary Non-Residential,Part I,220,Burglary/Breaking and Entering,A,property,I,part_i_property,property,exact,2006-01-01,,
+phl_v1,phl,600,Thefts,Part I,23H,All Other Larceny,A,property,I,part_i_property,property,approximate,2006-01-01,,PPD publishes one aggregate theft bucket spanning NIBRS 23A-23H; 23H is the residual larceny code and the closest single target.
+phl_v1,phl,600,Theft from Vehicle,Part I,23F,Theft From Motor Vehicle,A,property,I,part_i_property,property,exact,2006-01-01,,
+phl_v1,phl,700,Motor Vehicle Theft,Part I,240,Motor Vehicle Theft,A,property,I,part_i_property,property,exact,2006-01-01,,
+phl_v1,phl,800,Other Assaults,Part II,13B,Simple Assault,A,person,II,part_ii,violent,approximate,2006-01-01,,PPD bucket also absorbs intimidation (NIBRS 13C); mapped to the dominant subtype.
+phl_v1,phl,900,Arson,Part I,200,Arson,A,property,I,part_i_property,property,exact,2006-01-01,,
+phl_v1,phl,1000,Forgery and Counterfeiting,Part II,250,Counterfeiting/Forgery,A,property,II,part_ii,property,exact,2006-01-01,,
+phl_v1,phl,1100,Fraud,Part II,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2006-01-01,,PPD publishes one fraud bucket spanning NIBRS 26A-26G; 26A is the most common subtype.
+phl_v1,phl,1200,Embezzlement,Part II,270,Embezzlement,A,property,II,part_ii,property,exact,2006-01-01,,
+phl_v1,phl,1300,Receiving Stolen Property,Part II,280,Stolen Property Offenses,A,property,II,part_ii,property,exact,2006-01-01,,
+phl_v1,phl,1400,Vandalism/Criminal Mischief,Part II,290,Destruction/Damage/Vandalism of Property,A,property,II,part_ii,property,exact,2006-01-01,,
+phl_v1,phl,1500,Weapon Violations,Part II,520,Weapon Law Violations,A,society,II,part_ii,other,exact,2006-01-01,,Placed in "other" rather than "violent": the PPD bucket is dominated by possession/carry offenses, and violence involving a weapon is already counted under homicide/assault/robbery.
+phl_v1,phl,1600,Prostitution and Commercialized Vice,Part II,40A,Prostitution,A,society,II,part_ii,quality_of_life,approximate,2006-01-01,,Spans NIBRS 40A-40C.
+phl_v1,phl,1700,Other Sex Offenses (Not Commercialized),Part II,11D,Fondling,A,person,II,part_ii,violent,ambiguous,2006-01-01,,Heterogeneous PPD residual bucket spanning NIBRS 11B/11C/11D/36A/36B/90H. No single NIBRS code is a faithful target; the UCR Part II severity bucket is the more reliable signal here (S7.2).
+phl_v1,phl,1800,Narcotic / Drug Law Violations,Part II,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2006-01-01,,Spans NIBRS 35A and 35B. Enforcement-driven category; see S13 on over-enforced offense types.
+phl_v1,phl,1900,Gambling Violations,Part II,39A,Betting/Wagering,A,society,II,part_ii,quality_of_life,ambiguous,2006-01-01,,Spans NIBRS 39A-39D with no subtype detail published.
+phl_v1,phl,2000,Offenses Against Family and Children,Part II,90F,Family Offenses Nonviolent,B,group_b,II,part_ii,other,exact,2006-01-01,,
+phl_v1,phl,2100,DRIVING UNDER THE INFLUENCE,Part II,90D,Driving Under the Influence,B,group_b,II,part_ii,quality_of_life,exact,2006-01-01,,Source publishes this label in uppercase; matching is case-insensitive.
+phl_v1,phl,2200,Liquor Law Violations,Part II,90G,Liquor Law Violations,B,group_b,II,part_ii,quality_of_life,exact,2006-01-01,,
+phl_v1,phl,2300,Public Drunkenness,Part II,90E,Drunkenness,B,group_b,II,part_ii,quality_of_life,exact,2006-01-01,,
+phl_v1,phl,2400,Disorderly Conduct,Part II,90C,Disorderly Conduct,B,group_b,II,part_ii,quality_of_life,exact,2006-01-01,,
+phl_v1,phl,2500,Vagrancy/Loitering,Part II,90B,Curfew/Loitering/Vagrancy Violations,B,group_b,II,part_ii,quality_of_life,exact,2006-01-01,,
+phl_v1,phl,2600,All Other Offenses,Part II,90Z,All Other Offenses,B,group_b,II,part_ii,other,ambiguous,2006-01-01,,Residual bucket by construction; carries no usable offense semantics beyond "Part II".

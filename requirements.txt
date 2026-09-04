@@ -1,0 +1,7 @@
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+psycopg[binary]==3.3.5
+httpx==0.28.1
+pydantic-settings==2.15.0
+h3==4.5.0
+pyproj==3.7.2

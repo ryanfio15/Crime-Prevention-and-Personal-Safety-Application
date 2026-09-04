@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Philadelphia reported-incident activity &middot; Phase 1</title>
+<link rel="preconnect" href="https://basemaps.cartocdn.com">
+<link href="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.css" rel="stylesheet">
+<link href="styles.css" rel="stylesheet">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <h1>Philadelphia &mdash; reported incident activity</h1>
+    <p class="subtitle">
+      Crime incidents reported to police, aggregated into H3 hexagonal cells.
+      <button type="button" class="linkish" data-open-methodology>How to read this</button>
+    </p>
+  </div>
+
+  <div class="freshness" id="freshness" aria-live="polite">
+    <span class="freshness-label">Data as of</span>
+    <span class="freshness-value" id="data-as-of">&mdash;</span>
+    <span class="freshness-meta" id="freshness-meta"></span>
+  </div>
+</header>
+
+<!-- One filter row above everything it scopes; every view re-renders off the same slice. -->
+<div class="filters" role="group" aria-label="Map filters">
+  <label class="field">
+    <span class="field-label">Time window</span>
+    <select id="f-window">
+      <option value="last_30d">Last 30 days</option>
+      <option value="last_90d">Last 90 days</option>
+      <option value="last_12m" selected>Last 12 months</option>
+      <option value="last_24m">Last 24 months</option>
+    </select>
+  </label>
+
+  <label class="field">
+    <span class="field-label">Offense category</span>
+    <select id="f-category">
+      <option value="all" selected>All reported incidents</option>
+      <option value="violent">Violent</option>
+      <option value="property">Property</option>
+      <option value="quality_of_life">Quality of life</option>
+      <option value="other">Other</option>
+    </select>
+  </label>
+
+  <label class="field">
+    <span class="field-label">Cell size</span>
+    <select id="f-res">
+      <option value="8" selected>~500 m (H3 res 8)</option>
+      <option value="9">~175 m (H3 res 9)</option>
+    </select>
+  </label>
+
+  <label class="field">
+    <span class="field-label">Colour by</span>
+    <select id="f-scale">
+      <option value="count" selected>Incident count</option>
+      <option value="tier">Relative activity (5 tiers)</option>
+    </select>
+  </label>
+
+  <div class="filters-spacer"></div>
+
+  <button type="button" id="btn-locate" class="btn">Use my location</button>
+  <button type="button" id="btn-table" class="btn" aria-pressed="false">Table view</button>
+</div>
+
+<main class="layout">
+  <section class="map-pane">
+    <div id="map" role="application" aria-label="Map of Philadelphia with hexagonal cells shaded by reported incident count"></div>
+
+    <div class="legend" id="legend" aria-hidden="true">
+      <div class="legend-title" id="legend-title">Reported incidents per cell</div>
+      <div class="legend-ramp" id="legend-ramp"></div>
+      <div class="legend-ticks" id="legend-ticks"></div>
+      <div class="legend-foot" id="legend-foot"></div>
+    </div>
+
+    <div class="map-tooltip" id="tooltip" hidden></div>
+
+    <div class="loading" id="loading" hidden>Loading&hellip;</div>
+  </section>
+
+  <!-- Detail panel: opens on cell click. -->
+  <aside class="detail" id="detail" aria-live="polite">
+    <div class="detail-empty" id="detail-empty">
+      <h2>Select a cell</h2>
+      <p>
+        Click any hexagon to see what was reported inside it &mdash; the count,
+        where it sits relative to the rest of the city, the month-by-month
+        trend, and the offence types behind the number.
+      </p>
+      <p class="caution">
+        These are <strong>reported</strong> incidents, not a measure of how safe a
+        place is, and not a prediction.
+      </p>
+    </div>
+
+    <div class="detail-body" id="detail-body" hidden>
+      <button type="button" class="detail-close" id="detail-close" aria-label="Close cell detail">&times;</button>
+
+      <div class="stat">
+        <div class="stat-value" id="d-count">&mdash;</div>
+        <div class="stat-label" id="d-count-label">reported incidents</div>
+      </div>
+
+      <dl class="kv">
+        <div><dt>Relative activity</dt><dd id="d-tier">&mdash;</dd></div>
+        <div><dt>City rank</dt><dd id="d-rank">&mdash;</dd></div>
+        <div><dt>Density</dt><dd id="d-density">&mdash;</dd></div>
+        <div><dt>This cell + neighbours</dt><dd id="d-neighbours">&mdash;</dd></div>
+        <div><dt>H3 cell</dt><dd id="d-h3" class="mono">&mdash;</dd></div>
+      </dl>
+
+      <section class="chart-block">
+        <h3 id="d-cat-title">Reported incidents by category</h3>
+        <div class="bars" id="d-categories"></div>
+      </section>
+
+      <section class="chart-block">
+        <h3 id="d-trend-title">Monthly trend</h3>
+        <div class="spark-wrap">
+          <svg id="d-spark" class="spark" role="img" aria-labelledby="d-trend-title"></svg>
+          <div class="spark-axis"><span id="d-spark-from"></span><span id="d-spark-to"></span></div>
+          <div class="spark-readout" id="d-spark-readout"></div>
+        </div>
+      </section>
+
+      <section class="chart-block">
+        <h3>Most reported offence types</h3>
+        <table class="mix" id="d-offenses">
+          <thead>
+            <tr><th scope="col">Offence, as reported by PPD</th><th scope="col">NIBRS</th><th scope="col" class="num">Count</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </div>
+  </aside>
+</main>
+
+<!-- Table view: the WCAG-clean twin of the map. Colour is never the only channel. -->
+<section class="tableview" id="tableview" hidden>
+  <div class="tableview-head">
+    <h2 id="table-caption">Cells by reported incident count</h2>
+    <button type="button" class="btn" id="table-close">Close</button>
+  </div>
+  <div class="tableview-scroll">
+    <table class="data" id="table-data">
+      <thead>
+        <tr>
+          <th scope="col" class="num">#</th>
+          <th scope="col">H3 cell</th>
+          <th scope="col" class="num">Incidents</th>
+          <th scope="col" class="num">Per km&sup2;</th>
+          <th scope="col" class="num">Percentile</th>
+          <th scope="col">Relative activity</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Methodology & attribution: design doc S12 makes these first-class, not a footnote. -->
+<dialog id="methodology" class="sheet">
+  <button type="button" class="sheet-close" data-close-methodology aria-label="Close">&times;</button>
+  <div id="methodology-body">Loading&hellip;</div>
+</dialog>
+
+<script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/h3-js@4.2.1/dist/h3-js.umd.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
