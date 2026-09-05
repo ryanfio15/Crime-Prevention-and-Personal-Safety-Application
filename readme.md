@@ -10,7 +10,7 @@
 
 ### Liam Cahill
 
-### Ryan Fioravnti
+### Ryan Fioravanti
 
 ## 1. Purpose and Scope
 
