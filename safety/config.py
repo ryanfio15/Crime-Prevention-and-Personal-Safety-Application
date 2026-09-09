@@ -22,7 +22,14 @@ class Settings(BaseSettings):
     postgres_db: str = "safety"
     postgres_user: str = "safety"
     postgres_password: str = "safety_dev_pw"
-    postgres_host: str = "localhost"
+    # Literal IPv4, not "localhost". docker-compose.yml publishes the database
+    # on 127.0.0.1 only, which is an IPv4 listener, while "localhost" resolves
+    # to ::1 first on Windows and on most Linux distributions. A single
+    # psycopg.connect() falls back to the IPv4 address on its own, but the
+    # pool's background worker does not reliably, and the failure looks like
+    # `PoolTimeout: pool initialization incomplete` rather than a refused
+    # connection -- a slow thing to debug from that message alone.
+    postgres_host: str = "127.0.0.1"
     postgres_port: int = 55432
 
     # Local stand-in for the S3-compatible bronze bucket (design doc S9.2).
@@ -33,6 +40,14 @@ class Settings(BaseSettings):
 
     api_host: str = "127.0.0.1"
     api_port: int = 8000
+
+    # Swagger UI / ReDoc / openapi.json. On by default: the frontend is served
+    # from the same origin and names every endpoint in plain JavaScript
+    # (web/app.js), so switching this off buys almost no obscurity -- it is a
+    # kill switch for when the interactive docs themselves are the problem
+    # (bot traffic, or not wanting the API shape clickable), not a security
+    # control. Rate limiting in nginx is what protects the expensive endpoints.
+    enable_docs: bool = True
 
     # HTTP behaviour for source adapters.
     http_timeout_seconds: float = 120.0

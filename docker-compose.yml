@@ -27,8 +27,12 @@ services:
       PGTZ: UTC
     ports:
       # Host port is non-default so this never collides with a locally
-      # installed PostgreSQL.
-      - "${POSTGRES_PORT:-55432}:5432"
+      # installed PostgreSQL. Bound to loopback because Docker writes its own
+      # iptables rules ahead of UFW -- publishing on 0.0.0.0 would expose
+      # Postgres to the internet on a DDNS-reachable box while `ufw status`
+      # still claimed the port was blocked. Nothing outside this host needs
+      # the database; the API connects over localhost.
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
     volumes:
       - safety_db_data:/var/lib/postgresql/data
     healthcheck:
