@@ -1,0 +1,58 @@
+# uvicorn under systemd (see docs/LINUX-MIGRATION.md S5).
+#
+# Install (run from the repo root, so $PWD is the deploy path):
+#   cp deploy/systemd/safety-api.service /etc/systemd/system/
+#   cp deploy/systemd/safety-etl.service /etc/systemd/system/
+#   cp deploy/systemd/safety-etl.timer   /etc/systemd/system/
+#   sed -i "s|DEPLOY_PATH_PLACEHOLDER|$PWD|g" /etc/systemd/system/safety-*.service
+#   systemctl daemon-reload
+#   systemctl enable --now safety-api.service
+#   systemctl enable --now safety-etl.timer   # only after the backfill finishes
+#
+# The units run as the `safety` service user from S2, which must be able to read
+# the repo -- including the 600-mode .env, since safety/config.py reads it
+# directly rather than systemd passing it in via EnvironmentFile:
+#   chown -R safety:safety <deploy path>
+#
+# The `docker` group is deliberately NOT required. Nothing here shells out to
+# `docker compose`; the API just connects to 127.0.0.1:55432, and the database
+# container comes back after a reboot on its own via `restart: unless-stopped`
+# plus `systemctl enable docker`. That group is root-equivalent, so it is not
+# worth granting for nothing.
+
+[Unit]
+Description=Safety API (uvicorn)
+# Ordering only. A hard Requires= would take the API down every time docker
+# restarts, but the pool's check_connection (safety/api/main.py:47) already
+# recovers from that by itself -- which S8 asks you to verify explicitly.
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=exec
+User=safety
+Group=safety
+
+# safety/config.py:9 resolves migrations, the crosswalk, web/ and .env relative
+# to the repo root, so anything running the app needs its cwd set here.
+WorkingDirectory=DEPLOY_PATH_PLACEHOLDER
+
+# Bound to loopback: nginx (deploy/nginx/safety.conf) is the only thing that
+# should reach uvicorn. --forwarded-allow-ips pairs with the X-Forwarded-*
+# headers that proxy sets, so the app trusts them from 127.0.0.1 and nowhere
+# else.
+ExecStart=DEPLOY_PATH_PLACEHOLDER/.venv/bin/uvicorn safety.api.main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
+
+# Startup calls pool.wait(timeout=30) (safety/api/main.py:50), so a database
+# that is still initialising fails the unit rather than hanging forever.
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+# `full` rather than `strict`: /usr, /boot and /etc go read-only, but the deploy
+# path under /srv stays writable, which the ETL needs for data/bronze.
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

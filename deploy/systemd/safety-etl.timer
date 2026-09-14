@@ -1,0 +1,26 @@
+# Daily trigger for safety-etl.service (docs/LINUX-MIGRATION.md S5).
+#
+# Philadelphia's publish cadence lives in reference.source_registry; daily is
+# safe regardless, because incremental is idempotent.
+#
+#   systemctl enable --now safety-etl.timer
+#   systemctl list-timers safety-etl.timer     # confirm the next elapse
+#
+# Do not enable this until the initial backfill has finished -- a timer firing
+# mid-backfill would put two ETL runs against the same tables at once.
+
+[Unit]
+Description=Daily safety ETL incremental pull
+
+[Timer]
+# 00:00 UTC. The server runs UTC per S2, so this is not drifting with DST.
+OnCalendar=daily
+# Runs a pull that was missed while the box was down, instead of skipping to
+# tomorrow.
+Persistent=true
+# Keeps the request off the exact hour at phl.carto.com.
+RandomizedDelaySec=900
+Unit=safety-etl.service
+
+[Install]
+WantedBy=timers.target

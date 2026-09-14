@@ -1,0 +1,24 @@
+# One incremental ETL pull, started by safety-etl.timer (docs/LINUX-MIGRATION.md
+# S5). Install commands are in safety-api.service.
+#
+# No [Install] section on purpose -- this unit is not enabled directly, the
+# timer pulls it in. `systemctl start safety-etl.service` runs a pull by hand.
+
+[Unit]
+Description=Safety ETL incremental pull (phl)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=safety
+Group=safety
+WorkingDirectory=DEPLOY_PATH_PLACEHOLDER
+
+# Idempotent: incremental upserts on incident_key, so a double run is harmless
+# and a missed day is caught up by the next one.
+ExecStart=DEPLOY_PATH_PLACEHOLDER/.venv/bin/python -m safety.etl.run incremental --city phl
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
