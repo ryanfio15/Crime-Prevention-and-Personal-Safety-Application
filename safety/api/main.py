@@ -24,6 +24,7 @@ from psycopg_pool import ConnectionPool
 
 from safety import PIPELINE_VERSION
 from safety.api import repository as repo
+from safety.api.ratelimit import RateLimitMiddleware
 from safety.config import WEB_DIR, settings
 from safety.h3grid import RESOLUTIONS, cell_resolution, cells_for_point, grid_disk, is_valid_cell
 
@@ -68,6 +69,11 @@ app = FastAPI(
 )
 
 API = "/api/v1"
+
+# Only /api/v1/ paths are limited, so the static frontend and /docs are
+# untouched -- see safety/api/ratelimit.py for the two zones and why they differ.
+if settings.enable_rate_limit:
+    app.add_middleware(RateLimitMiddleware)
 
 
 def get_conn():

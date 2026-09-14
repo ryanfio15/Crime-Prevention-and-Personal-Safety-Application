@@ -38,16 +38,20 @@ class Settings(BaseSettings):
     # Trailing window the Phase 1 backfill loads (design doc S15).
     backfill_months: int = 24
 
-    api_host: str = "127.0.0.1"
-    api_port: int = 8000
-
     # Swagger UI / ReDoc / openapi.json. On by default: the frontend is served
     # from the same origin and names every endpoint in plain JavaScript
     # (web/app.js), so switching this off buys almost no obscurity -- it is a
     # kill switch for when the interactive docs themselves are the problem
     # (bot traffic, or not wanting the API shape clickable), not a security
-    # control. Rate limiting in nginx is what protects the expensive endpoints.
+    # control. Rate limiting is what protects the expensive endpoints.
     enable_docs: bool = True
+
+    # Per-client request limiting (safety/api/ratelimit.py). On by default,
+    # because the API has no authentication and /api/v1/cells builds the whole
+    # city layer per uncached request. Turning it off is reasonable for local
+    # development and for load testing your own instance; on anything publicly
+    # reachable it is the control doing the real work.
+    enable_rate_limit: bool = True
 
     # HTTP behaviour for source adapters.
     http_timeout_seconds: float = 120.0

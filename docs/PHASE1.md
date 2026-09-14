@@ -31,6 +31,9 @@ cp .env.example .env
 
 Then open **http://127.0.0.1:8000/**.
 
+To put it on the internet instead, see [`DEPLOY.md`](DEPLOY.md) — a browser-only
+walkthrough that needs no server and no command line.
+
 ### Other pipeline commands
 
 ```bash
