@@ -95,10 +95,11 @@ All three live in one Railway **project**.
    **Custom Start Command**
 
    ```
-   uvicorn safety.api.main:app --host :: --port $PORT --proxy-headers --forwarded-allow-ips='*'
+   uvicorn safety.api.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
    ```
 
-   Copy it exactly, quotes included.
+   Copy it exactly, quotes included. In particular `0.0.0.0` is not
+   interchangeable with `::` here — see the developer notes at the end.
 
    **Pre-Deploy Command**
 
@@ -280,3 +281,12 @@ health check forever. Deploy settings are per-service in the UI for that reason.
 Both services run the same image, built from `Dockerfile`, and differ only in
 start command. `safety/config.py` reads all configuration from environment
 variables, so no `.env` file exists or is needed in the container.
+
+**The start command must bind `0.0.0.0`, not `::`.** A `::` bind reads as
+dual-stack but is not: Python sets `IPV6_V6ONLY` on the listening socket, so the
+process accepts IPv6 connections only. The failure is quiet and misleading —
+uvicorn logs a normal startup, no request line ever appears in the logs, and
+callers get an empty reply rather than a refusal. Railway's edge proxy arrives
+over IPv4. The IPv6-only private network matters for *outbound* connections to
+the database, which the listen address has no bearing on. Verified by running
+the image both ways against a local PostGIS container.

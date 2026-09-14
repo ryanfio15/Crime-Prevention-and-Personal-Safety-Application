@@ -1,0 +1,7 @@
+# docker-entrypoint.sh must keep LF endings. Development happens on Windows; a
+# contributor with core.autocrlf=true would otherwise check the script out with
+# CRLF, and the image then fails to start with an opaque
+# "exec /usr/local/bin/docker-entrypoint.sh: no such file or directory" --
+# the shell is looking for an interpreter named "/bin/sh\r".
+*.sh text eol=lf
+Dockerfile text eol=lf
