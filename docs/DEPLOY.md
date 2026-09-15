@@ -73,18 +73,29 @@ All three live in one Railway **project**.
    **Billing** — Railway gates persistent volumes above the trial tier. The
    database genuinely needs one; there is no workaround that keeps your data.
 
-7. Open the **Variables** tab and add these five:
+7. Open the **Variables** tab, switch to the **Raw Editor**, and paste this
+   whole block:
 
-   | Variable | Value |
-   |---|---|
-   | `POSTGRES_DB` | `safety` |
-   | `POSTGRES_USER` | `safety` |
-   | `POSTGRES_PASSWORD` | Click the variable menu and choose a generated secret |
-   | `TZ` | `UTC` |
-   | `PGTZ` | `UTC` |
+   ```
+   POSTGRES_DB=safety
+   POSTGRES_USER=safety
+   POSTGRES_PASSWORD=${{secret(32)}}
+   TZ=UTC
+   PGTZ=UTC
+   ```
 
-   Let Railway generate the password. You never need to see or type it — the
-   other services reference it by name in step 2.
+   Then click **Save** / **Update Variables**.
+
+   `${{secret(32)}}` asks Railway to generate a random 32-character password.
+   You never see or type it, and the other two services reference it by name
+   rather than copying the value. After saving, switch out of the Raw Editor and
+   confirm `POSTGRES_PASSWORD` shows a random string rather than the literal
+   text `${{secret(32)}}`; if it did not resolve, click that variable and use the
+   generate-secret option instead.
+
+   If you ever set this password by hand, keep it to letters and digits. It ends
+   up inside a connection URL (`safety/config.py`), and characters like `/`,
+   `@`, `:` or `#` break the parse.
 
 8. Click **Deploy** and wait for the service to go green.
 
@@ -124,21 +135,24 @@ All three live in one Railway **project**.
    /api/v1/health
    ```
 
-4. Open the **Variables** tab and add:
+4. Open the **Variables** tab, switch to the **Raw Editor**, and paste this
+   whole block:
 
-   | Variable | Value |
-   |---|---|
-   | `POSTGRES_HOST` | `${{db.RAILWAY_PRIVATE_DOMAIN}}` |
-   | `POSTGRES_PORT` | `5432` |
-   | `POSTGRES_DB` | `${{db.POSTGRES_DB}}` |
-   | `POSTGRES_USER` | `${{db.POSTGRES_USER}}` |
-   | `POSTGRES_PASSWORD` | `${{db.POSTGRES_PASSWORD}}` |
-   | `ENABLE_DOCS` | `true` |
+   ```
+   POSTGRES_HOST=${{db.RAILWAY_PRIVATE_DOMAIN}}
+   POSTGRES_PORT=5432
+   POSTGRES_DB=${{db.POSTGRES_DB}}
+   POSTGRES_USER=${{db.POSTGRES_USER}}
+   POSTGRES_PASSWORD=${{db.POSTGRES_PASSWORD}}
+   ENABLE_DOCS=true
+   ```
 
-   Type the `${{db....}}` values exactly as written, braces included. They are
-   references — Railway fills in the real values, so no password is ever copied
-   by hand. If you named the database service something other than `db`, use
-   that name instead.
+   Then click **Save** / **Update Variables**.
+
+   The `${{db....}}` entries are references, not literal text — Railway
+   substitutes the real values at deploy time, so no password is ever copied by
+   hand. **They only work if the database service is named exactly `db`.** If
+   you named it something else, replace `db` with that name throughout.
 
    Note `5432`, not the `55432` used locally. The local port is unusual only to
    avoid colliding with a developer's own PostgreSQL; inside Railway it is the
@@ -194,11 +208,23 @@ All three live in one Railway **project**.
    set `BRONZE_ROOT` to `/tmp/bronze` in step 5 instead and carry on — you lose
    only `reprocess --pull-id`. The website never reads these files.
 
-5. In **Variables**, add the same five database variables from step 2, plus:
+5. Open the **Variables** tab, switch to the **Raw Editor**, and paste this
+   whole block:
 
-   | Variable | Value |
-   |---|---|
-   | `BRONZE_ROOT` | `/data/bronze` |
+   ```
+   POSTGRES_HOST=${{db.RAILWAY_PRIVATE_DOMAIN}}
+   POSTGRES_PORT=5432
+   POSTGRES_DB=${{db.POSTGRES_DB}}
+   POSTGRES_USER=${{db.POSTGRES_USER}}
+   POSTGRES_PASSWORD=${{db.POSTGRES_PASSWORD}}
+   BRONZE_ROOT=/data/bronze
+   ```
+
+   Then click **Save** / **Update Variables**.
+
+   Same database block as the website, with `BRONZE_ROOT` added and
+   `ENABLE_DOCS` left off — this service serves no web pages. If you skipped the
+   volume in step 4, use `BRONZE_ROOT=/tmp/bronze` instead.
 
 6. Click **Deploy**.
 
