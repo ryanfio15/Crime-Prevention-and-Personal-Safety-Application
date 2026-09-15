@@ -57,11 +57,24 @@ class Settings(BaseSettings):
     http_timeout_seconds: float = 120.0
     http_max_retries: int = 4
 
+    # Bound on a single connection attempt. Without it libpq waits out the OS
+    # TCP timeout, which only matters when a host accepts the packets and never
+    # answers -- a wrong hostname on a platform network, say, rather than one
+    # that refuses outright. wait_for_db() reads as a 60-second ceiling (30
+    # attempts, 2s apart), but with an unbounded connect each attempt can cost
+    # minutes: a misconfigured deployment took 66 minutes to fail, printing one
+    # line. Ten seconds keeps a genuinely slow start working while making a dead
+    # address fail in minutes with visible progress.
+    connect_timeout_seconds: int = 10
+
     @property
     def dsn(self) -> str:
+        # connect_timeout rides on the DSN so it applies to both plain
+        # connections (safety/db.py) and the API's pool (safety/api/main.py).
         return (
             f"postgresql://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+            f"?connect_timeout={self.connect_timeout_seconds}"
         )
 
 
