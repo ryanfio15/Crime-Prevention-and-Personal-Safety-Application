@@ -55,8 +55,12 @@ All three live in one Railway **project**.
 
 5. Once the service appears, click it and open the **Settings** tab. Rename it
    to `db` so the variables in step 2 match this guide.
-6. Still in **Settings**, find **Volumes** and click **Add Volume**. Set the
-   mount path to:
+6. Attach a volume. **This is not in the service's Settings tab** — go back to
+   the **project canvas** (the view showing each service as a card), then
+   **right-click the `db` card** and choose **Attach Volume**. Pressing
+   `Ctrl+K` anywhere in the project and typing `volume` works too.
+
+   Set the mount path to:
 
    ```
    /var/lib/postgresql/data
@@ -64,6 +68,10 @@ All three live in one Railway **project**.
 
    This is where the data actually lives. Without it, everything is erased on
    every restart.
+
+   If no volume option appears at all, check your plan under **Usage** or
+   **Billing** — Railway gates persistent volumes above the trial tier. The
+   database genuinely needs one; there is no workaround that keeps your data.
 
 7. Open the **Variables** tab and add these five:
 
@@ -171,7 +179,9 @@ All three live in one Railway **project**.
 
    Leave **Healthcheck Path** empty. This service does not serve web requests.
 
-4. In **Settings → Volumes**, add a volume mounted at:
+4. Attach a volume, the same way as in step 1 — from the **project canvas**,
+   right-click the `etl` card → **Attach Volume** (not the Settings tab). Mount
+   path:
 
    ```
    /data/bronze
@@ -179,6 +189,10 @@ All three live in one Railway **project**.
 
    This keeps a copy of exactly what the city published on each date, so data
    can be rebuilt later without re-downloading.
+
+   Unlike the database, this one is optional. If you cannot attach a volume,
+   set `BRONZE_ROOT` to `/tmp/bronze` in step 5 instead and carry on — you lose
+   only `reprocess --pull-id`. The website never reads these files.
 
 5. In **Variables**, add the same five database variables from step 2, plus:
 
