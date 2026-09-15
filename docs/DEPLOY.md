@@ -182,12 +182,24 @@ All three live in one Railway **project**.
    address like `something.up.railway.app`, with HTTPS already working. This is
    the address to share.
 
-   **If it asks which port, answer `8000`.** That works whether or not Railway
-   injects a `PORT` variable: the start command is `--port $PORT`, the
-   `Dockerfile` falls back to `${PORT:-8000}`, and `EXPOSE 8000` is declared, so
-   both paths land on 8000. Any other number only works if `PORT` is injected —
-   otherwise uvicorn listens on 8000 while the proxy sends traffic elsewhere,
-   and the site times out while the service logs look completely healthy.
+   **If it asks which port, answer `8080`** — and then confirm it against the
+   logs.
+
+   Railway injects its own `PORT` variable, `8080` in practice, and the image
+   honours it (`${PORT:-8000}` in the `Dockerfile`). So the port the application
+   actually listens on is Railway's choice, not yours. The service log states it
+   plainly:
+
+   ```
+   Uvicorn running on http://0.0.0.0:8080
+   ```
+
+   Whatever number appears there is what the domain has to target. If they
+   disagree, the site returns 502 or times out while the service looks
+   completely healthy and its health check passes — Railway's internal check
+   finds the right port even when the public domain does not. Fix it by editing
+   the domain under **Settings → Networking** and setting the target port to
+   match the log line.
 6. Click **Deploy**.
 
 ---
