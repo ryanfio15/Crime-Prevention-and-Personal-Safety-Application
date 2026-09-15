@@ -161,6 +161,13 @@ All three live in one Railway **project**.
 5. In **Settings → Networking**, click **Generate Domain**. Railway gives you an
    address like `something.up.railway.app`, with HTTPS already working. This is
    the address to share.
+
+   **If it asks which port, answer `8000`.** That works whether or not Railway
+   injects a `PORT` variable: the start command is `--port $PORT`, the
+   `Dockerfile` falls back to `${PORT:-8000}`, and `EXPOSE 8000` is declared, so
+   both paths land on 8000. Any other number only works if `PORT` is injected —
+   otherwise uvicorn listens on 8000 while the proxy sends traffic elsewhere,
+   and the site times out while the service logs look completely healthy.
 6. Click **Deploy**.
 
 ---
