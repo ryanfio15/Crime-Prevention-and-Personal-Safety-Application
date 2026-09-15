@@ -109,16 +109,22 @@ All three live in one Railway **project**.
 1. Click **+ New** → **GitHub Repo**, and pick this repository. Authorise
    Railway to access it if prompted.
 2. When the service appears, open **Settings** and rename it to `api`.
-3. In **Settings → Deploy**, set these three fields:
+3. In **Settings → Deploy**, set two fields and deliberately leave a third alone:
 
-   **Custom Start Command**
+   **Custom Start Command — leave this EMPTY.**
+
+   The image already starts correctly by itself. Do not paste a `uvicorn`
+   command here. Railway hands a custom start command to the container as
+   arguments rather than running it through a shell, so a `$PORT` inside it is
+   never expanded and the service crash-loops on:
 
    ```
-   uvicorn safety.api.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
+   Error: Invalid value for '--port': '$PORT' is not a valid integer.
    ```
 
-   Copy it exactly, quotes included. In particular `0.0.0.0` is not
-   interchangeable with `::` here — see the developer notes at the end.
+   The `Dockerfile`'s built-in command does go through a shell, expands
+   `${PORT:-8000}`, and binds `0.0.0.0` — see the developer notes at the end for
+   why that address matters.
 
    **Pre-Deploy Command**
 
@@ -329,7 +335,14 @@ Both services run the same image, built from `Dockerfile`, and differ only in
 start command. `safety/config.py` reads all configuration from environment
 variables, so no `.env` file exists or is needed in the container.
 
-**The start command must bind `0.0.0.0`, not `::`.** A `::` bind reads as
+**Leave the `api` service's start command empty.** Railway passes a custom start
+command as argv, with no shell, so `$PORT` in it stays a literal string and
+uvicorn rejects it. The `Dockerfile`'s `CMD` is `sh -c "exec uvicorn ..."`,
+which expands `${PORT:-8000}` and keeps uvicorn as PID 1 so stop signals reach
+it. The `etl` service does need its start command, but that one contains no
+variables, so argv is fine.
+
+**The bind address must be `0.0.0.0`, not `::`.** A `::` bind reads as
 dual-stack but is not: Python sets `IPV6_V6ONLY` on the listening socket, so the
 process accepts IPv6 connections only. The failure is quiet and misleading —
 uvicorn logs a normal startup, no request line ever appears in the logs, and
