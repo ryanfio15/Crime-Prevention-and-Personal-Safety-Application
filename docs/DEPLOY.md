@@ -97,7 +97,21 @@ All three live in one Railway **project**.
    up inside a connection URL (`safety/config.py`), and characters like `/`,
    `@`, `:` or `#` break the parse.
 
-8. Click **Deploy** and wait for the service to go green.
+8. Click **Deploy**, then **wait for this service to finish before creating the
+   others**.
+
+   The very first start is slow — mounting a new volume, running `initdb`, and
+   installing the PostGIS extensions took about **11 minutes** on a real
+   deployment. Watch the **Logs** tab and wait for:
+
+   ```
+   database system is ready to accept connections
+   ```
+
+   This is worth being patient about. The website service gives the database
+   roughly a minute to answer before it gives up, so creating it while this one
+   is still initialising produces a string of `database not ready (attempt N/30)`
+   messages that look like a configuration error and are not one.
 
 > Do **not** give this service a public domain. Nothing outside the project
 > should be able to reach the database.
