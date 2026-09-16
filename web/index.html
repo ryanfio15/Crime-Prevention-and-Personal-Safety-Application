@@ -60,15 +60,15 @@
   <label class="field">
     <span class="field-label">Colour by</span>
     <select id="f-scale">
-      <option value="count" selected>Incident count</option>
+      <option value="safety" selected>Safety ranking</option>
+      <option value="count">Incident count</option>
       <option value="tier">Relative activity (5 tiers)</option>
-      <option value="safety">Safety ranking</option>
     </select>
   </label>
 
-  <!-- Only meaningful while the safety ranking is on screen, so it is hidden
-       otherwise rather than sitting inert beside the other controls. -->
-  <div class="field" id="f-track-field" hidden>
+  <!-- Only meaningful while the safety ranking is on screen. That is the
+       opening view, so it starts visible and hides if the scale changes. -->
+  <div class="field" id="f-track-field">
     <span class="field-label" id="f-track-label">Offences ranked</span>
     <div class="tabs" role="tablist" aria-labelledby="f-track-label" id="f-track">
       <button type="button" class="tab" role="tab" data-track="violent"

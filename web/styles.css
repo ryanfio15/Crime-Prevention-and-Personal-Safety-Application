@@ -1,37 +1,38 @@
 /* ---------------------------------------------------------------------------
    Design tokens.
 
-   Dark is a *selected* mode, not a flipped one: the sequential ramp steps below
-   were chosen for the dark surface and validated against it (monotone
-   lightness, adjacent dL >= 0.06, light end >= 2:1 vs surface, single hue).
+   Light is a *selected* mode, not a flipped one: the sequential ramp steps below
+   are the same documented blue family, re-ordered so the light end recedes
+   toward the page and the dark end carries the high values, and the ink and
+   surface tokens are the light-surface pair rather than inverted dark ones.
    Text always wears ink tokens -- never a series colour.
    --------------------------------------------------------------------------- */
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 
-  --surface-1:      #1a1a19;   /* chart / panel surface */
-  --page:           #0d0d0d;   /* page plane */
-  --text-primary:   #ffffff;
-  --text-secondary: #c3c2b7;
+  --surface-1:      #fcfcfb;   /* chart / panel surface */
+  --page:           #f9f9f7;   /* page plane */
+  --text-primary:   #0b0b0b;
+  --text-secondary: #52514e;
   --text-muted:     #898781;
-  --gridline:       #2c2c2a;
-  --baseline:       #383835;
-  --border:         rgba(255, 255, 255, 0.10);
+  --gridline:       #e1e0d9;
+  --baseline:       #c3c2b7;
+  --border:         rgba(11, 11, 11, 0.10);
 
-  /* Slot 1, dark step. Single-series bars and the sparkline use this. */
-  --series-1:       #3987e5;
+  /* Slot 1, light step. Single-series bars and the sparkline use this. */
+  --series-1:       #2a78d6;
 
-  /* Sequential blue, low -> high on a dark surface. */
-  --seq-1: #184f95;
-  --seq-2: #256abf;
-  --seq-3: #3987e5;
-  --seq-4: #6da7ec;
-  --seq-5: #9ec5f4;
-  --seq-6: #cde2fb;
+  /* Sequential blue, low -> high on a light surface. */
+  --seq-1: #cde2fb;
+  --seq-2: #9ec5f4;
+  --seq-3: #6da7ec;
+  --seq-4: #3987e5;
+  --seq-5: #256abf;
+  --seq-6: #184f95;
 
   /* "Nothing was reported here" recedes toward the surface. It is a distinct
      state from "the quietest fifth of the city", so it gets its own colour. */
-  --seq-zero: #21262b;
+  --seq-zero: #e1e0d9;
 
   --radius: 10px;
   --pad: 16px;
@@ -148,7 +149,7 @@ select, .btn {
   font-size: 13px;
   cursor: pointer;
 }
-select:hover, .btn:hover { border-color: rgba(255, 255, 255, 0.24); }
+select:hover, .btn:hover { border-color: rgba(11, 11, 11, 0.28); }
 select:focus-visible, .btn:focus-visible {
   outline: 2px solid var(--series-1);
   outline-offset: 1px;
@@ -179,7 +180,7 @@ select:focus-visible, .btn:focus-visible {
 .tab + .tab { border-left: 1px solid var(--border); }
 .tab:hover { color: var(--text-primary); }
 .tab[aria-selected="true"] {
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(11, 11, 11, 0.06);
   color: var(--text-primary);
 }
 .tab:focus-visible { outline: 2px solid var(--series-1); outline-offset: -2px; }
@@ -226,7 +227,7 @@ select:focus-visible, .btn:focus-visible {
   padding: 12px 13px 11px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: rgba(26, 26, 25, 0.94);
+  background: rgba(252, 252, 251, 0.94);
   backdrop-filter: blur(6px);
 }
 
@@ -245,6 +246,11 @@ select:focus-visible, .btn:focus-visible {
   gap: 2px; /* 2px surface gap between fills, not borders */
 }
 .legend-ramp span { flex: 1 1 0; }
+
+/* Continuous measures get a continuous key. Dropping the 2px gaps is the whole
+   difference -- banded swatches would imply steps the percentile does not have. */
+.legend-ramp.is-smooth { gap: 0; }
+.legend-ramp.is-smooth span { flex: 1 1 100%; }
 
 .legend-ticks {
   display: flex;
@@ -283,7 +289,7 @@ select:focus-visible, .btn:focus-visible {
   padding: 7px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: rgba(13, 13, 13, 0.96);
+  background: rgba(252, 252, 251, 0.97);
   font-size: 12.5px;
   white-space: nowrap;
   transform: translate(-50%, calc(-100% - 12px));
@@ -416,7 +422,7 @@ select:focus-visible, .btn:focus-visible {
   border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  box-shadow: 0 -18px 46px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 -18px 46px rgba(11, 11, 11, 0.16);
 }
 .tableview-head {
   display: flex; align-items: center; justify-content: space-between;
@@ -438,7 +444,7 @@ select:focus-visible, .btn:focus-visible {
 }
 .data td { padding: 6px 10px 6px 0; border-bottom: 1px solid var(--gridline); color: var(--text-secondary); }
 .data td:nth-child(3) { color: var(--text-primary); }
-.data tr:hover td { background: rgba(255, 255, 255, 0.03); }
+.data tr:hover td { background: rgba(11, 11, 11, 0.04); }
 
 /* ----------------------------------------------------------- methodology --- */
 
@@ -452,7 +458,7 @@ select:focus-visible, .btn:focus-visible {
   color: var(--text-primary);
   overflow-y: auto;
 }
-.sheet::backdrop { background: rgba(0, 0, 0, 0.62); }
+.sheet::backdrop { background: rgba(11, 11, 11, 0.38); }
 .sheet-close {
   position: absolute; top: 14px; right: 18px;
   width: 28px; height: 28px;

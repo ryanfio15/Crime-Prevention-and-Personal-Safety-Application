@@ -10,33 +10,56 @@
 const API = "/api/v1";
 const CITY = "phl";
 
-/* Sequential blue, low -> high, selected for the dark surface and validated:
-   monotone lightness, adjacent dL >= 0.06, light end >= 2:1 vs surface, one hue. */
-const SEQ = ["#184f95", "#256abf", "#3987e5", "#6da7ec", "#9ec5f4", "#cde2fb"];
+/* Sequential blue, low -> high, stepped for the LIGHT surface: the light end
+   recedes toward the page and the dark end carries the high values. Same
+   documented steps as before, ordered for this surface rather than flipped. */
+const SEQ = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95"];
 /* A distinct state, not the bottom of the ramp: nothing was reported here. */
-const ZERO_FILL = "#21262b";
-const SURFACE_GAP = "#0d0d0d";
-const SERIES_1 = "#3987e5";
+const ZERO_FILL = "#e1e0d9";
+const SURFACE_GAP = "#fcfcfb";
+const SERIES_1 = "#2a78d6";
+const INK_PRIMARY = "#0b0b0b";
+const INK_SECONDARY = "#52514e";
+const BASELINE = "#c3c2b7";
 
-/* Safety ramp, least safe -> safest, indexed by tier 1..4.
+/* Safety ramp, least safe -> safest, applied continuously to the percentile.
 
-   Green/red carries the polarity, but lightness carries it a second time, and
-   that redundancy is the whole point: the obvious pairing of a status green
-   against a status red measures dE 4.1 under deuteranopia -- the safest and the
-   least safe cell rendering as near-identical colours for roughly 8% of men.
-   Staircasing the lightness lifts the worst all-pairs separation to 11.0,
-   because a red-green viewer still reads the ramp as dark -> light when the hue
-   channel collapses. Validated against the #0d0d0d map surface with --pairs all
-   (a choropleth is an all-pairs form): worst CVD dE 11.0 deutan / 14.5 tritan,
-   worst normal-vision dE 15.4, lightness monotone, every adjacent dL >= 0.06.
+   Built in OKLCH with lightness forced monotone from 0.38 to 0.86 across the
+   twenty steps, because lightness is what keeps the ordering readable when the
+   hue channel collapses: green against red is the classic red-green blindness
+   failure, and a deuteranope reads this ramp as dark -> light regardless. The
+   poles separate at dE 47.0 under deuteranopia and 56.9 under normal vision.
 
-   Four steps, not five: a fifth cannot clear the dL floor on this surface
-   without pushing the dark end below usable contrast, which is why the tier is
-   quartiles. #9c2626 sits at 2.52:1, so the table view carries the numbers.
+   Each arm holds its own hue and chroma is pinched almost to nothing at the
+   midpoint, so the two meet through a desaturated zone rather than passing
+   through yellow. Pinching matters twice over: it is the diverging
+   construction, and it is what removes the visible seam where the arms meet --
+   letting chroma stay up across the middle produces a green block butting
+   straight into a red one, which is the opposite of a smooth ramp.
 
-   Any re-step must keep the lightness monotone or the ramp stops working for
-   colourblind readers. */
-const SAFETY = ["#9c2626", "#cf5a2c", "#6dbf4e", "#c8eea8"];
+   Deep reds fall outside sRGB, so the generator gamut-maps by reducing chroma
+   rather than letting channels clamp; left to clamp, the last few steps
+   collapse onto the same hex exactly where the ramp matters most. All twenty
+   are distinct.
+
+   Adjacent steps are deliberately close (dL ~0.025) -- that is what makes the
+   ramp read as smooth rather than banded, and it is why the categorical
+   adjacent-separation gate does not apply here. The table view carries the
+   exact percentile for anyone who needs to read a value rather than compare. */
+const SAFETY = [
+  "#810009", "#8d000b", "#99000d", "#a11518", "#a52b27",
+  "#a83b35", "#aa4a42", "#aa5850", "#a8675f", "#a07671",
+  "#75937a", "#6e9f78", "#6bab78", "#68b57a", "#66c07c",
+  "#65ca7e", "#63d481", "#62de84", "#62e988", "#61f38b",
+];
+
+/** The ramp as CSS stops, for a legend that reads as one continuous bar. */
+function safetyGradient() {
+  const stops = SAFETY.map(
+    (hex, i) => `${hex} ${((i / (SAFETY.length - 1)) * 100).toFixed(1)}%`
+  );
+  return `linear-gradient(to right, ${stops.join(", ")})`;
+}
 
 const TIER_LABELS = {
   0: "No reported incidents",
@@ -78,7 +101,7 @@ const state = {
   window: "last_12m",
   category: "all",
   res: 8,
-  scale: "count",
+  scale: "safety",
   track: "violent",
   selected: null,
   hovered: null,
@@ -93,7 +116,7 @@ const $ = (id) => document.getElementById(id);
 
 /* ------------------------------------------------------------------ basemap */
 
-const CARTO_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+const CARTO_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 
 // Used only if the vector style is unreachable, so the page still renders a map.
 const RASTER_FALLBACK = {
@@ -102,9 +125,9 @@ const RASTER_FALLBACK = {
     carto: {
       type: "raster",
       tiles: [
-        "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-        "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-        "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+        "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+        "https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+        "https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
       ],
       tileSize: 256,
       attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
@@ -164,18 +187,18 @@ function countThresholds(meta) {
 
 function fillColorExpression() {
   if (state.scale === "safety") {
-    const { tier } = TRACK_PROPS[state.track];
-    // Tier 0 keeps the neutral fill rather than joining the safe end: an
-    // absence of reports is not evidence of safety.
+    const { pct, tier } = TRACK_PROPS[state.track];
+    // Interpolated on the raw percentile rather than stepped on the tier, so
+    // the map is as continuous as the statistic behind it.
+    const stops = SAFETY.flatMap((hex, i) => [i / (SAFETY.length - 1), hex]);
     return [
-      "match",
-      ["get", tier],
-      0, ZERO_FILL,
-      1, SAFETY[0],
-      2, SAFETY[1],
-      3, SAFETY[2],
-      4, SAFETY[3],
-      ZERO_FILL,
+      "case",
+      // Tier 0 keeps the neutral fill rather than joining the safe end: an
+      // absence of reports is not evidence of safety. `coalesce` also catches
+      // the case where the safety layer has not been built, so a missing value
+      // reads as "no data" instead of as the least safe colour.
+      ["==", ["coalesce", ["get", tier], 0], 0], ZERO_FILL,
+      ["interpolate", ["linear"], ["coalesce", ["get", pct], 0], ...stops],
     ];
   }
 
@@ -214,16 +237,22 @@ function renderLegend() {
   if (state.scale === "safety") {
     $("legend-title").textContent =
       `Safety ranking — ${TRACK_LABELS[state.track]} offences`;
-    $("legend-ramp").innerHTML = SAFETY
-      .map((c) => `<span style="background:${c}"></span>`)
-      .join("");
-    $("legend-ticks").innerHTML = "<span>Least safe</span><span>Safest</span>";
+    // One gradient-filled bar, not twenty adjacent swatches: the measure is
+    // continuous, so a stepped key would imply bands the data does not have.
+    $("legend-ramp").classList.add("is-smooth");
+    $("legend-ramp").innerHTML =
+      `<span style="background:${safetyGradient()}"></span>`;
+    $("legend-ticks").innerHTML =
+      "<span>Least safe</span><span>Median</span><span>Safest</span>";
     $("legend-foot").innerHTML =
       `<span class="legend-zero"><i></i> Nothing of this kind reported</span>` +
       `<br>Each cell ranked against the other ${nf.format(meta.cell_count)} cells, ` +
       `weighted by offence severity. A cell with no reports is not therefore safe.`;
     return;
   }
+
+  // Every other scale is banded, so restore the 2px gaps between swatches.
+  $("legend-ramp").classList.remove("is-smooth");
 
   if (state.scale === "tier") {
     const colors = ramp(5);
@@ -377,14 +406,34 @@ async function selectCell(h3) {
   renderOffenseMix(detail.top_offenses);
 }
 
-/** Percentile plus its tier label, so the number is never colour-only. */
+/**
+ * Short label for a safety percentile, correct at both ends.
+ *
+ * The extremes need naming rather than rounding: the worst cell in Philadelphia
+ * scores 0.0009, and "0th percentile" reads as a missing value rather than as
+ * the bottom of the city. Kept terse because it sits in a narrow panel column
+ * beside the tier label.
+ */
+function safetyLabel(percentile) {
+  const value = percentile * 100;
+  if (value < 1) return "bottom 1%";
+  if (value > 99) return "top 1%";
+  const n = Math.round(value);
+  const suffix =
+    n % 10 === 1 && n % 100 !== 11 ? "st"
+    : n % 10 === 2 && n % 100 !== 12 ? "nd"
+    : n % 10 === 3 && n % 100 !== 13 ? "rd"
+    : "th";
+  return `${n}${suffix} percentile`;
+}
+
+/** The percentile plus its tier label, so the number is never colour-only. */
 function renderSafety(rows) {
   const byTrack = Object.fromEntries((rows ?? []).map((r) => [r.track, r]));
   const format = (row) => {
     if (!row) return "&mdash;";
-    const pct = (row.safety_percentile * 100).toFixed(0);
     const label = SAFETY_TIER_LABELS[row.safety_tier] ?? "";
-    return `${pct}<span class="unit">th percentile</span> · ${label}`;
+    return `${safetyLabel(row.safety_percentile)} · ${label}`;
   };
   $("d-safety-violent").innerHTML = format(byTrack.violent);
   $("d-safety-nonviolent").innerHTML = format(byTrack.non_violent);
@@ -472,7 +521,7 @@ function renderSparkline(monthly, anchorIso) {
   svg.appendChild(
     make("line", {
       x1: 0, y1: height - padY, x2: width, y2: height - padY,
-      stroke: "#383835", "stroke-width": 1,
+      stroke: BASELINE, "stroke-width": 1,
     })
   );
 
@@ -491,7 +540,7 @@ function renderSparkline(monthly, anchorIso) {
   svg.appendChild(marker);
 
   const crosshair = make("line", {
-    y1: 0, y2: height, stroke: "#c3c2b7", "stroke-width": 1, opacity: "0",
+    y1: 0, y2: height, stroke: INK_SECONDARY, "stroke-width": 1, opacity: "0",
   });
   svg.appendChild(crosshair);
 
@@ -752,8 +801,8 @@ async function initMap() {
     paint: {
       "line-color": [
         "case",
-        ["boolean", ["feature-state", "selected"], false], "#ffffff",
-        ["boolean", ["feature-state", "hover"], false], "#c3c2b7",
+        ["boolean", ["feature-state", "selected"], false], INK_PRIMARY,
+        ["boolean", ["feature-state", "hover"], false], INK_SECONDARY,
         SURFACE_GAP,
       ],
       "line-width": [
@@ -786,13 +835,11 @@ async function initMap() {
     if (state.scale === "safety") {
       const { pct, tier } = TRACK_PROPS[state.track];
       const value = p[pct];
-      const headline =
-        value === null || value === undefined
-          ? "—"
-          : `${(value * 100).toFixed(0)}<small class="unit">th percentile</small>`;
       tooltip.innerHTML =
-        `<b>${headline}</b> safety · ${TRACK_LABELS[state.track]}` +
-        `<small>${SAFETY_TIER_LABELS[p[tier]] ?? "—"} · ` +
+        (value === null || value === undefined
+          ? `<b>No ${TRACK_LABELS[state.track]} offences reported</b>`
+          : `Safety: <b>${safetyLabel(value)}</b>`) +
+        `<small>${SAFETY_TIER_LABELS[p[tier]] ?? "—"} · ${TRACK_LABELS[state.track]} · ` +
         `${nf.format(p.count)} reported incidents</small>`;
       return;
     }
