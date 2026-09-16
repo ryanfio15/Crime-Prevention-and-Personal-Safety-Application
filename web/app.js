@@ -18,6 +18,26 @@ const ZERO_FILL = "#21262b";
 const SURFACE_GAP = "#0d0d0d";
 const SERIES_1 = "#3987e5";
 
+/* Safety ramp, least safe -> safest, indexed by tier 1..4.
+
+   Green/red carries the polarity, but lightness carries it a second time, and
+   that redundancy is the whole point: the obvious pairing of a status green
+   against a status red measures dE 4.1 under deuteranopia -- the safest and the
+   least safe cell rendering as near-identical colours for roughly 8% of men.
+   Staircasing the lightness lifts the worst all-pairs separation to 11.0,
+   because a red-green viewer still reads the ramp as dark -> light when the hue
+   channel collapses. Validated against the #0d0d0d map surface with --pairs all
+   (a choropleth is an all-pairs form): worst CVD dE 11.0 deutan / 14.5 tritan,
+   worst normal-vision dE 15.4, lightness monotone, every adjacent dL >= 0.06.
+
+   Four steps, not five: a fifth cannot clear the dL floor on this surface
+   without pushing the dark end below usable contrast, which is why the tier is
+   quartiles. #9c2626 sits at 2.52:1, so the table view carries the numbers.
+
+   Any re-step must keep the lightness monotone or the ramp stops working for
+   colourblind readers. */
+const SAFETY = ["#9c2626", "#cf5a2c", "#6dbf4e", "#c8eea8"];
+
 const TIER_LABELS = {
   0: "No reported incidents",
   1: "Lowest fifth",
@@ -25,6 +45,26 @@ const TIER_LABELS = {
   3: "Middle fifth",
   4: "Upper-middle fifth",
   5: "Highest fifth",
+};
+
+const SAFETY_TIER_LABELS = {
+  0: "No reported incidents",
+  1: "Least safe quarter",
+  2: "Lower-middle quarter",
+  3: "Upper-middle quarter",
+  4: "Safest quarter",
+};
+
+const TRACK_LABELS = {
+  violent: "violent",
+  non_violent: "non-violent",
+};
+
+/* Feature property names per track, so the map reads whichever is selected
+   without refetching -- both ship on every feature. */
+const TRACK_PROPS = {
+  violent: { pct: "safety_violent", tier: "stier_violent" },
+  non_violent: { pct: "safety_nonviolent", tier: "stier_nonviolent" },
 };
 
 const CATEGORY_LABELS = {
@@ -39,6 +79,7 @@ const state = {
   category: "all",
   res: 8,
   scale: "count",
+  track: "violent",
   selected: null,
   hovered: null,
   meta: null,
@@ -122,6 +163,22 @@ function countThresholds(meta) {
 }
 
 function fillColorExpression() {
+  if (state.scale === "safety") {
+    const { tier } = TRACK_PROPS[state.track];
+    // Tier 0 keeps the neutral fill rather than joining the safe end: an
+    // absence of reports is not evidence of safety.
+    return [
+      "match",
+      ["get", tier],
+      0, ZERO_FILL,
+      1, SAFETY[0],
+      2, SAFETY[1],
+      3, SAFETY[2],
+      4, SAFETY[3],
+      ZERO_FILL,
+    ];
+  }
+
   if (state.scale === "tier") {
     const colors = ramp(5);
     return [
@@ -153,6 +210,20 @@ function renderLegend() {
   const meta = state.meta;
   if (!meta) return;
   legend.setAttribute("aria-hidden", "false");
+
+  if (state.scale === "safety") {
+    $("legend-title").textContent =
+      `Safety ranking — ${TRACK_LABELS[state.track]} offences`;
+    $("legend-ramp").innerHTML = SAFETY
+      .map((c) => `<span style="background:${c}"></span>`)
+      .join("");
+    $("legend-ticks").innerHTML = "<span>Least safe</span><span>Safest</span>";
+    $("legend-foot").innerHTML =
+      `<span class="legend-zero"><i></i> Nothing of this kind reported</span>` +
+      `<br>Each cell ranked against the other ${nf.format(meta.cell_count)} cells, ` +
+      `weighted by offence severity. A cell with no reports is not therefore safe.`;
+    return;
+  }
 
   if (state.scale === "tier") {
     const colors = ramp(5);
@@ -300,9 +371,30 @@ async function selectCell(h3) {
     ? `${nf.format(ringTotal)} across ${ring.resolved} cells`
     : "—";
 
+  renderSafety(detail.safety);
   renderCategoryBars(detail.by_category);
   renderSparkline(detail.monthly, headline.window_end);
   renderOffenseMix(detail.top_offenses);
+}
+
+/** Percentile plus its tier label, so the number is never colour-only. */
+function renderSafety(rows) {
+  const byTrack = Object.fromEntries((rows ?? []).map((r) => [r.track, r]));
+  const format = (row) => {
+    if (!row) return "&mdash;";
+    const pct = (row.safety_percentile * 100).toFixed(0);
+    const label = SAFETY_TIER_LABELS[row.safety_tier] ?? "";
+    return `${pct}<span class="unit">th percentile</span> · ${label}`;
+  };
+  $("d-safety-violent").innerHTML = format(byTrack.violent);
+  $("d-safety-nonviolent").innerHTML = format(byTrack.non_violent);
+
+  const missing = !rows?.length;
+  $("d-safety-note").textContent = missing
+    ? "The safety ranking has not been built for this city yet."
+    : "Percentile against every other cell in the city, weighted by offence " +
+      "severity. Higher is safer. A cell with nothing reported is shown as such " +
+      "rather than as safe.";
 }
 
 function renderCategoryBars(rows) {
@@ -479,6 +571,9 @@ function renderTable() {
     `Cells by reported incident count — ${state.features.length} cells, ` +
     `showing the top ${rows.length}`;
 
+  const pct = (value) =>
+    value === null || value === undefined ? "—" : `${(value * 100).toFixed(1)}%`;
+
   body.innerHTML = rows
     .map((feature, index) => {
       const p = feature.properties;
@@ -490,6 +585,8 @@ function renderTable() {
         <td class="num">${nf.format(p.per_km2)}</td>
         <td class="num">${(p.percentile * 100).toFixed(1)}%</td>
         <td>${TIER_LABELS[p.tier]}</td>
+        <td class="num">${pct(p.safety_violent)}</td>
+        <td class="num">${pct(p.safety_nonviolent)}</td>
       </tr>`;
     })
     .join("");
@@ -524,6 +621,26 @@ async function openMethodology() {
       (${m.cell_model.detail_resolution_note}) available as a drill-down.
     </p>
     <p>${m.cell_model.relative_measure}</p>
+
+    ${m.safety_measure ? `
+    <h3>The safety ranking</h3>
+    <p>${m.safety_measure.what_it_is}</p>
+    <p>${m.safety_measure.why_two_rankings}</p>
+    <p>${m.safety_measure.weights.note}</p>
+    <dl>
+      <div><dt>Severity source</dt><dd>${m.safety_measure.weights.source ?? "—"}</dd></div>
+      <div><dt>Weight scheme</dt><dd>${m.safety_measure.weights.scheme_version ?? "—"}</dd></div>
+      <div><dt>Published weights cover</dt><dd>${
+        m.safety_measure.weights.published_share === null ||
+        m.safety_measure.weights.published_share === undefined
+          ? "—"
+          : `${(m.safety_measure.weights.published_share * 100).toFixed(1)}% of incidents`
+      }</dd></div>
+    </dl>
+    <p>${m.safety_measure.weights.fallback_note}</p>
+    <p>${m.safety_measure.smoothing.note}</p>
+    <ul>${m.safety_measure.known_limitations.map((line) => `<li>${line}</li>`).join("")}</ul>
+    ` : ""}
 
     <h3>Offence classification</h3>
     <p>${m.classification.standard}</p>
@@ -665,6 +782,21 @@ async function initMap() {
     tooltip.hidden = false;
     tooltip.style.left = `${event.point.x}px`;
     tooltip.style.top = `${event.point.y}px`;
+
+    if (state.scale === "safety") {
+      const { pct, tier } = TRACK_PROPS[state.track];
+      const value = p[pct];
+      const headline =
+        value === null || value === undefined
+          ? "—"
+          : `${(value * 100).toFixed(0)}<small class="unit">th percentile</small>`;
+      tooltip.innerHTML =
+        `<b>${headline}</b> safety · ${TRACK_LABELS[state.track]}` +
+        `<small>${SAFETY_TIER_LABELS[p[tier]] ?? "—"} · ` +
+        `${nf.format(p.count)} reported incidents</small>`;
+      return;
+    }
+
     tooltip.innerHTML =
       `<b>${nf.format(p.count)}</b> reported incidents` +
       `<small>${TIER_LABELS[p.tier]} · ${nf.format(p.per_km2)} per km²</small>`;
@@ -689,6 +821,12 @@ async function initMap() {
 
 /* --------------------------------------------------------------------- wiring */
 
+/** Recolour from data already in hand -- no refetch. */
+function repaint() {
+  map.setPaintProperty("cells-fill", "fill-color", fillColorExpression());
+  renderLegend();
+}
+
 function wireControls() {
   $("f-window").onchange = (e) => {
     state.window = e.target.value;
@@ -707,9 +845,22 @@ function wireControls() {
   };
   $("f-scale").onchange = (e) => {
     state.scale = e.target.value;
-    map.setPaintProperty("cells-fill", "fill-color", fillColorExpression());
-    renderLegend();
+    // The track tabs only mean anything while the safety ramp is on screen.
+    $("f-track-field").hidden = state.scale !== "safety";
+    repaint();
   };
+
+  // Both tracks ride along on every feature, so switching is a repaint with no
+  // request and no loading state.
+  $("f-track").querySelectorAll("[data-track]").forEach((button) => {
+    button.onclick = () => {
+      state.track = button.dataset.track;
+      $("f-track")
+        .querySelectorAll("[data-track]")
+        .forEach((b) => b.setAttribute("aria-selected", String(b === button)));
+      repaint();
+    };
+  });
 
   $("btn-locate").onclick = locateMe;
   $("detail-close").onclick = closeDetail;

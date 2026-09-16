@@ -1,0 +1,59 @@
+scheme_version,track,key_type,key_value,weight,sourced,source_item,notes
+nscs_v1,violent,raw_offense_text_key,HOMICIDE - CRIMINAL,35.71,true,A person stabs a victim to death.,"The generic criminal-homicide vignette. The scale's maximum of 72.10 is a 20-fatality bombing, not a murder."
+nscs_v1,violent,raw_offense_text_key,RAPE,25.85,true,A man forcibly rapes a woman. No other physical injury occurs.,"The core rape item. Injury variants score 30.04 (hospitalization) and 52.80 (death)."
+nscs_v1,violent,raw_offense_text_key,ROBBERY FIREARM,9.42,true,A person robs a victim of $10 at gunpoint. No physical harm occurs.,Philadelphia publishes the firearm split in raw_offense_text; the survey scores armed and unarmed robbery separately.
+nscs_v1,violent,raw_offense_text_key,ROBBERY NO FIREARM,5.12,true,"A person, using force, robs a victim of $10. No physical harm occurs.","Unarmed. Understates robberies armed with a weapon other than a firearm, which the survey scores at 7.46."
+nscs_v1,violent,raw_offense_text_key,AGGRAVATED ASSAULT FIREARM,17.76,true,A person intentionally shoots a victim with a gun. The victim is wounded slightly and does not require medical treatment.,The least severe published shooting variant; treated/hospitalized variants score 18.97 and 24.84.
+nscs_v1,violent,raw_offense_text_key,AGGRAVATED ASSAULT NO FIREARM,8.50,true,A person intentionally injures a victim. The victim is treated by a doctor but is not hospitalized.,Hospitalized variant scores 11.95.
+nscs_v1,violent,raw_offense_text_key,OTHER ASSAULTS,6.17,true,A person beats a victim with his fists. The victim requires treatment by a doctor but not hospitalization.,Simple assault.
+nscs_v1,violent,raw_offense_text_key,OTHER SEX OFFENSES (NOT COMMERCIALIZED),5.13,true,"A man runs his hands over the body of a female victim, then runs away.","Closest published item. The PPD bucket is heterogeneous (NIBRS 11B/11C/11D/36A/36B/90H), so this is a weak mapping - see the crosswalk note for this code."
+nscs_v1,violent,nibrs_code,09A,35.71,true,A person stabs a victim to death.,
+nscs_v1,violent,nibrs_code,11A,25.85,true,A man forcibly rapes a woman. No other physical injury occurs.,
+nscs_v1,violent,nibrs_code,120,7.46,true,"A person, armed with a lead pipe, robs a victim of $10. No physical harm occurs.",Weapon-unspecified robbery; sits between the firearm (9.42) and unarmed (5.12) items above.
+nscs_v1,violent,nibrs_code,13A,8.50,true,A person intentionally injures a victim. The victim is treated by a doctor but is not hospitalized.,
+nscs_v1,violent,nibrs_code,13B,6.17,true,A person beats a victim with his fists. The victim requires treatment by a doctor but not hospitalization.,
+nscs_v1,violent,nibrs_code,11D,5.13,true,"A man runs his hands over the body of a female victim, then runs away.",
+nscs_v1,violent,severity_bucket,part_i_violent,13.59,false,,Derived: median of the sourced part_i_violent weights in this scheme.
+nscs_v1,violent,severity_bucket,part_ii,5.65,false,,Derived: median of the sourced part_ii weights on the violent track.
+nscs_v1,violent,severity_bucket,unknown,5.65,false,,Derived: same as the part_ii fallback; an unmapped violent offense is assumed no worse than a Part II one.
+nscs_v1,non_violent,raw_offense_text_key,BURGLARY RESIDENTIAL,9.60,true,"A person breaks into a home and steals $1,000.",
+nscs_v1,non_violent,raw_offense_text_key,BURGLARY NON-RESIDENTIAL,9.74,true,"A person breaks into a department store, forces open a safe, and steals $1,000.",
+nscs_v1,non_violent,raw_offense_text_key,THEFTS,3.59,true,A person steals property worth $100 from outside a building.,"PPD publishes one aggregate theft bucket; the survey scores theft by dollar value, so this is the mid-range item."
+nscs_v1,non_violent,raw_offense_text_key,THEFT FROM VEHICLE,6.57,true,"A person steals $1,000 worth of merchandise from an unlocked car.",
+nscs_v1,non_violent,raw_offense_text_key,MOTOR VEHICLE THEFT,10.82,true,A person steals a locked car and sells it.,Unlocked variant scores 8.05.
+nscs_v1,non_violent,raw_offense_text_key,ARSON,12.75,true,"A person intentionally sets fire to a building causing $10,000 worth of damage.","Damage-scaled; the $100,000 variant scores 24.86 and the $500,000 variant 22.29."
+nscs_v1,non_violent,raw_offense_text_key,FORGERY AND COUNTERFEITING,7.21,true,A person signs someone else's name to a check and cashes it.,
+nscs_v1,non_violent,raw_offense_text_key,FRAUD,3.60,true,A person knowingly passes a bad check.,
+nscs_v1,non_violent,raw_offense_text_key,EMBEZZLEMENT,6.22,true,"An employee embezzles $1,000 from his employer.",
+nscs_v1,non_violent,raw_offense_text_key,RECEIVING STOLEN PROPERTY,5.00,true,A person knowingly buys stolen property from the person who stole it.,
+nscs_v1,non_violent,raw_offense_text_key,VANDALISM/CRIMINAL MISCHIEF,4.12,false,,No property-damage vignette appears in the survey. Falls back to the derived part_ii weight.
+nscs_v1,non_violent,raw_offense_text_key,WEAPON VIOLATIONS,4.64,true,"A person carries a gun, illegally.",
+nscs_v1,non_violent,raw_offense_text_key,PROSTITUTION AND COMMERCIALIZED VICE,2.50,false,,"The survey's table scores a prostitution racket at 6.12, but its narrative places prostitution itself between 2 and 3 on the ratio scale, and PPD's bucket is mostly street-level. Midpoint of the narrative band."
+nscs_v1,non_violent,raw_offense_text_key,NARCOTIC / DRUG LAW VIOLATIONS,5.42,true,A person has some heroin for his own use.,"The PPD bucket spans possession and sale, and the survey's possession items range from 1.34 (marijuana) to 6.54 (heroin use). This is the tunable most likely to need adjusting - see S13 on over-enforced offense types."
+nscs_v1,non_violent,raw_offense_text_key,GAMBLING VIOLATIONS,3.48,true,A person runs a place where he permits gambling to occur illegally.,Taking bets on the numbers scores 1.08.
+nscs_v1,non_violent,raw_offense_text_key,OFFENSES AGAINST FAMILY AND CHILDREN,4.12,false,,No corresponding vignette. Falls back to the derived part_ii weight.
+nscs_v1,non_violent,raw_offense_text_key,DRIVING UNDER THE INFLUENCE,4.12,false,,"The survey scores killing a victim by reckless driving (19.48) but not impaired driving itself. Falls back to the derived part_ii weight."
+nscs_v1,non_violent,raw_offense_text_key,LIQUOR LAW VIOLATIONS,5.50,true,A person runs a place where liquor is sold without a license.,
+nscs_v1,non_violent,raw_offense_text_key,PUBLIC DRUNKENNESS,0.77,true,A person is drunk in public.,
+nscs_v1,non_violent,raw_offense_text_key,DISORDERLY CONDUCT,1.14,true,A person disturbs the neighborhood with loud noisy behavior.,
+nscs_v1,non_violent,raw_offense_text_key,VAGRANCY/LOITERING,0.31,true,"A person is a vagrant. That is, he has no home and no visible means of support.",
+nscs_v1,non_violent,raw_offense_text_key,ALL OTHER OFFENSES,4.12,false,,Residual bucket carrying no usable offense semantics. Falls back to the derived part_ii weight.
+nscs_v1,non_violent,nibrs_code,220,9.60,true,"A person breaks into a home and steals $1,000.",
+nscs_v1,non_violent,nibrs_code,23H,3.59,true,A person steals property worth $100 from outside a building.,
+nscs_v1,non_violent,nibrs_code,23F,6.57,true,"A person steals $1,000 worth of merchandise from an unlocked car.",
+nscs_v1,non_violent,nibrs_code,240,10.82,true,A person steals a locked car and sells it.,
+nscs_v1,non_violent,nibrs_code,200,12.75,true,"A person intentionally sets fire to a building causing $10,000 worth of damage.",
+nscs_v1,non_violent,nibrs_code,250,7.21,true,A person signs someone else's name to a check and cashes it.,
+nscs_v1,non_violent,nibrs_code,26A,3.60,true,A person knowingly passes a bad check.,
+nscs_v1,non_violent,nibrs_code,270,6.22,true,"An employee embezzles $1,000 from his employer.",
+nscs_v1,non_violent,nibrs_code,280,5.00,true,A person knowingly buys stolen property from the person who stole it.,
+nscs_v1,non_violent,nibrs_code,520,4.64,true,"A person carries a gun, illegally.",
+nscs_v1,non_violent,nibrs_code,35A,5.42,true,A person has some heroin for his own use.,
+nscs_v1,non_violent,nibrs_code,39A,3.48,true,A person runs a place where he permits gambling to occur illegally.,
+nscs_v1,non_violent,nibrs_code,90G,5.50,true,A person runs a place where liquor is sold without a license.,
+nscs_v1,non_violent,nibrs_code,90E,0.77,true,A person is drunk in public.,
+nscs_v1,non_violent,nibrs_code,90C,1.14,true,A person disturbs the neighborhood with loud noisy behavior.,
+nscs_v1,non_violent,nibrs_code,90B,0.31,true,"A person is a vagrant. That is, he has no home and no visible means of support.",
+nscs_v1,non_violent,severity_bucket,part_i_property,9.67,false,,Derived: median of the sourced part_i_property weights in this scheme.
+nscs_v1,non_violent,severity_bucket,part_ii,4.12,false,,Derived: median of the sourced part_ii weights on the non-violent track.
+nscs_v1,non_violent,severity_bucket,unknown,4.12,false,,Derived: same as the part_ii fallback.

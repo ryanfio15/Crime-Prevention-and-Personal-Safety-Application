@@ -16,6 +16,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import Any
 
 import psycopg
 
@@ -25,6 +26,7 @@ from safety.h3grid import (
     cell_centroid,
     cell_polygon_geojson,
     cells_covering,
+    grid_disk,
 )
 
 log = logging.getLogger(__name__)
@@ -34,6 +36,14 @@ TIME_WINDOWS = ("last_30d", "last_90d", "last_12m", "last_24m")
 CATEGORIES = ("all", "violent", "property", "quality_of_life", "other")
 FILTERED_CATEGORIES = tuple(c for c in CATEGORIES if c != "all")
 OFFENSE_MIX_DEPTH = 8
+
+# The safety ranking splits the city two ways rather than five, and publishes no
+# combined figure. That follows the FBI, which discontinued its own combined
+# Crime Index in 2004 -- an unweighted total is dominated by whichever offense is
+# most numerous, normally larceny-theft -- and has reported violent and property
+# separately ever since.
+TRACKS = ("violent", "non_violent")
+SAFETY_TIERS = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,8 +167,42 @@ def build_cell_universe(conn: psycopg.Connection, source_id: str) -> dict[int, i
         counts[res] = len(payload)
         log.info("cell universe res %s: %s cells", res, len(payload))
 
+        _build_cell_neighbors(conn, source_id, res, cells)
+
     conn.commit()
     return counts
+
+
+def _build_cell_neighbors(
+    conn: psycopg.Connection, source_id: str, res: int, cells: set[str]
+) -> int:
+    """Materialize ring-1 adjacency for the smoothing in gold.cell_safety.
+
+    Restricted to pairs where both cells are in the universe, so a cell on the
+    city edge averages over the neighbours it actually has rather than being
+    dragged toward zero by ones that do not exist.
+    """
+    payload = [
+        (source_id, res, cell, neighbor)
+        for cell in sorted(cells)
+        for neighbor in grid_disk(cell, 1)
+        if neighbor != cell and neighbor in cells
+    ]
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM gold.cell_neighbor WHERE source_id = %s AND h3_res = %s",
+            (source_id, res),
+        )
+        cur.executemany(
+            """
+            INSERT INTO gold.cell_neighbor (source_id, h3_res, h3_index, neighbor_h3)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT DO NOTHING
+            """,
+            payload,
+        )
+    log.info("cell adjacency res %s: %s pairs", res, len(payload))
+    return len(payload)
 
 
 def _h3_column(res: int) -> str:
@@ -291,6 +335,282 @@ def refresh_cell_activity(
 
 
 # ---------------------------------------------------------------------------
+# Safety ranking: severity-weighted, violent and non-violent ranked separately
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Scheme:
+    version: str
+    eb_prior_km2: float
+    self_weight: float
+
+
+def enabled_schemes(conn: psycopg.Connection) -> list[Scheme]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT scheme_version, eb_prior_km2, self_weight
+            FROM reference.severity_scheme
+            WHERE enabled
+            ORDER BY scheme_version
+            """
+        )
+        return [
+            Scheme(r["scheme_version"], r["eb_prior_km2"], r["self_weight"])
+            for r in cur.fetchall()
+        ]
+
+
+def get_scheme(conn: psycopg.Connection, version: str) -> Scheme:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT scheme_version, eb_prior_km2, self_weight
+            FROM reference.severity_scheme WHERE scheme_version = %s
+            """,
+            (version,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        raise LookupError(f"no severity scheme '{version}'; load reference/severity first")
+    return Scheme(row["scheme_version"], row["eb_prior_km2"], row["self_weight"])
+
+
+def active_scheme(conn: psycopg.Connection, source_id: str) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT severity_scheme_version FROM reference.source_registry WHERE source_id = %s",
+            (source_id,),
+        )
+        row = cur.fetchone()
+    return row["severity_scheme_version"] if row else None
+
+
+# Resolve one incident's severity weight. Precedence is most specific first:
+# the source's own offense text (Philadelphia distinguishes armed from unarmed
+# robbery and assault, which the severity literature scores very differently),
+# then the standardized NIBRS code, then the coarse UCR bucket. The track is
+# part of the lookup because the two tracks are weighted independently.
+_WEIGHT_LOOKUP = """
+    LEFT JOIN LATERAL (
+        SELECT sw.weight, sw.sourced
+        FROM reference.offense_severity_weight sw
+        WHERE sw.scheme_version = %(scheme)s
+          AND sw.track = CASE WHEN i.product_category = 'violent'
+                              THEN 'violent' ELSE 'non_violent' END
+          AND (
+               (sw.key_type = 'raw_offense_text_key'
+                    AND sw.key_value = upper(btrim(i.raw_offense_text)))
+            OR (sw.key_type = 'nibrs_code'      AND sw.key_value = i.nibrs_code)
+            OR (sw.key_type = 'severity_bucket' AND sw.key_value = i.severity_bucket)
+          )
+        ORDER BY CASE sw.key_type
+                     WHEN 'raw_offense_text_key' THEN 1
+                     WHEN 'nibrs_code'           THEN 2
+                     ELSE 3
+                 END
+        LIMIT 1
+    ) w ON true
+"""
+
+_SAFETY_SQL = """
+WITH weighted AS (
+    SELECT
+        i.{h3_column} AS h3_index,
+        count(*) FILTER (WHERE i.product_category =  'violent') AS n_violent,
+        count(*) FILTER (WHERE i.product_category <> 'violent') AS n_non_violent,
+        COALESCE(sum(COALESCE(w.weight, 1.0))
+                 FILTER (WHERE i.product_category =  'violent'), 0) AS w_violent,
+        COALESCE(sum(COALESCE(w.weight, 1.0))
+                 FILTER (WHERE i.product_category <> 'violent'), 0) AS w_non_violent
+    FROM silver.incident i
+    {weight_lookup}
+    WHERE i.source_id = %(source_id)s
+      AND i.occurred_local_date BETWEEN %(window_start)s AND %(window_end)s
+    GROUP BY 1
+),
+universe AS (
+    SELECT h3_index, area_km2
+    FROM gold.cell_geometry
+    WHERE source_id = %(source_id)s AND h3_res = %(h3_res)s
+),
+joined AS (
+    SELECT
+        u.h3_index,
+        u.area_km2,
+        COALESCE(x.n_violent, 0)     AS n_violent,
+        COALESCE(x.n_non_violent, 0) AS n_non_violent,
+        COALESCE(x.w_violent, 0)     AS w_violent,
+        COALESCE(x.w_non_violent, 0) AS w_non_violent
+    FROM universe u
+    LEFT JOIN weighted x USING (h3_index)
+),
+unpivoted AS (
+    SELECT h3_index, area_km2, track, n, w
+    FROM joined
+    CROSS JOIN LATERAL (VALUES
+        ('violent',     n_violent,     w_violent),
+        ('non_violent', n_non_violent, w_non_violent)
+    ) AS v(track, n, w)
+),
+city AS (
+    -- The rate each cell is shrunk toward: this track's citywide weighted
+    -- offense per km2.
+    SELECT track, sum(w) / NULLIF(sum(area_km2), 0) AS city_rate
+    FROM unpivoted
+    GROUP BY track
+),
+adjusted AS (
+    SELECT
+        u.h3_index, u.area_km2, u.track, u.n, u.w,
+        -- Poisson-gamma posterior rate: the cell's own weighted total plus
+        -- eb_prior_km2 worth of citywide-average offense, over its own area
+        -- plus that same prior area.
+        --
+        -- The prior has to be an exposure rather than a count. A cell with no
+        -- incidents was still watched for the whole window, so zero is evidence
+        -- of a low rate, not missing information -- shrinking by n/(n+k) instead
+        -- sends every empty cell to the citywide mean, which ranked a cell with
+        -- six assaults safer than a cell with none.
+        (u.w + COALESCE(c.city_rate, 0) * %(eb_prior)s)
+            / NULLIF(u.area_km2 + %(eb_prior)s, 0) AS adj
+    FROM unpivoted u
+    JOIN city c USING (track)
+),
+blended AS (
+    SELECT
+        a.h3_index, a.area_km2, a.track, a.n, a.w, a.adj,
+        -- Risk does not stop at a hexagon edge. A cell with no in-universe
+        -- neighbours keeps its own value rather than being pulled toward zero.
+        CASE WHEN nb.mean_adj IS NULL THEN a.adj
+             ELSE %(self_weight)s * a.adj + (1 - %(self_weight)s) * nb.mean_adj
+        END AS smoothed
+    FROM adjusted a
+    LEFT JOIN LATERAL (
+        SELECT avg(x.adj) AS mean_adj
+        FROM gold.cell_neighbor nbr
+        JOIN adjusted x
+          ON x.h3_index = nbr.neighbor_h3 AND x.track = a.track
+        WHERE nbr.source_id = %(source_id)s
+          AND nbr.h3_res   = %(h3_res)s
+          AND nbr.h3_index = a.h3_index
+    ) nb ON true
+),
+ranked AS (
+    SELECT
+        b.*,
+        -- Hazen midrank, ordered so the *lowest* weighted total scores highest:
+        -- 1.0 is the safest cell. Tie blocks sit at the centre of their own
+        -- range, so the score never degenerates to exactly 0 or 1.
+        (
+            (rank() OVER (PARTITION BY b.track ORDER BY b.smoothed DESC)
+             + (count(*) OVER (PARTITION BY b.track, b.smoothed) - 1) / 2.0)
+            - 0.5
+        ) / count(*) OVER (PARTITION BY b.track) AS pct,
+        rank()   OVER (PARTITION BY b.track ORDER BY b.smoothed DESC) AS rnk,
+        count(*) OVER (PARTITION BY b.track) AS cell_total
+    FROM blended b
+)
+INSERT INTO gold.cell_safety (
+    source_id, h3_index, h3_res, time_window, track, scheme_version,
+    window_start, window_end, incident_count,
+    weighted_total, weighted_per_km2, smoothed_per_km2,
+    safety_percentile, safety_rank, city_cell_total, safety_tier, refreshed_at
+)
+SELECT
+    %(source_id)s, h3_index, %(h3_res)s, %(time_window)s, track, %(scheme)s,
+    %(window_start)s, %(window_end)s, n,
+    w, w / area_km2, smoothed,
+    pct, rnk, cell_total,
+    CASE
+        -- Tier 0 is "nothing of this track was reported here", which is not the
+        -- same claim as "this is among the safest quarter of the city": an
+        -- absence of reports can be an absence of reporting (S13).
+        WHEN n = 0      THEN 0
+        WHEN pct < 0.25 THEN 1
+        WHEN pct < 0.50 THEN 2
+        WHEN pct < 0.75 THEN 3
+        ELSE 4
+    END,
+    now()
+FROM ranked
+"""
+
+_COVERAGE_SQL = f"""
+SELECT
+    count(*)                                        AS total,
+    count(*) FILTER (WHERE w.sourced IS TRUE)       AS sourced
+FROM silver.incident i
+{_WEIGHT_LOOKUP}
+WHERE i.source_id = %(source_id)s
+"""
+
+
+def weight_coverage(conn: psycopg.Connection, source_id: str, scheme: str) -> float:
+    """Share of incidents whose weight is a published figure, not a fallback.
+
+    Surfaced rather than logged: a scheme that mostly falls back is a scheme
+    whose ranking is really just the coarse UCR bucket (S8.5).
+    """
+    with conn.cursor() as cur:
+        cur.execute(_COVERAGE_SQL, {"source_id": source_id, "scheme": scheme})
+        row = cur.fetchone()
+    if not row or not row["total"]:
+        return 0.0
+    return row["sourced"] / row["total"]
+
+
+def refresh_cell_safety(
+    conn: psycopg.Connection,
+    source_id: str,
+    windows: list[Window],
+    scheme: Scheme,
+) -> int:
+    """Rebuild gold.cell_safety for one scheme, every resolution and window."""
+    written = 0
+    with conn.cursor() as cur:
+        for res in RESOLUTIONS:
+            h3_column = _h3_column(res)
+            sql = _SAFETY_SQL.format(
+                h3_column=h3_column, weight_lookup=_WEIGHT_LOOKUP
+            )
+            for window in windows:
+                # Delete-then-insert inside the caller's transaction, so readers
+                # keep seeing the previous ranking until commit.
+                cur.execute(
+                    """
+                    DELETE FROM gold.cell_safety
+                    WHERE source_id = %s AND h3_res = %s
+                      AND time_window = %s AND scheme_version = %s
+                    """,
+                    (source_id, res, window.name, scheme.version),
+                )
+                cur.execute(
+                    sql,
+                    {
+                        "source_id": source_id,
+                        "h3_res": res,
+                        "time_window": window.name,
+                        "window_start": window.start,
+                        "window_end": window.end,
+                        "scheme": scheme.version,
+                        "eb_prior": scheme.eb_prior_km2,
+                        "self_weight": scheme.self_weight,
+                    },
+                )
+                written += cur.rowcount
+                log.info(
+                    "cell_safety scheme=%s res=%s window=%s -> %s rows",
+                    scheme.version,
+                    res,
+                    window.name,
+                    cur.rowcount,
+                )
+    return written
+
+
+# ---------------------------------------------------------------------------
 # Monthly series (sparse) and offense mix, for the cell detail panel
 # ---------------------------------------------------------------------------
 
@@ -408,7 +728,8 @@ INSERT INTO gold.city_snapshot (
     cell_count_r8, cell_count_r9,
     center_lat, center_lng, bbox_west, bbox_south, bbox_east, bbox_north,
     crosswalk_version, pipeline_version, attribution_text, terms_url,
-    unmapped_offense_count, rejected_record_count
+    unmapped_offense_count, rejected_record_count,
+    severity_scheme_version, severity_weight_coverage
 )
 SELECT
     r.source_id, r.city_name, r.agency_name,
@@ -420,7 +741,8 @@ SELECT
     ST_XMin(b.geom::box2d), ST_YMin(b.geom::box2d),
     ST_XMax(b.geom::box2d), ST_YMax(b.geom::box2d),
     r.crosswalk_version, %(pipeline_version)s, r.attribution_text, r.terms_url,
-    COALESCE(quality.unmapped, 0), COALESCE(quality.rejected, 0)
+    COALESCE(quality.unmapped, 0), COALESCE(quality.rejected, 0),
+    r.severity_scheme_version, %(weight_coverage)s
 FROM reference.source_registry r
 JOIN reference.city_boundary b ON b.source_id = r.source_id
 CROSS JOIN LATERAL (
@@ -467,22 +789,83 @@ ON CONFLICT (source_id) DO UPDATE SET
     attribution_text       = EXCLUDED.attribution_text,
     terms_url              = EXCLUDED.terms_url,
     unmapped_offense_count = EXCLUDED.unmapped_offense_count,
-    rejected_record_count  = EXCLUDED.rejected_record_count
+    rejected_record_count  = EXCLUDED.rejected_record_count,
+    severity_scheme_version  = EXCLUDED.severity_scheme_version,
+    -- Keep the last known figure when this run did not rebuild the active
+    -- scheme, rather than blanking it.
+    severity_weight_coverage = COALESCE(
+        EXCLUDED.severity_weight_coverage, city_snapshot.severity_weight_coverage)
 """
 
 
 def refresh_city_snapshot(
-    conn: psycopg.Connection, source_id: str, pipeline_version: str
+    conn: psycopg.Connection,
+    source_id: str,
+    pipeline_version: str,
+    weight_coverage_share: float | None = None,
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(
-            _SNAPSHOT_SQL, {"source_id": source_id, "pipeline_version": pipeline_version}
+            _SNAPSHOT_SQL,
+            {
+                "source_id": source_id,
+                "pipeline_version": pipeline_version,
+                "weight_coverage": weight_coverage_share,
+            },
         )
+
+
+def refresh_safety_layer(
+    conn: psycopg.Connection,
+    source_id: str,
+    windows: list[Window],
+    scheme_version: str | None = None,
+) -> tuple[int, float | None]:
+    """Build the safety ranking for one scheme, or for every enabled one.
+
+    Returns the row count and the weight coverage of the source's *active*
+    scheme, which is the one the serving layer reads.
+    """
+    if scheme_version:
+        schemes = [get_scheme(conn, scheme_version)]
+    else:
+        schemes = enabled_schemes(conn)
+
+    if not schemes:
+        log.warning(
+            "no enabled severity scheme; skipping the safety ranking "
+            "(run python -m safety.migrate to load reference/severity)"
+        )
+        return 0, None
+
+    active = active_scheme(conn, source_id)
+    rows = 0
+    coverage: float | None = None
+    for scheme in schemes:
+        rows += refresh_cell_safety(conn, source_id, windows, scheme)
+        share = weight_coverage(conn, source_id, scheme.version)
+        log.info(
+            "severity weights for scheme %s: %.1f%% of incidents carry a published figure",
+            scheme.version,
+            share * 100,
+        )
+        if share < 0.95:
+            log.warning(
+                "scheme %s falls back to a derived weight for %.1f%% of incidents; "
+                "the ranking is closer to the coarse UCR bucket than to the published scale",
+                scheme.version,
+                (1 - share) * 100,
+            )
+        # Only the scheme this city actually serves belongs in the snapshot.
+        # Building a candidate scheme must not restate the live figure.
+        if scheme.version == active or (active is None and len(schemes) == 1):
+            coverage = share
+    return rows, coverage
 
 
 def refresh_all(
     conn: psycopg.Connection, source_id: str, pipeline_version: str
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Full gold refresh for one city. Runs as a single transaction."""
     anchor = data_anchor(conn, source_id)
     if anchor is None:
@@ -497,14 +880,17 @@ def refresh_all(
     )
 
     activity_rows = refresh_cell_activity(conn, source_id, windows)
+    safety_rows, coverage = refresh_safety_layer(conn, source_id, windows)
     monthly_rows, mix_rows = refresh_cell_detail(conn, source_id, windows)
-    refresh_city_snapshot(conn, source_id, pipeline_version)
+    refresh_city_snapshot(conn, source_id, pipeline_version, coverage)
     conn.commit()
 
     return {
         "cells_r8": cells.get(8, 0),
         "cells_r9": cells.get(9, 0),
         "cell_activity_rows": activity_rows,
+        "cell_safety_rows": safety_rows,
+        "severity_weight_coverage": round(coverage, 4) if coverage is not None else None,
         "cell_monthly_rows": monthly_rows,
         "cell_offense_mix_rows": mix_rows,
     }

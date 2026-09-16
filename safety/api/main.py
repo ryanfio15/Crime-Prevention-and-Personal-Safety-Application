@@ -325,6 +325,72 @@ def summary(
 # ---------------------------------------------------------------------------
 
 
+def _safety_measure(conn, record: dict[str, Any]) -> dict[str, Any]:
+    """Explain the safety ranking, including where its weights fall back.
+
+    S13 asks the product to be explicit about what the underlying data can
+    support. A severity-weighted ranking adds a second thing needing disclosure
+    on top of the counts -- whose severity judgements these are, and where the
+    numbers ran out.
+    """
+    scheme = repo.severity_scheme(conn, record["source_id"])
+    coverage = record.get("severity_weight_coverage")
+    return {
+        "what_it_is": (
+            "Two separate rankings -- one for violent offences, one for non-violent -- "
+            "of how much weighted offence a cell carries against every other cell in "
+            "the same city. 1.0 is the safest cell on that track, 0 the least safe."
+        ),
+        "why_two_rankings": (
+            "The FBI's own combined Crime Index counted a murder and a shoplifting as "
+            "one each, and the CJIS Advisory Policy Board discontinued it in June 2004 "
+            "because the total was always driven by whichever offence was most "
+            "numerous -- normally larceny-theft, which made up 59.7% of the 2001 Index "
+            "against murder's 0.1%. The FBI has published violent and property totals "
+            "separately ever since, and this follows that."
+        ),
+        "weights": {
+            "source": scheme["source_citation"] if scheme else None,
+            "scheme_version": scheme["scheme_version"] if scheme else None,
+            "note": (
+                "Offence severity is not an FBI figure -- the FBI publishes no "
+                "per-offence weights. These come from a 1977 survey in which about "
+                "60,000 people rated the seriousness of 204 criminal events, scaled so "
+                "that a score twice as high means twice as serious."
+            ),
+            "published_share": round(coverage, 4) if coverage is not None else None,
+            "fallback_note": (
+                "Offences with no matching item in the survey fall back to the median "
+                "weight of their UCR Part I / Part II bucket. Those fallbacks are "
+                "marked as such in the weight table rather than presented as published "
+                "figures."
+            ),
+        },
+        "smoothing": {
+            "credibility_prior_km2": scheme["eb_prior_km2"] if scheme else None,
+            "self_weight": scheme["self_weight"] if scheme else None,
+            "note": (
+                "A cell's own figure is trusted in proportion to how much ground it "
+                "covers, and is then blended with its immediate neighbours. "
+                "Without this, a single serious incident in an otherwise empty cell "
+                "would rank that cell the least safe in the city on a sample of one. "
+                "A consequence worth knowing: a quiet cell surrounded by busy ones is "
+                "pulled down, by design."
+            ),
+        },
+        "known_limitations": [
+            "There is no population or footfall denominator, so a cell is not adjusted "
+            "for how many people pass through it. A business district with few "
+            "residents and heavy daytime traffic reads worse than its risk to any one "
+            "person warrants.",
+            "The severity weights were collected in 1977 and reflect how the American "
+            "public ranked seriousness then.",
+            "Severity weighting moves the ranking less than might be expected, because "
+            "the different reported offence types tend to rise and fall together.",
+        ],
+    }
+
+
 @app.get(f"{API}/methodology", tags=["meta"])
 def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
     record = repo.get_city(conn, city)
@@ -339,9 +405,14 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
         ),
         "what_this_is_not": [
             "Not a prediction. Nothing here forecasts future events.",
-            "Not a safety or risk score for an address, a block, or a person.",
+            "Not a safety or risk score for an address, a block, or a person. The "
+            "safety ranking compares whole cells against other cells in the same "
+            "city; it says nothing about any particular street or building.",
             "Not a measure of crime. It measures reported and recorded incidents, "
             "which is a different quantity.",
+            "A cell with no reported incidents is not therefore safe. It may be a "
+            "place where crime goes unreported, which is why those cells are shown "
+            "in a neutral colour rather than at the safe end of the scale.",
         ],
         "known_limitations": [
             "Reported crime is shaped by how willing people are to report and by where "
@@ -372,6 +443,7 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
                 "different statement from being in the quietest fifth."
             ),
         },
+        "safety_measure": _safety_measure(conn, record),
         "classification": {
             "standard": "FBI NIBRS offense codes, with the coarser UCR Part I / Part II "
             "split retained as a fallback where a precise NIBRS mapping is ambiguous.",

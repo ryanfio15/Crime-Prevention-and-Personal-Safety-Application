@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 CROSSWALK_DIR = REPO_ROOT / "reference" / "crosswalk"
+SEVERITY_DIR = REPO_ROOT / "reference" / "severity"
 WEB_DIR = REPO_ROOT / "web"
 
 

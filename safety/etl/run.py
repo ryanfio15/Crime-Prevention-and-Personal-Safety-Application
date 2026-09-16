@@ -570,6 +570,156 @@ def cmd_gold(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_safety(args: argparse.Namespace) -> int:
+    """Rebuild only the safety ranking, so retuning a scheme is cheap.
+
+    A full `gold` run rebuilds the cell universe and every rollup. Tuning the
+    severity weights only invalidates this one layer, and iterating is the whole
+    point of keeping the weights in a reference table.
+    """
+    with connect() as conn:
+        anchor = gold.data_anchor(conn, args.city)
+        if anchor is None:
+            raise LookupError(f"no silver rows for '{args.city}'; nothing to rank")
+        windows = gold.resolve_windows(anchor)
+        rows, coverage = gold.refresh_safety_layer(conn, args.city, windows, args.scheme)
+        gold.refresh_city_snapshot(conn, args.city, PIPELINE_VERSION, coverage)
+        conn.commit()
+
+    print(
+        json.dumps(
+            {
+                "city": args.city,
+                "scheme": args.scheme or "all enabled",
+                "cell_safety_rows": rows,
+                "severity_weight_coverage": round(coverage, 4) if coverage else None,
+            },
+            indent=2,
+            default=str,
+        )
+    )
+    return 0
+
+
+_COMPARE_SQL = """
+WITH a AS (
+    SELECT h3_index, safety_percentile AS pct
+    FROM gold.cell_safety
+    WHERE source_id = %(source_id)s AND h3_res = %(h3_res)s
+      AND time_window = %(window)s AND track = %(track)s
+      AND scheme_version = %(a)s
+),
+b AS (
+    SELECT h3_index, safety_percentile AS pct
+    FROM gold.cell_safety
+    WHERE source_id = %(source_id)s AND h3_res = %(h3_res)s
+      AND time_window = %(window)s AND track = %(track)s
+      AND scheme_version = %(b)s
+)
+SELECT
+    count(*)                        AS cells,
+    corr(a.pct, b.pct)              AS rank_correlation,
+    avg(abs(a.pct - b.pct))         AS mean_abs_shift,
+    max(abs(a.pct - b.pct))         AS max_abs_shift
+FROM a JOIN b USING (h3_index)
+"""
+
+# The percentiles are already ranks, so Pearson on them is Spearman on the
+# underlying values -- no separate rank transform needed.
+_MOVERS_SQL = """
+SELECT a.h3_index,
+       a.safety_percentile AS pct_a,
+       b.safety_percentile AS pct_b,
+       b.safety_percentile - a.safety_percentile AS shift,
+       a.incident_count,
+       a.weighted_total AS weighted_a,
+       b.weighted_total AS weighted_b
+FROM gold.cell_safety a
+JOIN gold.cell_safety b
+  ON  b.source_id = a.source_id AND b.h3_index = a.h3_index
+  AND b.h3_res = a.h3_res AND b.time_window = a.time_window
+  AND b.track = a.track AND b.scheme_version = %(b)s
+WHERE a.source_id = %(source_id)s AND a.h3_res = %(h3_res)s
+  AND a.time_window = %(window)s AND a.track = %(track)s
+  AND a.scheme_version = %(a)s
+ORDER BY abs(b.safety_percentile - a.safety_percentile) DESC
+LIMIT 10
+"""
+
+# The unweighted density percentile this layer is meant to improve on. If the
+# two agree almost perfectly, the severity weighting is not earning its keep --
+# a known risk, since reported index crimes are highly correlated.
+_VS_ACTIVITY_SQL = """
+SELECT
+    count(*)           AS cells,
+    -- cell_activity.percentile runs low-to-high on density; safety runs the
+    -- other way, so a strong relationship shows up as a correlation near -1.
+    corr(s.safety_percentile, c.percentile) AS correlation
+FROM gold.cell_safety s
+JOIN gold.cell_activity c
+  ON  c.source_id = s.source_id AND c.h3_index = s.h3_index
+  AND c.h3_res = s.h3_res AND c.time_window = s.time_window
+  AND c.category = %(category)s
+WHERE s.source_id = %(source_id)s AND s.h3_res = %(h3_res)s
+  AND s.time_window = %(window)s AND s.track = %(track)s
+  AND s.scheme_version = %(scheme)s
+"""
+
+
+def cmd_safety_compare(args: argparse.Namespace) -> int:
+    """Diff two severity schemes, and both against the unweighted ranking."""
+    params = {
+        "source_id": args.city,
+        "h3_res": args.res,
+        "window": args.window,
+        "track": args.track,
+        "a": args.a,
+        "b": args.b,
+    }
+    # The non-violent track is spread across three product categories, so the
+    # closest single comparison on the unweighted layer is the city-wide one.
+    category = "violent" if args.track == "violent" else "all"
+
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(_COMPARE_SQL, params)
+        summary = cur.fetchone()
+        cur.execute(_MOVERS_SQL, params)
+        movers = cur.fetchall()
+        cur.execute(
+            _VS_ACTIVITY_SQL,
+            {**params, "scheme": args.a, "category": category},
+        )
+        versus = cur.fetchone()
+
+    if not summary or not summary["cells"]:
+        print(f"No overlapping cells for schemes '{args.a}' and '{args.b}'. Build both first.")
+        return 1
+
+    print(f"{args.city} res={args.res} window={args.window} track={args.track}")
+    print(f"  cells compared       {summary['cells']}")
+    print(f"  rank correlation     {summary['rank_correlation']:.4f}")
+    print(f"  mean |shift|         {summary['mean_abs_shift']:.4f}")
+    print(f"  max  |shift|         {summary['max_abs_shift']:.4f}")
+    if versus and versus["correlation"] is not None:
+        print(
+            f"\n  '{args.a}' vs unweighted cell_activity.percentile "
+            f"(category={category}): {versus['correlation']:+.4f}"
+        )
+        print(
+            "  (near -1 means the severity weighting reproduces the raw density "
+            "ranking and is adding little)"
+        )
+
+    print(f"\n  biggest movers, '{args.a}' -> '{args.b}':")
+    print(f"  {'cell':<18} {'n':>5} {'pct A':>8} {'pct B':>8} {'shift':>8}")
+    for row in movers:
+        print(
+            f"  {row['h3_index']:<18} {row['incident_count']:>5} "
+            f"{row['pct_a']:>8.4f} {row['pct_b']:>8.4f} {row['shift']:>+8.4f}"
+        )
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
@@ -645,6 +795,24 @@ def build_parser() -> argparse.ArgumentParser:
     gold_cmd = sub.add_parser("gold", help="refresh gold rollups only")
     gold_cmd.add_argument("--city", default="phl")
     gold_cmd.set_defaults(func=cmd_gold)
+
+    safety_cmd = sub.add_parser("safety", help="rebuild the safety ranking only")
+    safety_cmd.add_argument("--city", default="phl")
+    safety_cmd.add_argument(
+        "--scheme", default=None, help="one severity scheme; default is every enabled one"
+    )
+    safety_cmd.set_defaults(func=cmd_safety)
+
+    compare_cmd = sub.add_parser(
+        "safety-compare", help="diff two severity schemes on the same data"
+    )
+    compare_cmd.add_argument("--city", default="phl")
+    compare_cmd.add_argument("--a", required=True, help="baseline scheme version")
+    compare_cmd.add_argument("--b", required=True, help="candidate scheme version")
+    compare_cmd.add_argument("--res", type=int, default=8, choices=(8, 9))
+    compare_cmd.add_argument("--window", default="last_12m", choices=gold.TIME_WINDOWS)
+    compare_cmd.add_argument("--track", default="violent", choices=gold.TRACKS)
+    compare_cmd.set_defaults(func=cmd_safety_compare)
 
     status = sub.add_parser("status", help="registry, recent pulls, data quality")
     status.set_defaults(func=cmd_status)

@@ -62,8 +62,21 @@
     <select id="f-scale">
       <option value="count" selected>Incident count</option>
       <option value="tier">Relative activity (5 tiers)</option>
+      <option value="safety">Safety ranking</option>
     </select>
   </label>
+
+  <!-- Only meaningful while the safety ranking is on screen, so it is hidden
+       otherwise rather than sitting inert beside the other controls. -->
+  <div class="field" id="f-track-field" hidden>
+    <span class="field-label" id="f-track-label">Offences ranked</span>
+    <div class="tabs" role="tablist" aria-labelledby="f-track-label" id="f-track">
+      <button type="button" class="tab" role="tab" data-track="violent"
+              aria-selected="true">Violent</button>
+      <button type="button" class="tab" role="tab" data-track="non_violent"
+              aria-selected="false">Non-violent</button>
+    </div>
+  </div>
 
   <div class="filters-spacer"></div>
 
@@ -119,6 +132,18 @@
       </dl>
 
       <section class="chart-block">
+        <h3>Safety ranking</h3>
+        <dl class="kv" id="d-safety">
+          <div><dt>Violent</dt><dd id="d-safety-violent">&mdash;</dd></div>
+          <div><dt>Non-violent</dt><dd id="d-safety-nonviolent">&mdash;</dd></div>
+        </dl>
+        <p class="bar-empty" id="d-safety-note">
+          Percentile against every other cell in the city, weighted by offence
+          severity. Higher is safer.
+        </p>
+      </section>
+
+      <section class="chart-block">
         <h3 id="d-cat-title">Reported incidents by category</h3>
         <div class="bars" id="d-categories"></div>
       </section>
@@ -161,6 +186,11 @@
           <th scope="col" class="num">Per km&sup2;</th>
           <th scope="col" class="num">Percentile</th>
           <th scope="col">Relative activity</th>
+          <!-- The deepest step of the safety ramp sits under 3:1 against the
+               map surface, so these two columns are its required relief: the
+               value is always readable without relying on colour. -->
+          <th scope="col" class="num">Safety (violent)</th>
+          <th scope="col" class="num">Safety (non-violent)</th>
         </tr>
       </thead>
       <tbody></tbody>

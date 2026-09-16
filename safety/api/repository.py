@@ -45,6 +45,23 @@ TIER_LABELS = {
     5: "Highest fifth",
 }
 
+TRACK_LABELS = {
+    "violent": "Violent offenses",
+    "non_violent": "Non-violent offenses",
+}
+
+# Quartiles, not quintiles: the validated colour ramp for this measure carries
+# four steps, so the data and the ramp agree rather than one being squeezed into
+# the other. Tier 0 stays a separate state for the same reason it does on the
+# activity layer -- no reports is not a claim about safety.
+SAFETY_TIER_LABELS = {
+    0: "No reported incidents",
+    1: "Least safe quarter",
+    2: "Lower-middle quarter",
+    3: "Upper-middle quarter",
+    4: "Safest quarter",
+}
+
 
 # ---------------------------------------------------------------------------
 # Cities and metadata
@@ -72,6 +89,23 @@ def get_city(conn: psycopg.Connection, source_id: str) -> dict[str, Any] | None:
             FROM gold.city_snapshot s
             JOIN reference.source_registry r USING (source_id)
             WHERE s.source_id = %s
+            """,
+            (source_id,),
+        )
+        return cur.fetchone()
+
+
+def severity_scheme(conn: psycopg.Connection, source_id: str) -> dict[str, Any] | None:
+    """The scheme this city's safety ranking was built with, for methodology."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT s.scheme_version, s.description, s.source_citation,
+                   s.eb_prior_km2, s.self_weight
+            FROM reference.severity_scheme s
+            JOIN reference.source_registry r
+              ON r.severity_scheme_version = s.scheme_version
+            WHERE r.source_id = %s
             """,
             (source_id,),
         )
@@ -191,12 +225,46 @@ def data_quality(conn: psycopg.Connection, source_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _CELLS_GEOJSON_SQL = """
-WITH layer AS (
+WITH scheme AS (
+    -- A scalar subquery rather than a filtered SELECT, so this always yields
+    -- exactly one row: an empty CTE here would take the CROSS JOIN below to
+    -- zero rows and blank the entire map layer.
+    SELECT (
+        SELECT severity_scheme_version
+        FROM reference.source_registry
+        WHERE source_id = %(source_id)s
+    ) AS version
+),
+layer AS (
+    -- Both safety tracks ride along on every feature, so switching the map
+    -- between violent and non-violent is a repaint rather than a request.
+    -- LEFT, so the map still renders if the safety layer has not been built.
     SELECT a.h3_index, a.incident_count, a.incidents_per_km2, a.percentile,
            a.activity_tier, a.city_rank, a.city_cell_total,
-           a.window_start, a.window_end, g.boundary
+           a.window_start, a.window_end, g.boundary,
+           sv.safety_percentile AS safety_violent,
+           sv.safety_tier       AS tier_violent,
+           sv.weighted_total    AS weighted_violent,
+           sn.safety_percentile AS safety_nonviolent,
+           sn.safety_tier       AS tier_nonviolent,
+           sn.weighted_total    AS weighted_nonviolent
     FROM gold.cell_activity a
     JOIN gold.cell_geometry g ON g.h3_index = a.h3_index
+    CROSS JOIN scheme
+    LEFT JOIN gold.cell_safety sv
+           ON sv.source_id      = a.source_id
+          AND sv.h3_index       = a.h3_index
+          AND sv.h3_res         = a.h3_res
+          AND sv.time_window    = a.time_window
+          AND sv.scheme_version = scheme.version
+          AND sv.track          = 'violent'
+    LEFT JOIN gold.cell_safety sn
+           ON sn.source_id      = a.source_id
+          AND sn.h3_index       = a.h3_index
+          AND sn.h3_res         = a.h3_res
+          AND sn.time_window    = a.time_window
+          AND sn.scheme_version = scheme.version
+          AND sn.track          = 'non_violent'
     WHERE a.source_id   = %(source_id)s
       AND a.h3_res      = %(h3_res)s
       AND a.time_window = %(time_window)s
@@ -232,6 +300,7 @@ SELECT jsonb_build_object(
         'h3_res',      %(h3_res)s,
         'time_window', %(time_window)s,
         'category',    %(category)s,
+        'severity_scheme', (SELECT version FROM scheme),
         'window_start', scale.window_start,
         'window_end',   scale.window_end,
         'cell_count',   scale.cell_count,
@@ -256,7 +325,14 @@ SELECT jsonb_build_object(
                     'percentile', round(l.percentile::numeric, 4),
                     'tier',       l.activity_tier,
                     'rank',       l.city_rank,
-                    'of_cells',   l.city_cell_total
+                    'of_cells',   l.city_cell_total,
+                    -- 1.0 = safest cell in the city on that track.
+                    'safety_violent',    round(l.safety_violent::numeric, 4),
+                    'stier_violent',     l.tier_violent,
+                    'sw_violent',        round(l.weighted_violent::numeric, 1),
+                    'safety_nonviolent', round(l.safety_nonviolent::numeric, 4),
+                    'stier_nonviolent',  l.tier_nonviolent,
+                    'sw_nonviolent',     round(l.weighted_nonviolent::numeric, 1)
                 )
             ) ORDER BY l.h3_index
         ) FROM layer l
@@ -351,6 +427,21 @@ def cell_detail(
         )
         offenses = cur.fetchall()
 
+        cur.execute(
+            """
+            SELECT s.track, s.safety_percentile, s.safety_rank, s.city_cell_total,
+                   s.safety_tier, s.incident_count, s.weighted_total, s.weighted_per_km2, s.scheme_version
+            FROM gold.cell_safety s
+            JOIN reference.source_registry r
+              ON r.source_id = s.source_id
+             AND r.severity_scheme_version = s.scheme_version
+            WHERE s.h3_index = %s AND s.time_window = %s
+            ORDER BY CASE s.track WHEN 'violent' THEN 0 ELSE 1 END
+            """,
+            (h3_index, time_window),
+        )
+        safety = cur.fetchall()
+
     headline = next((row for row in activity if row["category"] == "all"), None)
     return {
         "cell": cell,
@@ -361,6 +452,14 @@ def cell_detail(
         "by_category": [row for row in activity if row["category"] != "all"],
         "monthly": monthly,
         "top_offenses": offenses,
+        "safety": [
+            {
+                **row,
+                "track_label": TRACK_LABELS.get(row["track"], row["track"]),
+                "tier_label": SAFETY_TIER_LABELS.get(row["safety_tier"]),
+            }
+            for row in safety
+        ],
     }
 
 
