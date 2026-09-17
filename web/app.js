@@ -90,11 +90,57 @@ const TRACK_LABELS = {
 };
 
 /* Feature property names per track, so the map reads whichever is selected
-   without refetching -- both ship on every feature. */
+   without refetching -- both ship on every feature. The h* pair is the same
+   measure inside the selected hour block, and is null unless one was asked for.
+   Switching track stays a repaint; switching hour is a refetch, because
+   carrying all 24 blocks on every feature would multiply the payload by 24. */
 const TRACK_PROPS = {
-  violent: { pct: "safety_violent", tier: "stier_violent" },
-  non_violent: { pct: "safety_nonviolent", tier: "stier_nonviolent" },
+  violent: {
+    pct: "safety_violent", tier: "stier_violent",
+    hpct: "hsafety_violent", htier: "hstier_violent",
+    delta: "hdelta_violent", index: "hindex_violent",
+  },
+  non_violent: {
+    pct: "safety_nonviolent", tier: "stier_nonviolent",
+    hpct: "hsafety_nonviolent", htier: "hstier_nonviolent",
+    delta: "hdelta_nonviolent", index: "hindex_nonviolent",
+  },
 };
+
+/* Mirrors safety.etl.gold.HOURLY_RESOLUTIONS / HOURLY_WINDOWS. The API rejects
+   anything outside this with a reason; the client knows the same bounds so it
+   can disable the control up front rather than let a request fail. */
+const HOURLY_RESOLUTIONS = [8, 9];
+const HOURLY_WINDOWS = ["last_12m", "last_24m"];
+
+/** "20:00–21:00". The last block reads 23:00–24:00, not 23:00–00:00. */
+const hourLabel = (hour) =>
+  `${String(hour).padStart(2, "0")}:00–${String(hour + 1).padStart(2, "0")}:00`;
+
+/* Rating 2 in words. Same bands as safety/api/repository.py::delta_label --
+   wide on purpose, because an hourly percentile is far noisier than the
+   all-hours one it is compared against and narrow bands would dress that noise
+   up as movement. */
+const DELTA_BANDS = [
+  [-0.15, "Much worse here than usual"],
+  [-0.05, "Worse here than usual"],
+  [0.05, "Typical for this cell"],
+  [0.15, "Better here than usual"],
+];
+
+function deltaLabel(delta) {
+  if (delta === null || delta === undefined) return null;
+  for (const [threshold, label] of DELTA_BANDS) {
+    if (delta < threshold) return label;
+  }
+  return "Much better here than usual";
+}
+
+/* The delta ramp is clipped at a quarter of the scale in each direction. Beyond
+   that the colour stops changing: the extremes are almost always small cells
+   with a handful of incidents, and letting them own the ends of the ramp would
+   compress everything real into the middle. */
+const DELTA_CLIP = 0.25;
 
 const CATEGORY_LABELS = {
   violent: "Violent",
@@ -109,10 +155,16 @@ const state = {
   res: 8,
   scale: "safety",
   track: "violent",
+  // null = all hours. Otherwise the local hour block 0-23.
+  hour: null,
   selected: null,
   hovered: null,
   meta: null,
   features: [],
+  // The open cell's detail payload, so a track switch re-reads rather than refetches.
+  detail: null,
+  // Min / median / max of the selected hour's counts, for the count legend.
+  hourStats: { min: 0, median: 0, max: 0 },
   refreshStamp: null,
   framed: false,
 };
@@ -157,8 +209,15 @@ let map;
 /* ------------------------------------------------------------- colour scale */
 
 function fillColorExpression() {
+  const props = TRACK_PROPS[state.track];
+  const hourly = state.hour !== null;
+
   if (state.scale === "safety") {
-    const { pct, tier } = TRACK_PROPS[state.track];
+    // Same ramp either way; only the reference class changes. With an hour
+    // selected the cell is ranked against other cells *at that hour*.
+    const { pct, tier } = hourly
+      ? { pct: props.hpct, tier: props.htier }
+      : { pct: props.pct, tier: props.tier };
     // Interpolated on the raw percentile rather than stepped on the tier, so
     // the map is as continuous as the statistic behind it.
     return [
@@ -172,16 +231,46 @@ function fillColorExpression() {
     ];
   }
 
+  if (state.scale === "delta") {
+    // Rating 2. The ramp is already diverging, so it works centred on zero with
+    // no second palette: red where a cell ranks worse at this hour than it
+    // usually does, green where it ranks better, desaturated where it is
+    // behaving normally. Everything is neutral until an hour is chosen, since
+    // there is no "usual" to differ from without one.
+    if (!hourly) return ZERO_FILL;
+    // Coalesced to a sentinel far outside the real range rather than tested
+    // with `has` or `typeof`: a cell that was never ranked at this hour arrives
+    // as a JSON null, and whether that survives as a present-but-null property
+    // or is dropped entirely depends on how the tiler handled it. A value that
+    // cannot occur naturally is unambiguous either way.
+    const delta = ["coalesce", ["get", props.delta], -999];
+    return [
+      "case",
+      ["<", delta, -10], ZERO_FILL,
+      [
+        "interpolate", ["linear"],
+        // Mapped from [-clip, +clip] onto [0, 1]; interpolate clamps the ends.
+        ["+", 0.5, ["/", delta, 2 * DELTA_CLIP]],
+        ...rampStops(SAFETY),
+      ],
+    ];
+  }
+
   // Counts get the same continuous treatment, keyed on the cell's percentile
   // rather than the raw number. The distribution is heavily skewed -- a handful
   // of Center City cells carry an order of magnitude more than the median -- so
   // interpolating on the count itself would render the rest of the city as one
   // flat colour. The percentile is the same statistic the quantile steps were
   // approximating, just read continuously.
+  //
+  // With an hour selected the same thing applies to that hour's counts, ranked
+  // in loadLayer against the layer already in hand.
+  const countProp = hourly ? "hcount" : "count";
+  const rankProp = hourly ? "hpercentile" : "percentile";
   return [
     "case",
-    ["==", ["coalesce", ["get", "count"], 0], 0], ZERO_FILL,
-    ["interpolate", ["linear"], ["coalesce", ["get", "percentile"], 0], ...rampStops(COUNT_RAMP)],
+    ["==", ["coalesce", ["get", countProp], 0], 0], ZERO_FILL,
+    ["interpolate", ["linear"], ["coalesce", ["get", rankProp], 0], ...rampStops(COUNT_RAMP)],
   ];
 }
 
@@ -228,39 +317,120 @@ function renderLegend() {
   // not have.
   $("legend-ramp").classList.add("is-smooth");
 
+  // Appended to every title once a time is chosen, so no view can be mistaken
+  // for the all-hours one.
+  const atHour = state.hour === null ? "" : ` · ${hourLabel(state.hour)}`;
+
   if (state.scale === "safety") {
     $("legend-title").textContent =
-      `Safety ranking — ${TRACK_LABELS[state.track]} offences`;
+      `Safety ranking — ${TRACK_LABELS[state.track]} offences${atHour}`;
     $("legend-ramp").innerHTML =
       `<span style="background:${rampGradient(SAFETY)}"></span>`;
     $("legend-ticks").innerHTML =
       "<span>Least safe</span><span>Median</span><span>Safest</span>";
     $("legend-foot").innerHTML =
       `<span class="legend-zero"><i></i> Nothing of this kind reported</span>` +
-      `<br>Each cell ranked against the other ${nf.format(meta.cell_count)} cells, ` +
-      `weighted by offence severity. A cell with no reports is not therefore safe.`;
+      `<br>Each cell ranked against the other ${nf.format(meta.cell_count)} cells` +
+      (state.hour === null ? "" : " <b>at this hour</b>") +
+      `, weighted by offence severity. A cell with no reports is not therefore safe.`;
     return;
   }
 
-  $("legend-title").textContent = "Reported incidents per cell";
+  if (state.scale === "delta") {
+    $("legend-title").textContent = `Change from this cell's usual${atHour}`;
+    if (state.hour === null) {
+      $("legend-ramp").innerHTML = `<span style="background:${ZERO_FILL}"></span>`;
+      $("legend-ticks").innerHTML = "";
+      $("legend-foot").innerHTML =
+        "Enter a time of day to use this view — there is no “usual” to differ " +
+        "from without one.";
+      return;
+    }
+    $("legend-ramp").innerHTML =
+      `<span style="background:${rampGradient(SAFETY)}"></span>`;
+    $("legend-ticks").innerHTML =
+      "<span>Worse than usual</span><span>Typical</span><span>Better than usual</span>";
+    $("legend-foot").innerHTML =
+      `<span class="legend-zero"><i></i> Not ranked at this hour</span>` +
+      `<br>This cell's rank at ${hourLabel(state.hour)} against its own all-hours ` +
+      `rank. Relative only: the whole city is quieter at night, and a cell holding ` +
+      `its place through it is keeping pace, not getting safer.`;
+    return;
+  }
+
+  $("legend-title").textContent = `Reported incidents per cell${atHour}`;
   $("legend-ramp").innerHTML =
     `<span style="background:${rampGradient(COUNT_RAMP)}"></span>`;
 
   // The bar is the percentile, so these three counts sit where they belong:
   // the quietest cell at the left edge, the median at the midpoint, the busiest
   // at the right. No label under every step -- that is unreadable at this width.
-  const lowest = Math.max(Math.round(Number(meta.min_count) || 0), 1);
-  const median = Math.round(Number(meta.breaks?.p50) || 0);
-  $("legend-ticks").innerHTML = [lowest, median, Math.round(meta.max_count ?? 0)]
+  //
+  // The server's quantiles describe the all-hours counts, so an hourly view
+  // reads its own, computed alongside the ranking in loadLayer.
+  const stats = state.hour === null
+    ? {
+        min: Math.max(Math.round(Number(meta.min_count) || 0), 1),
+        median: Math.round(Number(meta.breaks?.p50) || 0),
+        max: Math.round(meta.max_count ?? 0),
+      }
+    : state.hourStats;
+
+  $("legend-ticks").innerHTML = [stats.min, stats.median, stats.max]
     .map((t) => `<span>${nf.format(t)}</span>`)
     .join("");
   $("legend-foot").innerHTML =
     `<span class="legend-zero"><i></i> No reported incidents</span>` +
     `<br>Placed by rank against the other ${nf.format(meta.cell_count)} cells, not by ` +
-    `the raw count &mdash; the distribution is heavily skewed.`;
+    `the raw count &mdash; the distribution is heavily skewed.` +
+    (state.hour === null
+      ? ""
+      : `<br>Counts exclude incidents the source published with no clock time.`);
 }
 
 /* --------------------------------------------------------------- data fetch */
+
+/**
+ * Rank the selected hour's counts against each other, in the client.
+ *
+ * The count ramp needs a percentile, and the server publishes one only for the
+ * all-hours counts -- an hourly equivalent would be another 24x table built to
+ * colour one view. This is a sort over a few thousand numbers already in the
+ * browser's hands, which is a different thing from the server aggregating per
+ * request: the rule that keeps the read path off silver is untouched.
+ *
+ * Writes `hpercentile` onto each feature before the source is set, so the paint
+ * expression can read it like any other property.
+ */
+function rankHourlyCounts(features) {
+  state.hourStats = { min: 0, median: 0, max: 0 };
+  if (state.hour === null || !features.length) return;
+
+  const counts = features.map((f) => f.properties.hcount ?? 0);
+  const sorted = [...counts].sort((a, b) => a - b);
+  const nonZero = sorted.filter((v) => v > 0);
+
+  // Midrank, so a tied block -- and at one hour most cells tie on zero -- sits
+  // at the centre of its own range instead of all taking the bottom.
+  const below = new Map();
+  for (let i = 0; i < sorted.length; i += 1) {
+    if (!below.has(sorted[i])) below.set(sorted[i], i);
+  }
+  const ties = new Map();
+  for (const value of sorted) ties.set(value, (ties.get(value) ?? 0) + 1);
+
+  features.forEach((feature, i) => {
+    const value = counts[i];
+    const midrank = below.get(value) + (ties.get(value) - 1) / 2;
+    feature.properties.hpercentile = midrank / Math.max(sorted.length - 1, 1);
+  });
+
+  state.hourStats = {
+    min: nonZero.length ? nonZero[0] : 0,
+    median: nonZero.length ? nonZero[Math.floor(nonZero.length / 2)] : 0,
+    max: sorted[sorted.length - 1],
+  };
+}
 
 async function loadLayer({ quiet = false } = {}) {
   if (!quiet) {
@@ -282,6 +452,7 @@ async function loadLayer({ quiet = false } = {}) {
     window: state.window,
     category: state.category,
   });
+  if (state.hour !== null) params.set("hour", String(state.hour));
 
   try {
     const response = await fetch(`${API}/cells?${params}`);
@@ -290,6 +461,7 @@ async function loadLayer({ quiet = false } = {}) {
 
     state.meta = collection.metadata;
     state.features = collection.features;
+    rankHourlyCounts(collection.features);
 
     const source = map.getSource("cells");
     if (source) source.setData(collection);
@@ -349,12 +521,17 @@ async function selectCell(h3) {
   state.selected = h3;
   map.setFeatureState({ source: "cells", id: h3 }, { selected: true });
 
+  const hourParam = state.hour === null ? "" : `&hour=${state.hour}`;
   const [detail, ring] = await Promise.all([
-    fetch(`${API}/cells/${h3}?window=${state.window}`).then((r) => (r.ok ? r.json() : null)),
+    fetch(`${API}/cells/${h3}?window=${state.window}${hourParam}`)
+      .then((r) => (r.ok ? r.json() : null)),
     fetch(`${API}/cells/ring?h3=${h3}&k=1&window=${state.window}&category=all`)
       .then((r) => (r.ok ? r.json() : null)),
   ]);
   if (!detail) return;
+  // Kept so switching track re-reads the hourly ratings without a refetch,
+  // the same way the map repaints from properties it already holds.
+  state.detail = detail;
 
   $("detail-empty").hidden = true;
   $("detail-body").hidden = false;
@@ -381,6 +558,7 @@ async function selectCell(h3) {
     : "—";
 
   renderSafety(detail.safety);
+  renderHours(detail);
   renderCategoryBars(detail.by_category);
   renderSparkline(detail.monthly, headline.window_end);
   renderOffenseMix(detail.top_offenses);
@@ -424,6 +602,77 @@ function renderSafety(rows) {
     : "Percentile against every other cell in the city, weighted by offence " +
       "severity. Higher is safer. A cell with nothing reported is shown as such " +
       "rather than as safe.";
+}
+
+/**
+ * The cell's day, and both time-of-day ratings for the selected block.
+ *
+ * The 24-bar profile is drawn whether or not an hour is selected: the shape
+ * across the day is the useful thing, and it also gives the selected block
+ * somewhere to sit. Both ratings are printed as text beside it, so neither is
+ * reachable only through the colour of a hexagon.
+ */
+function renderHours(detail) {
+  const block = $("d-hour-block");
+  const rows = (detail.by_hour ?? []).filter((r) => r.category === "all");
+
+  if (!rows.length) {
+    block.hidden = true;
+    return;
+  }
+  block.hidden = false;
+
+  const counts = Array.from({ length: 24 }, () => 0);
+  for (const row of rows) counts[row.hour_block] = row.incident_count;
+  const max = Math.max(...counts, 1);
+  const total = counts.reduce((sum, n) => sum + n, 0);
+
+  $("d-hours").innerHTML = counts
+    .map((n, hour) => {
+      const height = Math.max((n / max) * 100, n > 0 ? 4 : 0);
+      const selected = hour === state.hour ? " data-selected" : "";
+      const on = n > 0 ? " data-on" : "";
+      return `<i style="height:${height}%"${on}${selected} title="${hourLabel(hour)}: ${nf.format(n)}"></i>`;
+    })
+    .join("");
+
+  $("d-hour-title").textContent =
+    state.hour === null
+      ? `Time of day · ${nf.format(total)} with a known hour`
+      : `Time of day · ${hourLabel(state.hour)}`;
+
+  const safety = (detail.hour_safety ?? []).find((r) => r.track === state.track);
+  const dash = "—";
+
+  if (state.hour === null) {
+    $("d-hour-safety").textContent = dash;
+    $("d-hour-delta").textContent = dash;
+    $("d-hour-index").textContent = dash;
+    $("d-hour-note").textContent =
+      "Enter a time of day to rank this cell within a single hour block.";
+    return;
+  }
+
+  $("d-hour-safety").textContent = safety
+    ? `${safetyLabel(safety.safety_percentile)} · ${safety.tier_label ?? ""}`
+    : dash;
+
+  $("d-hour-delta").textContent = safety?.percentile_delta == null
+    ? dash
+    : `${safety.delta_label} (${safety.percentile_delta >= 0 ? "+" : ""}` +
+      `${(safety.percentile_delta * 100).toFixed(0)} points)`;
+
+  // Withheld by the pipeline below its evidence floor rather than published as
+  // a ratio of two very small numbers -- say which, rather than showing a dash.
+  $("d-hour-index").textContent = safety?.hour_index == null
+    ? "too few incidents here to compare hours"
+    : `${safety.hour_index.toFixed(1)}× this cell's average hour`;
+
+  $("d-hour-note").textContent =
+    "Ranked against other cells at this hour, then against this cell's own " +
+    "all-hours rank. The city is quieter at night as a whole, which the second " +
+    "figure cannot see. Times are when police were dispatched, not when an " +
+    "offence occurred.";
 }
 
 function renderCategoryBars(rows) {
@@ -584,6 +833,7 @@ function closeDetail() {
     map.setFeatureState({ source: "cells", id: state.selected }, { selected: false });
     state.selected = null;
   }
+  state.detail = null;
   $("detail-body").hidden = true;
   $("detail-empty").hidden = false;
 }
@@ -598,10 +848,21 @@ function renderTable() {
 
   $("table-caption").textContent =
     `Cells by reported incident count — ${state.features.length} cells, ` +
-    `showing the top ${rows.length}`;
+    `showing the top ${rows.length}` +
+    (state.hour === null ? "" : ` · ratings at ${hourLabel(state.hour)}`);
+
+  const props = TRACK_PROPS[state.track];
+  $("th-hour-safety").textContent =
+    state.hour === null ? "At hour" : `At ${hourLabel(state.hour)}`;
 
   const pct = (value) =>
     value === null || value === undefined ? "—" : `${(value * 100).toFixed(1)}%`;
+  // Signed, and in points rather than percent, because it is a difference
+  // between two percentiles and not a percentage of anything.
+  const points = (value) =>
+    value === null || value === undefined
+      ? "—"
+      : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(0)}`;
 
   body.innerHTML = rows
     .map((feature, index) => {
@@ -616,6 +877,8 @@ function renderTable() {
         <td>${TIER_LABELS[p.tier]}</td>
         <td class="num">${pct(p.safety_violent)}</td>
         <td class="num">${pct(p.safety_nonviolent)}</td>
+        <td class="num">${pct(p[props.hpct])}</td>
+        <td class="num">${points(p[props.delta])}</td>
       </tr>`;
     })
     .join("");
@@ -671,6 +934,32 @@ async function openMethodology() {
     <p>${m.safety_measure.weights.fallback_note}</p>
     <p>${m.safety_measure.smoothing.note}</p>
     <ul>${m.safety_measure.known_limitations.map((line) => `<li>${line}</li>`).join("")}</ul>
+    ` : ""}
+
+    ${m.time_of_day ? `
+    <h3>Time of day</h3>
+    <p>${m.time_of_day.what_it_is}</p>
+    <ul>${m.time_of_day.two_ratings.map((line) => `<li>${line}</li>`).join("")}</ul>
+    <p>${m.time_of_day.hour_index_note}</p>
+
+    <div class="callout">
+      <h3 style="margin-top:0">What the timestamps are</h3>
+      <p style="margin-bottom:0">${m.time_of_day.timestamp_caveat}</p>
+    </div>
+
+    <dl>
+      <div><dt>Incidents with a known hour</dt><dd>${
+        m.time_of_day.coverage.hour_known_share === null ||
+        m.time_of_day.coverage.hour_known_share === undefined
+          ? "—"
+          : `${(m.time_of_day.coverage.hour_known_share * 100).toFixed(1)}%`
+      }</dd></div>
+      <div><dt>Built for cell sizes</dt><dd>H3 res ${m.time_of_day.scope.resolutions.join(", ")}</dd></div>
+      <div><dt>Built for windows</dt><dd>${m.time_of_day.scope.windows.join(", ")}</dd></div>
+    </dl>
+    <p>${m.time_of_day.coverage.note}</p>
+    <p>${m.time_of_day.scope.note}</p>
+    <ul>${m.time_of_day.known_limitations.map((line) => `<li>${line}</li>`).join("")}</ul>
     ` : ""}
 
     <h3>Offence classification</h3>
@@ -809,21 +1098,48 @@ async function initMap() {
     tooltip.style.left = `${event.point.x}px`;
     tooltip.style.top = `${event.point.y}px`;
 
+    const props = TRACK_PROPS[state.track];
+    const hourly = state.hour !== null;
+    // Both ratings, whenever both exist. The second is meaningless without the
+    // first, and the first alone invites reading a night-time rank as an
+    // absolute statement about the hour.
+    const second = hourly
+      ? `<small>${deltaLabel(p[props.delta]) ?? "Not ranked at this hour"}` +
+        (p[props.index] == null ? "" : ` · ${p[props.index].toFixed(1)}× its average hour`) +
+        `</small>`
+      : "";
+
+    if (state.scale === "delta") {
+      tooltip.innerHTML = hourly
+        ? `<b>${deltaLabel(p[props.delta]) ?? "Not ranked at this hour"}</b>` +
+          `<small>${hourLabel(state.hour)} · ${TRACK_LABELS[state.track]} · ` +
+          `${p[props.delta] == null ? "—" : (p[props.delta] * 100).toFixed(0) + " percentile points"}` +
+          `</small>`
+        : `<b>Enter a time of day</b><small>This view compares an hour against the rest of the day.</small>`;
+      return;
+    }
+
     if (state.scale === "safety") {
-      const { pct, tier } = TRACK_PROPS[state.track];
+      const pct = hourly ? props.hpct : props.pct;
+      const tier = hourly ? props.htier : props.tier;
       const value = p[pct];
+      const reported = hourly ? p.hcount : p.count;
       tooltip.innerHTML =
         (value === null || value === undefined
           ? `<b>No ${TRACK_LABELS[state.track]} offences reported</b>`
           : `Safety: <b>${safetyLabel(value)}</b>`) +
-        `<small>${SAFETY_TIER_LABELS[p[tier]] ?? "—"} · ${TRACK_LABELS[state.track]} · ` +
-        `${nf.format(p.count)} reported incidents</small>`;
+        `<small>${SAFETY_TIER_LABELS[p[tier]] ?? "—"} · ${TRACK_LABELS[state.track]}` +
+        (hourly ? ` · ${hourLabel(state.hour)}` : "") +
+        ` · ${nf.format(reported ?? 0)} reported incidents</small>` +
+        second;
       return;
     }
 
     tooltip.innerHTML =
-      `<b>${nf.format(p.count)}</b> reported incidents` +
-      `<small>${TIER_LABELS[p.tier]} · ${nf.format(p.per_km2)} per km²</small>`;
+      `<b>${nf.format((hourly ? p.hcount : p.count) ?? 0)}</b> reported incidents` +
+      (hourly
+        ? `<small>${hourLabel(state.hour)} · ${nf.format(p.count)} across the whole day</small>`
+        : `<small>${TIER_LABELS[p.tier]} · ${nf.format(p.per_km2)} per km²</small>`);
   });
 
   map.on("mouseleave", "cells-fill", () => {
@@ -851,9 +1167,48 @@ function repaint() {
   renderLegend();
 }
 
+/**
+ * Enable or disable the hour control for the current window and cell size.
+ *
+ * The pipeline builds the hourly layers only where the counts support them, so
+ * the control says so up front rather than letting the request 400 or, worse,
+ * return a layer of nulls that looks like "nothing happens here at 3am".
+ * Clears any hour already set, since it is about to stop being served.
+ */
+function syncHourAvailability() {
+  const ok =
+    HOURLY_RESOLUTIONS.includes(state.res) && HOURLY_WINDOWS.includes(state.window);
+  const field = $("f-hour-field");
+  field.setAttribute("aria-disabled", String(!ok));
+  $("f-hour").disabled = !ok;
+  $("f-hour-clear").disabled = !ok;
+
+  if (!ok && state.hour !== null) {
+    state.hour = null;
+    $("f-hour").value = "";
+  }
+  if (!ok) {
+    $("f-hour-note").textContent =
+      "Not built at this cell size / window — too few incidents per hour.";
+  } else if (state.hour === null) {
+    $("f-hour-note").textContent = "All hours";
+  } else {
+    $("f-hour-note").textContent = `Block ${hourLabel(state.hour)}`;
+  }
+  return ok;
+}
+
+function setHour(hour) {
+  state.hour = hour;
+  syncHourAvailability();
+  if (state.selected) selectCell(state.selected);
+  loadLayer();
+}
+
 function wireControls() {
   $("f-window").onchange = (e) => {
     state.window = e.target.value;
+    syncHourAvailability();
     if (state.selected) selectCell(state.selected);
     loadLayer();
   };
@@ -863,15 +1218,32 @@ function wireControls() {
   };
   $("f-res").onchange = (e) => {
     state.res = Number(e.target.value);
+    syncHourAvailability();
     // A res-8 index is meaningless on the res-9 layer, so drop the selection.
     closeDetail();
     loadLayer();
   };
   $("f-scale").onchange = (e) => {
     state.scale = e.target.value;
-    // The track tabs only mean anything while the safety ramp is on screen.
-    $("f-track-field").hidden = state.scale !== "safety";
+    // The track tabs drive the safety ramp and the change-from-usual ramp
+    // alike; only the count view is indifferent to which track is selected.
+    $("f-track-field").hidden = state.scale === "count";
     repaint();
+  };
+
+  // Any minute within the hour selects that block. The note beside the input
+  // echoes which one, so 20:45 is never ambiguous.
+  $("f-hour").onchange = (e) => {
+    const value = e.target.value;
+    if (!value) {
+      setHour(null);
+      return;
+    }
+    setHour(Number(value.split(":")[0]));
+  };
+  $("f-hour-clear").onclick = () => {
+    $("f-hour").value = "";
+    setHour(null);
   };
 
   // Both tracks ride along on every feature, so switching is a repaint with no
@@ -883,6 +1255,10 @@ function wireControls() {
         .querySelectorAll("[data-track]")
         .forEach((b) => b.setAttribute("aria-selected", String(b === button)));
       repaint();
+      // The panel's hourly ratings are per track too, and the detail is already
+      // in hand -- re-read it rather than re-request it.
+      if (state.detail) renderHours(state.detail);
+      renderTable();
     };
   });
 
@@ -935,6 +1311,7 @@ function watchForRefresh() {
 (async function main() {
   await initMap();
   wireControls();
+  syncHourAvailability();
   // Expose read-only state for debugging and for the smoke-test driver.
   window.__safetyState = state;
   await Promise.all([loadFreshness(), loadLayer()]);

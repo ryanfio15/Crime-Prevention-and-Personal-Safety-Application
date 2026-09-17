@@ -20,6 +20,14 @@ import psycopg
 VALID_RESOLUTIONS = (8, 9, 10)
 VALID_WINDOWS = ("last_30d", "last_90d", "last_12m", "last_24m")
 VALID_CATEGORIES = ("all", "violent", "property", "quality_of_life", "other")
+VALID_HOURS = tuple(range(24))
+
+# Mirrors safety.etl.gold.HOURLY_RESOLUTIONS / HOURLY_WINDOWS. Duplicated rather
+# than imported so the serving layer keeps no dependency on the ETL package, and
+# asserted against the ETL by safety/api/main.py's error text: a request for an
+# hour outside this scope gets told why, not an empty map.
+HOURLY_RESOLUTIONS = (8, 9)
+HOURLY_WINDOWS = ("last_12m", "last_24m")
 
 WINDOW_LABELS = {
     "last_30d": "Last 30 days",
@@ -61,6 +69,33 @@ SAFETY_TIER_LABELS = {
     3: "Upper-middle quarter",
     4: "Safest quarter",
 }
+
+
+def hour_label(hour: int) -> str:
+    """'20:00-21:00'. The last block reads 23:00-24:00, not 23:00-00:00."""
+    return f"{hour:02d}:00–{hour + 1:02d}:00"
+
+
+# Rating 2 banded into words, in percentile points, so the measure is never
+# carried by colour alone. The bands are wide on purpose: an hourly percentile
+# is a much noisier figure than the all-hours one it is being compared against,
+# and narrow bands would present that noise as movement.
+DELTA_BANDS = (
+    (-0.15, "Much worse here than usual"),
+    (-0.05, "Worse here than usual"),
+    (0.05, "Typical for this cell"),
+    (0.15, "Better here than usual"),
+)
+DELTA_TOP_LABEL = "Much better here than usual"
+
+
+def delta_label(delta: float | None) -> str | None:
+    if delta is None:
+        return None
+    for threshold, label in DELTA_BANDS:
+        if delta < threshold:
+            return label
+    return DELTA_TOP_LABEL
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +282,20 @@ layer AS (
            sv.weighted_total    AS weighted_violent,
            sn.safety_percentile AS safety_nonviolent,
            sn.safety_tier       AS tier_nonviolent,
-           sn.weighted_total    AS weighted_nonviolent
+           sn.weighted_total    AS weighted_nonviolent,
+           -- Time of day. All NULL unless the request named an hour; unlike the
+           -- two tracks these cannot ride along, because carrying all 24 blocks
+           -- on every feature multiplies the payload by 24.
+           hv.safety_percentile AS hsafety_violent,
+           hv.safety_tier       AS htier_violent,
+           hv.percentile_delta  AS hdelta_violent,
+           hv.hour_index        AS hindex_violent,
+           hv.incident_count    AS hcount_violent,
+           hn.safety_percentile AS hsafety_nonviolent,
+           hn.safety_tier       AS htier_nonviolent,
+           hn.percentile_delta  AS hdelta_nonviolent,
+           hn.hour_index        AS hindex_nonviolent,
+           hn.incident_count    AS hcount_nonviolent
     FROM gold.cell_activity a
     JOIN gold.cell_geometry g ON g.h3_index = a.h3_index
     CROSS JOIN scheme
@@ -265,6 +313,27 @@ layer AS (
           AND sn.time_window    = a.time_window
           AND sn.scheme_version = scheme.version
           AND sn.track          = 'non_violent'
+    -- The hour predicate sits first so a request with no hour never probes the
+    -- index at all; both joins then contribute nothing and every h* column is
+    -- NULL, which is exactly what the all-hours view wants.
+    LEFT JOIN gold.cell_hour_safety hv
+           ON %(hour_block)s::smallint IS NOT NULL
+          AND hv.source_id      = a.source_id
+          AND hv.h3_index       = a.h3_index
+          AND hv.h3_res         = a.h3_res
+          AND hv.time_window    = a.time_window
+          AND hv.hour_block     = %(hour_block)s::smallint
+          AND hv.scheme_version = scheme.version
+          AND hv.track          = 'violent'
+    LEFT JOIN gold.cell_hour_safety hn
+           ON %(hour_block)s::smallint IS NOT NULL
+          AND hn.source_id      = a.source_id
+          AND hn.h3_index       = a.h3_index
+          AND hn.h3_res         = a.h3_res
+          AND hn.time_window    = a.time_window
+          AND hn.hour_block     = %(hour_block)s::smallint
+          AND hn.scheme_version = scheme.version
+          AND hn.track          = 'non_violent'
     WHERE a.source_id   = %(source_id)s
       AND a.h3_res      = %(h3_res)s
       AND a.time_window = %(time_window)s
@@ -300,6 +369,7 @@ SELECT jsonb_build_object(
         'h3_res',      %(h3_res)s,
         'time_window', %(time_window)s,
         'category',    %(category)s,
+        'hour_block',  %(hour_block)s::smallint,
         'severity_scheme', (SELECT version FROM scheme),
         'window_start', scale.window_start,
         'window_end',   scale.window_end,
@@ -332,7 +402,27 @@ SELECT jsonb_build_object(
                     'sw_violent',        round(l.weighted_violent::numeric, 1),
                     'safety_nonviolent', round(l.safety_nonviolent::numeric, 4),
                     'stier_nonviolent',  l.tier_nonviolent,
-                    'sw_nonviolent',     round(l.weighted_nonviolent::numeric, 1)
+                    'sw_nonviolent',     round(l.weighted_nonviolent::numeric, 1),
+                    -- Rating 1 at the requested hour, then rating 2: how that
+                    -- differs from the cell's all-hours standing, and the plain
+                    -- ratio against its own average hour.
+                    'hsafety_violent',    round(l.hsafety_violent::numeric, 4),
+                    'hstier_violent',     l.htier_violent,
+                    'hdelta_violent',     round(l.hdelta_violent::numeric, 4),
+                    'hindex_violent',     round(l.hindex_violent::numeric, 2),
+                    'hsafety_nonviolent', round(l.hsafety_nonviolent::numeric, 4),
+                    'hstier_nonviolent',  l.htier_nonviolent,
+                    'hdelta_nonviolent',  round(l.hdelta_nonviolent::numeric, 4),
+                    'hindex_nonviolent',  round(l.hindex_nonviolent::numeric, 2),
+                    -- Incidents in this cell during this hour block, both
+                    -- tracks. Always at or below `count`: the ones the source
+                    -- published with no clock time are not in any hour.
+                    'hcount', CASE
+                        WHEN l.hcount_violent IS NULL AND l.hcount_nonviolent IS NULL
+                            THEN NULL
+                        ELSE COALESCE(l.hcount_violent, 0)
+                           + COALESCE(l.hcount_nonviolent, 0)
+                    END
                 )
             ) ORDER BY l.h3_index
         ) FROM layer l
@@ -350,6 +440,7 @@ def cells_geojson(
     time_window: str,
     category: str,
     min_count: int = 0,
+    hour: int | None = None,
     bbox: tuple[float, float, float, float] | None = None,
 ) -> dict[str, Any]:
     params = {
@@ -357,6 +448,7 @@ def cells_geojson(
         "h3_res": h3_res,
         "time_window": time_window,
         "category": category,
+        "hour_block": hour,
         "min_count": min_count,
         "bbox": "set" if bbox else None,
         "west": bbox[0] if bbox else None,
@@ -376,7 +468,11 @@ def cells_geojson(
 
 
 def cell_detail(
-    conn: psycopg.Connection, *, h3_index: str, time_window: str
+    conn: psycopg.Connection,
+    *,
+    h3_index: str,
+    time_window: str,
+    hour: int | None = None,
 ) -> dict[str, Any] | None:
     with conn.cursor() as cur:
         cur.execute(
@@ -442,6 +538,38 @@ def cell_detail(
         )
         safety = cur.fetchall()
 
+        # The whole 24-block shape, not just the selected hour: the panel draws
+        # the profile so the selected block can be read against the rest of the
+        # day rather than as a bare number.
+        cur.execute(
+            """
+            SELECT hour_block, category, incident_count
+            FROM gold.cell_hour_profile
+            WHERE h3_index = %s AND time_window = %s
+            ORDER BY hour_block, category
+            """,
+            (h3_index, time_window),
+        )
+        by_hour = cur.fetchall()
+
+        hour_safety: list[dict[str, Any]] = []
+        if hour is not None:
+            cur.execute(
+                """
+                SELECT s.track, s.hour_block, s.safety_percentile, s.safety_tier,
+                       s.safety_rank, s.city_cell_total, s.incident_count,
+                       s.baseline_percentile, s.percentile_delta, s.hour_index
+                FROM gold.cell_hour_safety s
+                JOIN reference.source_registry r
+                  ON r.source_id = s.source_id
+                 AND r.severity_scheme_version = s.scheme_version
+                WHERE s.h3_index = %s AND s.time_window = %s AND s.hour_block = %s
+                ORDER BY CASE s.track WHEN 'violent' THEN 0 ELSE 1 END
+                """,
+                (h3_index, time_window, hour),
+            )
+            hour_safety = cur.fetchall()
+
     headline = next((row for row in activity if row["category"] == "all"), None)
     return {
         "cell": cell,
@@ -459,6 +587,18 @@ def cell_detail(
                 "tier_label": SAFETY_TIER_LABELS.get(row["safety_tier"]),
             }
             for row in safety
+        ],
+        "hour": hour,
+        "hour_label": hour_label(hour) if hour is not None else None,
+        "by_hour": by_hour,
+        "hour_safety": [
+            {
+                **row,
+                "track_label": TRACK_LABELS.get(row["track"], row["track"]),
+                "tier_label": SAFETY_TIER_LABELS.get(row["safety_tier"]),
+                "delta_label": delta_label(row["percentile_delta"]),
+            }
+            for row in hour_safety
         ],
     }
 

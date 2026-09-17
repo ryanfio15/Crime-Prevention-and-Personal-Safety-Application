@@ -289,6 +289,7 @@ class PhiladelphiaCartoAdapter(SourceAdapter):
             local_date = occurred_at.date()
 
         has_clock_time = self._clean(record.get("dispatch_time")) is not None
+        local_hour = self._parse_hour(record.get("hour"), record.get("dispatch_time"))
 
         latitude, longitude, coordinate_source = self._resolve_coordinates(
             self._to_float(record.get("point_x")),
@@ -301,6 +302,7 @@ class PhiladelphiaCartoAdapter(SourceAdapter):
             occurred_local_date=local_date,
             occurred_precision="exact" if has_clock_time else "date",
             occurred_basis="dispatch",
+            occurred_local_hour=local_hour,
             latitude=latitude,
             longitude=longitude,
             coordinate_source=coordinate_source,
@@ -312,6 +314,36 @@ class PhiladelphiaCartoAdapter(SourceAdapter):
             location_block=self._clean(record.get("location_block")),
             district=self._clean(record.get("dc_dist")),
         )
+
+    @staticmethod
+    def _parse_hour(hour_field: Any, time_field: Any) -> int | None:
+        """The local clock hour, taken from what the source published.
+
+        Read from the dataset's own `hour` column, with `dispatch_time` as the
+        fallback -- deliberately not derived from occurred_at. The Carto API
+        renders dispatch_date_time with a '+00' suffix, and _parse_timestamp
+        therefore stores it as UTC, but the value behind it is a local wall
+        clock. Extracting an hour from the stored timestamp as though it were a
+        real UTC instant would shift every incident by four or five hours, in a
+        direction that changes with daylight saving. The published hour has no
+        such ambiguity.
+
+        None when the source gave no usable clock time. The caller stores that
+        as NULL rather than 0 (see 009_time_of_day.sql).
+        """
+        for value, splitter in ((hour_field, None), (time_field, ":")):
+            text = PhiladelphiaCartoAdapter._clean(value)
+            if text is None:
+                continue
+            if splitter:
+                text = text.split(splitter)[0]
+            try:
+                hour = int(float(text))
+            except ValueError:
+                continue
+            if 0 <= hour <= 23:
+                return hour
+        return None
 
     @staticmethod
     def _normalize_code(value: Any) -> str | None:

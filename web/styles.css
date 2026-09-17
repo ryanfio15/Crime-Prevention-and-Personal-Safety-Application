@@ -156,6 +156,52 @@ select:focus-visible, .btn:focus-visible {
 }
 .btn[aria-pressed="true"] { border-color: var(--series-1); color: var(--series-1); }
 
+/* Time-of-day control.
+   Marked as a development affordance rather than dressed to match the filters
+   beside it: in production the hour comes from the user's clock, and this input
+   goes away. Looking provisional is the honest state. */
+.field-dev .field-label { color: var(--series-1); }
+
+.dev-tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px dashed currentColor;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  vertical-align: 1px;
+}
+
+.hour-input { display: flex; align-items: center; gap: 8px; }
+
+.hour-input input[type="time"] {
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px dashed rgba(11, 11, 11, 0.28);
+  border-radius: 8px;
+  background: var(--page);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.hour-input input[type="time"]:focus-visible {
+  outline: 2px solid var(--series-1);
+  outline-offset: 1px;
+}
+.field-dev[aria-disabled="true"] { opacity: 0.55; }
+.field-dev[aria-disabled="true"] input { pointer-events: none; }
+
+/* Echoes the block the entered time actually resolves to, so there is never a
+   question of whether 20:45 means 20:00-21:00. */
+.field-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Track tabs. One control, two segments, so the pair reads as a single choice
    rather than as two independent buttons. */
 .tabs {
@@ -393,6 +439,38 @@ select:focus-visible, .btn:focus-visible {
 }
 
 .bar-empty { margin: 0; font-size: 12.5px; color: var(--text-muted); }
+
+/* Hourly profile: 24 columns, one per block.
+   A column chart rather than 24 rows of the .bar-row form above, because the
+   x axis here is ordered and cyclic -- the shape across the day is the point,
+   and a stack of horizontal bars hides it. One hue throughout: height already
+   carries the value, so colour is spent only on marking the selected block. */
+.hours {
+  display: grid;
+  grid-template-columns: repeat(24, 1fr);
+  align-items: end;
+  gap: 2px;
+  height: 56px;
+  margin-top: 4px;
+}
+
+.hours i {
+  display: block;
+  min-height: 1px;
+  border-radius: 2px 2px 0 0;
+  background: var(--gridline);
+}
+.hours i[data-on] { background: var(--series-1); }
+.hours i[data-selected] { background: var(--text-primary); }
+
+.hours-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
 
 .mix { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .mix th {

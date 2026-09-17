@@ -89,6 +89,9 @@ class NormalizedIncident:
     # gave usable lat/lng directly, otherwise a label naming what the adapter
     # converted from. Never silently rewrite coordinates without saying so.
     coordinate_source: str = "published_wgs84"
+    # Local clock hour 0-23. None where the source published no clock time, and
+    # left as None rather than defaulted: see 009_time_of_day.sql.
+    occurred_local_hour: int | None = None
     reported_at: datetime | None = None
     location_type: str = "unknown"
     location_block: str | None = None

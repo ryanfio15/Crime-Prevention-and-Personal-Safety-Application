@@ -601,6 +601,44 @@ def cmd_safety(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_hourly(args: argparse.Namespace) -> int:
+    """Rebuild only the time-of-day layers.
+
+    Separate from `safety` because it is the expensive one -- the same ranking
+    recomputed 24 times over -- and because it depends on the all-hours ranking
+    already being current. Run `safety` first if the scheme changed.
+    """
+    with connect() as conn:
+        anchor = gold.data_anchor(conn, args.city)
+        if anchor is None:
+            raise LookupError(f"no silver rows for '{args.city}'; nothing to rank")
+        windows = gold.resolve_windows(anchor)
+        rows, profile_rows, share = gold.refresh_hourly_layer(
+            conn, args.city, windows, args.scheme
+        )
+        gold.refresh_city_snapshot(
+            conn, args.city, PIPELINE_VERSION, hour_coverage_share=share
+        )
+        conn.commit()
+
+    print(
+        json.dumps(
+            {
+                "city": args.city,
+                "scheme": args.scheme or "all enabled",
+                "resolutions": list(gold.HOURLY_RESOLUTIONS),
+                "windows": list(gold.HOURLY_WINDOWS),
+                "cell_hour_safety_rows": rows,
+                "cell_hour_profile_rows": profile_rows,
+                "hour_known_share": round(share, 4),
+            },
+            indent=2,
+            default=str,
+        )
+    )
+    return 0
+
+
 _COMPARE_SQL = """
 WITH a AS (
     SELECT h3_index, safety_percentile AS pct
@@ -802,6 +840,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--scheme", default=None, help="one severity scheme; default is every enabled one"
     )
     safety_cmd.set_defaults(func=cmd_safety)
+
+    hourly_cmd = sub.add_parser(
+        "hourly", help="rebuild the time-of-day layers only (needs a current `safety`)"
+    )
+    hourly_cmd.add_argument("--city", default="phl")
+    hourly_cmd.add_argument(
+        "--scheme", default=None, help="one severity scheme; default is every enabled one"
+    )
+    hourly_cmd.set_defaults(func=cmd_hourly)
 
     compare_cmd = sub.add_parser(
         "safety-compare", help="diff two severity schemes on the same data"

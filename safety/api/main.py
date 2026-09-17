@@ -210,6 +210,32 @@ def _validate_layer(res: int, window: str, category: str) -> None:
         raise HTTPException(400, f"category must be one of {list(repo.VALID_CATEGORIES)}")
 
 
+def _validate_hour(hour: int | None, res: int, window: str) -> None:
+    """Reject an hour the pipeline does not build, with the reason.
+
+    An unbuilt combination would otherwise return a layer whose hourly fields
+    are all null, which looks identical to "nothing happens here at 3am".
+    """
+    if hour is None:
+        return
+    if hour not in repo.VALID_HOURS:
+        raise HTTPException(400, "hour must be an integer from 0 to 23")
+    if res not in repo.HOURLY_RESOLUTIONS:
+        raise HTTPException(
+            400,
+            f"the time-of-day layer is built for res {list(repo.HOURLY_RESOLUTIONS)} "
+            f"only -- a window split 24 ways at res {res} leaves too few incidents "
+            "per cell to rank",
+        )
+    if window not in repo.HOURLY_WINDOWS:
+        raise HTTPException(
+            400,
+            f"the time-of-day layer is built for windows "
+            f"{list(repo.HOURLY_WINDOWS)} only -- shorter windows do not carry "
+            "enough incidents once split across 24 hour blocks",
+        )
+
+
 @app.get(f"{API}/cells", tags=["cells"])
 def cells(
     conn: Conn,
@@ -218,12 +244,22 @@ def cells(
     window: str = "last_12m",
     category: str = "all",
     min_count: int = Query(0, ge=0),
+    hour: int | None = Query(
+        None,
+        ge=0,
+        le=23,
+        description=(
+            "Local hour block 0-23; block h covers [h:00, h+1:00). Adds the "
+            "time-of-day ratings to every feature."
+        ),
+    ),
     bbox: str | None = Query(
         None, description="Viewport filter as 'west,south,east,north' in WGS84 degrees"
     ),
 ) -> Response:
     """The H3 hexagon layer as GeoJSON, coloured client-side from `count`."""
     _validate_layer(res, window, category)
+    _validate_hour(hour, res, window)
 
     parsed_bbox: tuple[float, float, float, float] | None = None
     if bbox:
@@ -233,7 +269,7 @@ def cells(
             raise HTTPException(400, "bbox must be 'west,south,east,north'") from None
         parsed_bbox = (west, south, east, north)
 
-    key = ("cells", city, res, window, category, min_count, parsed_bbox)
+    key = ("cells", city, res, window, category, min_count, hour, parsed_bbox)
     payload = cached(
         conn,
         key,
@@ -247,6 +283,7 @@ def cells(
                 time_window=window,
                 category=category,
                 min_count=min_count,
+                hour=hour,
                 bbox=parsed_bbox,
             ),
             default=str,
@@ -320,13 +357,17 @@ def cell(
     conn: Conn,
     h3_index: str,
     window: str = "last_12m",
+    hour: int | None = Query(None, ge=0, le=23),
 ) -> dict[str, Any]:
     if not is_valid_cell(h3_index):
         raise HTTPException(400, f"'{h3_index}' is not a valid H3 index")
     if window not in repo.VALID_WINDOWS:
         raise HTTPException(400, f"window must be one of {list(repo.VALID_WINDOWS)}")
+    _validate_hour(hour, cell_resolution(h3_index), window)
 
-    detail = repo.cell_detail(conn, h3_index=h3_index, time_window=window)
+    detail = repo.cell_detail(
+        conn, h3_index=h3_index, time_window=window, hour=hour
+    )
     if detail is None:
         raise HTTPException(404, f"cell '{h3_index}' is not in the covered area")
     return detail
@@ -419,6 +460,79 @@ def _safety_measure(conn, record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _time_of_day(record: dict[str, Any]) -> dict[str, Any]:
+    """Explain the hourly view, and above all what its timestamps really are.
+
+    The dispatch-versus-occurrence gap is disclosed for the whole product
+    already, but it is a footnote at day resolution and the dominant source of
+    error at hour resolution. It gets said again, here, in those terms.
+    """
+    share = record.get("hour_known_share")
+    return {
+        "what_it_is": (
+            "The same severity-weighted ranking, recomputed inside each one-hour "
+            "block of the local day, so a cell is compared against other cells at "
+            "that hour rather than against the all-day distribution."
+        ),
+        "two_ratings": [
+            "Safety at this hour: where the cell sits against every other cell in "
+            "the city during the same hour block. 1.0 is the safest.",
+            "Change from usual: that figure minus the cell's own all-hours "
+            "percentile. It measures relative movement only -- the whole city is "
+            "quieter at 4am, and a cell holding its rank through the night is not "
+            "getting safer, it is keeping pace with everywhere else.",
+        ],
+        "hour_index_note": (
+            "Alongside the two rankings, each cell carries the ratio of its "
+            "weighted offence at this hour to its own average hour. That is the "
+            "absolute reading the percentiles cannot give: 1.0 is an ordinary hour "
+            "for this cell, 2.5 is two and a half times its usual load. It is "
+            "withheld where a cell carries too little over the window for the "
+            "ratio to mean anything."
+        ),
+        "timestamp_caveat": (
+            "This is the most important limitation of the hourly view, and it is "
+            "larger here than anywhere else in the product. Philadelphia publishes "
+            "the time police were dispatched, not the time an offence occurred. "
+            "For an assault those are minutes apart; for a burglary discovered "
+            "when someone gets home, or a car break-in noticed the next morning, "
+            "they are not. Reported times therefore cluster toward when people are "
+            "awake and calling, and the hourly view is closer to when incidents "
+            "are reported than to when crime happens."
+        ),
+        "coverage": {
+            "hour_known_share": round(share, 4) if share is not None else None,
+            "note": (
+                "Records the source published with no clock time are left out of "
+                "the hourly layers entirely rather than being counted at midnight, "
+                "which would put a fabricated spike at the hour people look at most."
+            ),
+        },
+        "scope": {
+            "resolutions": list(repo.HOURLY_RESOLUTIONS),
+            "windows": list(repo.HOURLY_WINDOWS),
+            "note": (
+                "Built only for the two widest windows at the two coarser cell "
+                "sizes. Splitting a window 24 ways divides the evidence by 24, and "
+                "at the finest cell size over 30 days the median cell-hour has no "
+                "reported incidents at all -- there is no distribution left to rank."
+            ),
+        },
+        "known_limitations": [
+            "An hourly percentile is far noisier than the all-hours one it is "
+            "compared against, even after smoothing. Small movements in the "
+            "second rating should not be read as real change, which is why it is "
+            "banded into wide steps rather than shown as a bare number.",
+            "Hour blocks are local clock time, so an hour spans different amounts "
+            "of daylight across the year, and the two daylight-saving transitions "
+            "are not adjusted for.",
+            "There is still no population or footfall denominator. A cell that is "
+            "empty at 3am and crowded at 3pm is scored on incidents alone, not on "
+            "risk to any one person present.",
+        ],
+    }
+
+
 @app.get(f"{API}/methodology", tags=["meta"])
 def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
     record = repo.get_city(conn, city)
@@ -479,6 +593,7 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
             ),
         },
         "safety_measure": _safety_measure(conn, record),
+        "time_of_day": _time_of_day(record),
         "classification": {
             "standard": "FBI NIBRS offense codes, with the coarser UCR Part I / Part II "
             "split retained as a fallback where a precise NIBRS mapping is ambiguous.",

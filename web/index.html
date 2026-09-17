@@ -58,11 +58,24 @@
     </select>
   </label>
 
+  <!-- Development control. In production the hour comes from the user's own
+       clock; typing one by hand is how the time-of-day layer gets exercised
+       until then, and how any hour other than "now" can be inspected at all. -->
+  <div class="field field-dev" id="f-hour-field">
+    <span class="field-label" id="f-hour-label">Time of day <b class="dev-tag">dev</b></span>
+    <div class="hour-input">
+      <input type="time" id="f-hour" step="3600" aria-labelledby="f-hour-label">
+      <button type="button" class="linkish" id="f-hour-clear">All hours</button>
+    </div>
+    <span class="field-note" id="f-hour-note">All hours</span>
+  </div>
+
   <label class="field">
     <span class="field-label">Colour by</span>
     <select id="f-scale">
       <option value="safety" selected>Safety ranking</option>
       <option value="count">Incident count</option>
+      <option value="delta">Change vs. this cell's usual</option>
     </select>
   </label>
 
@@ -143,6 +156,20 @@
         </p>
       </section>
 
+      <section class="chart-block" id="d-hour-block" hidden>
+        <h3 id="d-hour-title">Time of day</h3>
+        <dl class="kv">
+          <div><dt>Safety at this hour</dt><dd id="d-hour-safety">&mdash;</dd></div>
+          <div><dt>Change from usual</dt><dd id="d-hour-delta">&mdash;</dd></div>
+          <div><dt>Load vs. its average hour</dt><dd id="d-hour-index">&mdash;</dd></div>
+        </dl>
+        <!-- The whole day, so the selected block is read against the rest of it
+             rather than as a bare number. -->
+        <div class="hours" id="d-hours" role="img" aria-labelledby="d-hour-title"></div>
+        <div class="hours-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
+        <p class="bar-empty" id="d-hour-note"></p>
+      </section>
+
       <section class="chart-block">
         <h3 id="d-cat-title">Reported incidents by category</h3>
         <div class="bars" id="d-categories"></div>
@@ -191,6 +218,10 @@
                value is always readable without relying on colour. -->
           <th scope="col" class="num">Safety (violent)</th>
           <th scope="col" class="num">Safety (non-violent)</th>
+          <!-- Both time-of-day ratings in text, for the same reason the two
+               columns above exist: the ramp must never be the only channel. -->
+          <th scope="col" class="num" id="th-hour-safety">At hour</th>
+          <th scope="col" class="num" id="th-hour-delta">Change</th>
         </tr>
       </thead>
       <tbody></tbody>

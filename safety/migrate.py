@@ -375,6 +375,99 @@ def backfill_h3_cells(conn: psycopg.Connection) -> int:
     return filled
 
 
+# ---------------------------------------------------------------------------
+# Clock-hour backfill
+#
+# New loads carry occurred_local_hour from the source's own `hour` column. Rows
+# already in silver predate that column and cannot be re-read without a bronze
+# replay, so they are filled from occurred_at instead -- which works only
+# because of a quirk worth stating plainly rather than relying on silently.
+#
+# The Carto API renders dispatch_date_time with a '+00' suffix on what is a
+# local wall-clock value, and the adapter stores it as UTC accordingly. Reading
+# the hour back out at UTC therefore returns the published local clock. If the
+# timestamp were a genuine UTC instant the same expression would be wrong by
+# four or five hours, so the assumption is tested before anything is written.
+# ---------------------------------------------------------------------------
+
+# If the stored timestamp really were UTC, every incident from 19:00 local
+# onwards would carry the *next* day's UTC date -- roughly a fifth of them. A
+# near-total match is only possible if the timestamp holds local wall-clock.
+_HOUR_ALIGNMENT_SQL = """
+SELECT
+    count(*)                                           AS total,
+    count(*) FILTER (
+        WHERE (occurred_at AT TIME ZONE 'UTC')::date = occurred_local_date
+    )                                                  AS aligned
+FROM silver.incident
+WHERE occurred_precision = 'exact'
+"""
+
+_HOUR_ALIGNMENT_FLOOR = 0.99
+
+_HOUR_BACKFILL_SQL = """
+UPDATE silver.incident i
+   SET occurred_local_hour =
+           EXTRACT(hour FROM i.occurred_at AT TIME ZONE 'UTC')::smallint
+ WHERE (i.source_id, i.occurred_year, i.incident_key) IN (
+        SELECT source_id, occurred_year, incident_key
+        FROM silver.incident
+        WHERE occurred_local_hour IS NULL
+          AND occurred_precision = 'exact'
+        LIMIT %s
+ )
+"""
+
+
+def backfill_incident_hour(conn: psycopg.Connection) -> int:
+    """Fill occurred_local_hour on rows loaded before the column existed.
+
+    Rows with occurred_precision = 'date' are left NULL on purpose: the source
+    published no clock time for them, and inventing midnight would put a
+    fabricated spike at the hour users look at most.
+    """
+    with conn.cursor() as cur:
+        cur.execute(_HOUR_ALIGNMENT_SQL)
+        row = cur.fetchone()
+
+    total = (row or {}).get("total") or 0
+    if not total:
+        return 0
+
+    share = (row["aligned"] or 0) / total
+    if share < _HOUR_ALIGNMENT_FLOOR:
+        # Refusing is the right outcome. A wrong hour is worse than a missing
+        # one: the hourly layer would render confidently and be shifted whole
+        # hours, and nothing downstream could detect it.
+        log.error(
+            "occurred_at does not look like local wall-clock for %.1f%% of dated "
+            "incidents, so the clock hour cannot be recovered from it. Leaving "
+            "occurred_local_hour NULL; replay the bronze snapshots "
+            "(python -m safety.etl.run reprocess) to read the hour from the source.",
+            (1 - share) * 100,
+        )
+        return 0
+
+    filled = 0
+    while True:
+        with conn.cursor() as cur:
+            cur.execute(_HOUR_BACKFILL_SQL, (_BACKFILL_BATCH,))
+            written = cur.rowcount
+        conn.commit()
+        if not written:
+            break
+        filled += written
+        log.info("backfilled occurred_local_hour for %s row(s)", written)
+
+    if filled:
+        log.info(
+            "clock-hour backfill filled %s row(s); re-run the gold rollups to "
+            "build the hourly layers",
+            filled,
+        )
+    return filled
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s"
@@ -389,6 +482,7 @@ def main() -> int:
         crosswalk_rows = load_crosswalks(conn)
         point_sources_at_scheme(conn)
         backfilled = backfill_h3_cells(conn)
+        hours_filled = backfill_incident_hour(conn)
 
     if applied:
         print(f"Applied {len(applied)} migration(s): {', '.join(applied)}")
@@ -398,6 +492,8 @@ def main() -> int:
     print(f"Severity schemes: {scheme_rows}, severity weights: {weight_rows}")
     if backfilled:
         print(f"H3 cells backfilled: {backfilled} (re-run the gold rollups)")
+    if hours_filled:
+        print(f"Clock hours backfilled: {hours_filled} (re-run the gold rollups)")
     return 0
 
 
