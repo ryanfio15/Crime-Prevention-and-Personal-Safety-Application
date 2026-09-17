@@ -390,20 +390,39 @@ def backfill_h3_cells(conn: psycopg.Connection) -> int:
 # four or five hours, so the assumption is tested before anything is written.
 # ---------------------------------------------------------------------------
 
+# Everything the decision rests on, measured before any of it is written. An
+# earlier version gated on occurred_precision = 'exact' and returned silently
+# when nothing matched, which is how a source that never populates
+# `dispatch_time` produced an empty hourly layer and no explanation for it.
+# The precision flag is the wrong question anyway: what matters is whether the
+# stored timestamp carries a time of day, and that can be measured directly.
+_HOUR_AUDIT_SQL = """
+SELECT
+    count(*)                                                     AS total,
+    count(occurred_local_hour)                                   AS already_filled,
+    count(*) FILTER (WHERE occurred_precision = 'exact')         AS precision_exact,
+    count(*) FILTER (
+        WHERE (occurred_at AT TIME ZONE 'UTC')::date = occurred_local_date
+    )                                                            AS date_aligned,
+    count(*) FILTER (
+        WHERE (occurred_at AT TIME ZONE 'UTC')::time = '00:00:00'
+    )                                                            AS at_midnight,
+    count(DISTINCT EXTRACT(hour FROM occurred_at AT TIME ZONE 'UTC'))
+                                                                 AS distinct_hours
+FROM silver.incident
+"""
+
 # If the stored timestamp really were UTC, every incident from 19:00 local
 # onwards would carry the *next* day's UTC date -- roughly a fifth of them. A
 # near-total match is only possible if the timestamp holds local wall-clock.
-_HOUR_ALIGNMENT_SQL = """
-SELECT
-    count(*)                                           AS total,
-    count(*) FILTER (
-        WHERE (occurred_at AT TIME ZONE 'UTC')::date = occurred_local_date
-    )                                                  AS aligned
-FROM silver.incident
-WHERE occurred_precision = 'exact'
-"""
-
 _HOUR_ALIGNMENT_FLOOR = 0.99
+
+# A real clock puts about 1 in 24 incidents (4.2%) in any given hour. Midnight
+# runs somewhat above that in dispatch data -- round-hour reporting is a real
+# habit -- but far above it means the value is standing in for "no time was
+# published" rather than recording one. Above this share, exact-midnight rows
+# are treated as unknown and left NULL.
+_MIDNIGHT_SHARE_CEILING = 0.10
 
 _HOUR_BACKFILL_SQL = """
 UPDATE silver.incident i
@@ -413,45 +432,95 @@ UPDATE silver.incident i
         SELECT source_id, occurred_year, incident_key
         FROM silver.incident
         WHERE occurred_local_hour IS NULL
-          AND occurred_precision = 'exact'
-        LIMIT %s
+          AND (
+                NOT %(skip_midnight)s::boolean
+                OR (occurred_at AT TIME ZONE 'UTC')::time <> '00:00:00'
+              )
+        LIMIT %(batch)s
  )
+"""
+
+_HOUR_HISTOGRAM_SQL = """
+SELECT occurred_local_hour AS hour, count(*) AS n
+FROM silver.incident
+WHERE occurred_local_hour IS NOT NULL
+GROUP BY 1 ORDER BY 1
 """
 
 
 def backfill_incident_hour(conn: psycopg.Connection) -> int:
     """Fill occurred_local_hour on rows loaded before the column existed.
 
-    Rows with occurred_precision = 'date' are left NULL on purpose: the source
-    published no clock time for them, and inventing midnight would put a
-    fabricated spike at the hour users look at most.
+    Reports what it measured and what it decided in every branch. A backfill
+    that declines to run is a legitimate outcome here, but a silent one leaves
+    the hourly layer empty with nothing to explain it.
     """
     with conn.cursor() as cur:
-        cur.execute(_HOUR_ALIGNMENT_SQL)
-        row = cur.fetchone()
+        cur.execute(_HOUR_AUDIT_SQL)
+        audit = cur.fetchone() or {}
 
-    total = (row or {}).get("total") or 0
+    total = audit.get("total") or 0
     if not total:
+        log.info("no silver rows yet; nothing to backfill a clock hour onto")
+        return 0
+    if audit["already_filled"] == total:
         return 0
 
-    share = (row["aligned"] or 0) / total
-    if share < _HOUR_ALIGNMENT_FLOOR:
+    def pct(n: int | None) -> float:
+        return (n or 0) / total * 100
+
+    log.info(
+        "clock-hour audit over %s rows: %s already filled, %.1f%% flagged "
+        "occurred_precision='exact', %.1f%% whose UTC date matches the local "
+        "date, %.1f%% stamped exactly midnight, %s distinct hours present",
+        total,
+        audit["already_filled"],
+        pct(audit["precision_exact"]),
+        pct(audit["date_aligned"]),
+        pct(audit["at_midnight"]),
+        audit["distinct_hours"],
+    )
+
+    if (audit["distinct_hours"] or 0) <= 1:
+        log.error(
+            "occurred_at carries no time of day at all -- every row sits on the "
+            "same hour -- so the clock hour cannot be recovered from it. Replay "
+            "the stored snapshots (python -m safety.etl.run reprocess --city "
+            "<city> --pull-id <id>) to read the hour from the source instead."
+        )
+        return 0
+
+    aligned = (audit["date_aligned"] or 0) / total
+    if aligned < _HOUR_ALIGNMENT_FLOOR:
         # Refusing is the right outcome. A wrong hour is worse than a missing
         # one: the hourly layer would render confidently and be shifted whole
         # hours, and nothing downstream could detect it.
         log.error(
-            "occurred_at does not look like local wall-clock for %.1f%% of dated "
+            "occurred_at does not look like local wall-clock for %.1f%% of "
             "incidents, so the clock hour cannot be recovered from it. Leaving "
             "occurred_local_hour NULL; replay the bronze snapshots "
             "(python -m safety.etl.run reprocess) to read the hour from the source.",
-            (1 - share) * 100,
+            (1 - aligned) * 100,
         )
         return 0
+
+    skip_midnight = (audit["at_midnight"] or 0) / total > _MIDNIGHT_SHARE_CEILING
+    if skip_midnight:
+        log.warning(
+            "%.1f%% of incidents are stamped exactly midnight, far above the "
+            "~4%% a real clock produces: that value is standing in for a time "
+            "the source did not publish. Those rows stay NULL and are absent "
+            "from the hourly layers rather than counted at 00:00.",
+            pct(audit["at_midnight"]),
+        )
 
     filled = 0
     while True:
         with conn.cursor() as cur:
-            cur.execute(_HOUR_BACKFILL_SQL, (_BACKFILL_BATCH,))
+            cur.execute(
+                _HOUR_BACKFILL_SQL,
+                {"skip_midnight": skip_midnight, "batch": _BACKFILL_BATCH},
+            )
             written = cur.rowcount
         conn.commit()
         if not written:
@@ -459,12 +528,26 @@ def backfill_incident_hour(conn: psycopg.Connection) -> int:
         filled += written
         log.info("backfilled occurred_local_hour for %s row(s)", written)
 
-    if filled:
-        log.info(
-            "clock-hour backfill filled %s row(s); re-run the gold rollups to "
-            "build the hourly layers",
-            filled,
-        )
+    if not filled:
+        log.warning("clock-hour backfill matched no rows; the hourly layers stay empty")
+        return 0
+
+    # Print the day the backfill produced. A plausible one dips through the
+    # small hours and rises into the evening; a flat line, or one spike holding
+    # everything, means the hour is not what it claims to be -- and this is the
+    # only place that shape can be checked before it reaches a user.
+    with conn.cursor() as cur:
+        cur.execute(_HOUR_HISTOGRAM_SQL)
+        rows = cur.fetchall()
+    log.info(
+        "hour distribution: %s",
+        " ".join(f"{r['hour']:02d}:{r['n']}" for r in rows),
+    )
+    log.info(
+        "clock-hour backfill filled %s row(s); re-run the gold rollups "
+        "(python -m safety.etl.run hourly --city <city>) to build the hourly layers",
+        filled,
+    )
     return filled
 
 

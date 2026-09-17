@@ -418,6 +418,13 @@ SELECT jsonb_build_object(
         'time_window', %(time_window)s,
         'category',    %(category)s,
         'hour_block',  %(hour_block)s::smallint,
+        -- Null or zero means the hourly rollup has never been built. The
+        -- client needs that as a distinct state: without it an unbuilt layer
+        -- and a genuinely quiet cell both render as zero.
+        'hour_known_share', (
+            SELECT hour_known_share FROM gold.city_snapshot
+            WHERE source_id = %(source_id)s
+        ),
         'severity_scheme', (SELECT version FROM scheme),
         'window_start', scale.window_start,
         'window_end',   scale.window_end,

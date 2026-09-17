@@ -419,6 +419,8 @@ async function loadLayer({ quiet = false } = {}) {
     map.setPaintProperty("cells-outline", "line-width", outlineWidthExpression());
     renderLegend();
     renderTable();
+    // Only now is it known whether the hourly layer exists at all.
+    syncHourAvailability();
   } catch (error) {
     console.error(error);
     $("loading").textContent = "Could not load cell data. Is the API running?";
@@ -589,7 +591,9 @@ function renderHourShare(detail) {
   // total is a ratio of two very small numbers, and it would read as a
   // confident figure.
   if (!rel.enough_evidence) {
-    value.textContent = `too few to compare (${nf.format(rel.day_total)} all day)`;
+    value.textContent = rel.day_total
+      ? `too few to compare (${nf.format(rel.day_total)} all day)`
+      : "no incidents here with a recorded hour";
     return;
   }
 
@@ -1167,6 +1171,9 @@ function syncHourAvailability() {
       "Not built at this cell size / window — too few incidents per hour.";
   } else if (state.hour === null) {
     $("f-hour-note").textContent = "All hours";
+  } else if (state.meta && !state.meta.hour_known_share) {
+    // An empty layer and a quiet city look identical on the map. Say which.
+    $("f-hour-note").textContent = "No time-of-day data loaded — run the hourly rollup.";
   } else {
     $("f-hour-note").textContent = `Block ${hourLabel(state.hour)}`;
   }
