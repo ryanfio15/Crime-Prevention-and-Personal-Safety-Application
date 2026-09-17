@@ -89,6 +89,56 @@ DELTA_BANDS = (
 DELTA_TOP_LABEL = "Much better here than usual"
 
 
+# Mirrors safety.etl.gold.MIN_HOUR_EVIDENCE. Below this many incidents across
+# the whole window, one hour against a twenty-fourth of a tiny total is a ratio
+# of two very small numbers: three incidents all year with one of them at 2pm
+# reads as 800% of an average hour, which is arithmetic, not evidence.
+MIN_HOUR_EVIDENCE = 12
+
+HOUR_BLOCKS = 24
+
+
+def hour_relative(by_hour: list[dict[str, Any]], hour: int | None) -> dict[str, Any] | None:
+    """This cell's incidents at one hour against its own average hour.
+
+    A percentage where 100% is an ordinary hour *for this cell*: 250% is two and
+    a half times its own average, 40% is well below it. The comparison is the
+    cell against its own day, not against other cells -- the only one that
+    answers "is this hour unusual here".
+
+    Counts, not severity weights, and all categories: this is a statement about
+    how much gets reported, which is what the figure claims to be.
+    """
+    if hour is None:
+        return None
+
+    counts = [0] * HOUR_BLOCKS
+    for row in by_hour:
+        if row["category"] == "all":
+            counts[row["hour_block"]] = row["incident_count"]
+    total = sum(counts)
+
+    if total < MIN_HOUR_EVIDENCE:
+        return {
+            "hour_count": counts[hour],
+            "day_total": total,
+            "mean_per_hour": None,
+            "percent_of_average": None,
+            "enough_evidence": False,
+        }
+
+    mean = total / HOUR_BLOCKS
+    return {
+        "hour_count": counts[hour],
+        "day_total": total,
+        "mean_per_hour": round(mean, 2),
+        # Rounded to whole percent: the input is a count of a few dozen
+        # incidents, and a decimal place would imply precision it has not got.
+        "percent_of_average": round(counts[hour] / mean * 100),
+        "enough_evidence": True,
+    }
+
+
 def delta_label(delta: float | None) -> str | None:
     if delta is None:
         return None
@@ -289,12 +339,10 @@ layer AS (
            hv.safety_percentile AS hsafety_violent,
            hv.safety_tier       AS htier_violent,
            hv.percentile_delta  AS hdelta_violent,
-           hv.hour_index        AS hindex_violent,
            hv.incident_count    AS hcount_violent,
            hn.safety_percentile AS hsafety_nonviolent,
            hn.safety_tier       AS htier_nonviolent,
            hn.percentile_delta  AS hdelta_nonviolent,
-           hn.hour_index        AS hindex_nonviolent,
            hn.incident_count    AS hcount_nonviolent
     FROM gold.cell_activity a
     JOIN gold.cell_geometry g ON g.h3_index = a.h3_index
@@ -409,11 +457,9 @@ SELECT jsonb_build_object(
                     'hsafety_violent',    round(l.hsafety_violent::numeric, 4),
                     'hstier_violent',     l.htier_violent,
                     'hdelta_violent',     round(l.hdelta_violent::numeric, 4),
-                    'hindex_violent',     round(l.hindex_violent::numeric, 2),
                     'hsafety_nonviolent', round(l.hsafety_nonviolent::numeric, 4),
                     'hstier_nonviolent',  l.htier_nonviolent,
                     'hdelta_nonviolent',  round(l.hdelta_nonviolent::numeric, 4),
-                    'hindex_nonviolent',  round(l.hindex_nonviolent::numeric, 2),
                     -- Incidents in this cell during this hour block, both
                     -- tracks. Always at or below `count`: the ones the source
                     -- published with no clock time are not in any hour.
@@ -591,6 +637,7 @@ def cell_detail(
         "hour": hour,
         "hour_label": hour_label(hour) if hour is not None else None,
         "by_hour": by_hour,
+        "hour_relative": hour_relative(by_hour, hour),
         "hour_safety": [
             {
                 **row,

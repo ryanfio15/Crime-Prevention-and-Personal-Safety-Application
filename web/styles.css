@@ -391,6 +391,16 @@ select:focus-visible, .btn:focus-visible {
 .kv > div { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
 .kv dt { font-size: 12px; color: var(--text-muted); margin: 0; }
 .kv dd { margin: 0; font-size: 12.5px; text-align: right; color: var(--text-primary); }
+
+/* The counts a derived figure was computed from, under the figure itself. A
+   percentage against a cell's own average is only checkable if the two numbers
+   behind it are visible. */
+.kv-note {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
 .mono { font-family: ui-monospace, "Cascadia Mono", Menlo, monospace; font-size: 11.5px; }
 
 .chart-block { margin-bottom: 20px; }

@@ -98,12 +98,12 @@ const TRACK_PROPS = {
   violent: {
     pct: "safety_violent", tier: "stier_violent",
     hpct: "hsafety_violent", htier: "hstier_violent",
-    delta: "hdelta_violent", index: "hindex_violent",
+    delta: "hdelta_violent",
   },
   non_violent: {
     pct: "safety_nonviolent", tier: "stier_nonviolent",
     hpct: "hsafety_nonviolent", htier: "hstier_nonviolent",
-    delta: "hdelta_nonviolent", index: "hindex_nonviolent",
+    delta: "hdelta_nonviolent",
   },
 };
 
@@ -135,12 +135,6 @@ function deltaLabel(delta) {
   }
   return "Much better here than usual";
 }
-
-/* The delta ramp is clipped at a quarter of the scale in each direction. Beyond
-   that the colour stops changing: the extremes are almost always small cells
-   with a handful of incidents, and letting them own the ends of the ramp would
-   compress everything real into the middle. */
-const DELTA_CLIP = 0.25;
 
 const CATEGORY_LABELS = {
   violent: "Violent",
@@ -231,31 +225,6 @@ function fillColorExpression() {
     ];
   }
 
-  if (state.scale === "delta") {
-    // Rating 2. The ramp is already diverging, so it works centred on zero with
-    // no second palette: red where a cell ranks worse at this hour than it
-    // usually does, green where it ranks better, desaturated where it is
-    // behaving normally. Everything is neutral until an hour is chosen, since
-    // there is no "usual" to differ from without one.
-    if (!hourly) return ZERO_FILL;
-    // Coalesced to a sentinel far outside the real range rather than tested
-    // with `has` or `typeof`: a cell that was never ranked at this hour arrives
-    // as a JSON null, and whether that survives as a present-but-null property
-    // or is dropped entirely depends on how the tiler handled it. A value that
-    // cannot occur naturally is unambiguous either way.
-    const delta = ["coalesce", ["get", props.delta], -999];
-    return [
-      "case",
-      ["<", delta, -10], ZERO_FILL,
-      [
-        "interpolate", ["linear"],
-        // Mapped from [-clip, +clip] onto [0, 1]; interpolate clamps the ends.
-        ["+", 0.5, ["/", delta, 2 * DELTA_CLIP]],
-        ...rampStops(SAFETY),
-      ],
-    ];
-  }
-
   // Counts get the same continuous treatment, keyed on the cell's percentile
   // rather than the raw number. The distribution is heavily skewed -- a handful
   // of Center City cells carry an order of magnitude more than the median -- so
@@ -333,28 +302,6 @@ function renderLegend() {
       `<br>Each cell ranked against the other ${nf.format(meta.cell_count)} cells` +
       (state.hour === null ? "" : " <b>at this hour</b>") +
       `, weighted by offence severity. A cell with no reports is not therefore safe.`;
-    return;
-  }
-
-  if (state.scale === "delta") {
-    $("legend-title").textContent = `Change from this cell's usual${atHour}`;
-    if (state.hour === null) {
-      $("legend-ramp").innerHTML = `<span style="background:${ZERO_FILL}"></span>`;
-      $("legend-ticks").innerHTML = "";
-      $("legend-foot").innerHTML =
-        "Enter a time of day to use this view — there is no “usual” to differ " +
-        "from without one.";
-      return;
-    }
-    $("legend-ramp").innerHTML =
-      `<span style="background:${rampGradient(SAFETY)}"></span>`;
-    $("legend-ticks").innerHTML =
-      "<span>Worse than usual</span><span>Typical</span><span>Better than usual</span>";
-    $("legend-foot").innerHTML =
-      `<span class="legend-zero"><i></i> Not ranked at this hour</span>` +
-      `<br>This cell's rank at ${hourLabel(state.hour)} against its own all-hours ` +
-      `rank. Relative only: the whole city is quieter at night, and a cell holding ` +
-      `its place through it is keeping pace, not getting safer.`;
     return;
   }
 
@@ -541,7 +488,8 @@ async function selectCell(h3) {
   $("d-count-label").textContent =
     `reported incidents · ${detail.window_label.toLowerCase()}`;
 
-  $("d-tier").textContent = TIER_LABELS[headline.activity_tier] ?? "—";
+  // The activity tier gave up its row to the time-of-day figure; it still
+  // reaches the reader through the tooltip and the table view.
   $("d-rank").textContent = headline.city_rank
     ? `${nf.format(headline.city_rank)} of ${nf.format(headline.city_cell_total)}`
     : "—";
@@ -612,7 +560,53 @@ function renderSafety(rows) {
  * somewhere to sit. Both ratings are printed as text beside it, so neither is
  * reachable only through the colour of a hexagon.
  */
+/**
+ * How busy this cell is at the selected hour, against its own average hour.
+ *
+ * 100% is an ordinary hour here; 250% is two and a half times as many reported
+ * incidents as this cell averages across the 24 blocks. A ratio against the
+ * cell's own day rather than against other cells, which is the only comparison
+ * that answers "is this hour unusual *here*" -- and the reason it can exceed
+ * 100% without limit while never going below 0.
+ */
+function renderHourShare(detail) {
+  const value = $("d-hourshare");
+  const label = $("d-hourshare-label");
+  label.textContent =
+    state.hour === null ? "At this hour" : `At ${hourLabel(state.hour)}`;
+
+  if (state.hour === null) {
+    value.textContent = "enter a time of day";
+    return;
+  }
+
+  const rel = detail.hour_relative;
+  if (!rel) {
+    value.textContent = "—";
+    return;
+  }
+  // Withheld rather than printed: one hour against a twenty-fourth of a tiny
+  // total is a ratio of two very small numbers, and it would read as a
+  // confident figure.
+  if (!rel.enough_evidence) {
+    value.textContent = `too few to compare (${nf.format(rel.day_total)} all day)`;
+    return;
+  }
+
+  const pct = rel.percent_of_average;
+  const sense =
+    pct > 105 ? "busier than its average hour"
+    : pct < 95 ? "quieter than its average hour"
+    : "about its average hour";
+  value.innerHTML =
+    `<b>${nf.format(pct)}%</b> — ${sense}` +
+    `<span class="kv-note">${nf.format(rel.hour_count)} here vs. ` +
+    `${rel.mean_per_hour} per hour on average</span>`;
+}
+
 function renderHours(detail) {
+  renderHourShare(detail);
+
   const block = $("d-hour-block");
   const rows = (detail.by_hour ?? []).filter((r) => r.category === "all");
 
@@ -647,7 +641,6 @@ function renderHours(detail) {
   if (state.hour === null) {
     $("d-hour-safety").textContent = dash;
     $("d-hour-delta").textContent = dash;
-    $("d-hour-index").textContent = dash;
     $("d-hour-note").textContent =
       "Enter a time of day to rank this cell within a single hour block.";
     return;
@@ -661,12 +654,6 @@ function renderHours(detail) {
     ? dash
     : `${safety.delta_label} (${safety.percentile_delta >= 0 ? "+" : ""}` +
       `${(safety.percentile_delta * 100).toFixed(0)} points)`;
-
-  // Withheld by the pipeline below its evidence floor rather than published as
-  // a ratio of two very small numbers -- say which, rather than showing a dash.
-  $("d-hour-index").textContent = safety?.hour_index == null
-    ? "too few incidents here to compare hours"
-    : `${safety.hour_index.toFixed(1)}× this cell's average hour`;
 
   $("d-hour-note").textContent =
     "Ranked against other cells at this hour, then against this cell's own " +
@@ -1104,20 +1091,8 @@ async function initMap() {
     // first, and the first alone invites reading a night-time rank as an
     // absolute statement about the hour.
     const second = hourly
-      ? `<small>${deltaLabel(p[props.delta]) ?? "Not ranked at this hour"}` +
-        (p[props.index] == null ? "" : ` · ${p[props.index].toFixed(1)}× its average hour`) +
-        `</small>`
+      ? `<small>${deltaLabel(p[props.delta]) ?? "Not ranked at this hour"}</small>`
       : "";
-
-    if (state.scale === "delta") {
-      tooltip.innerHTML = hourly
-        ? `<b>${deltaLabel(p[props.delta]) ?? "Not ranked at this hour"}</b>` +
-          `<small>${hourLabel(state.hour)} · ${TRACK_LABELS[state.track]} · ` +
-          `${p[props.delta] == null ? "—" : (p[props.delta] * 100).toFixed(0) + " percentile points"}` +
-          `</small>`
-        : `<b>Enter a time of day</b><small>This view compares an hour against the rest of the day.</small>`;
-      return;
-    }
 
     if (state.scale === "safety") {
       const pct = hourly ? props.hpct : props.pct;
@@ -1225,9 +1200,8 @@ function wireControls() {
   };
   $("f-scale").onchange = (e) => {
     state.scale = e.target.value;
-    // The track tabs drive the safety ramp and the change-from-usual ramp
-    // alike; only the count view is indifferent to which track is selected.
-    $("f-track-field").hidden = state.scale === "count";
+    // The track tabs only mean anything while the safety ramp is on screen.
+    $("f-track-field").hidden = state.scale !== "safety";
     repaint();
   };
 

@@ -483,12 +483,17 @@ def _time_of_day(record: dict[str, Any]) -> dict[str, Any]:
             "getting safer, it is keeping pace with everywhere else.",
         ],
         "hour_index_note": (
-            "Alongside the two rankings, each cell carries the ratio of its "
-            "weighted offence at this hour to its own average hour. That is the "
-            "absolute reading the percentiles cannot give: 1.0 is an ordinary hour "
-            "for this cell, 2.5 is two and a half times its usual load. It is "
-            "withheld where a cell carries too little over the window for the "
-            "ratio to mean anything."
+            "Alongside the two rankings, a selected cell shows how much gets "
+            "reported there at that hour against its own average hour, as a "
+            "percentage where 100% is an ordinary hour for that cell. That is the "
+            "absolute reading a percentile cannot give: 250% is two and a half "
+            "times as many reported incidents as the cell usually sees in an hour, "
+            "40% is well below it. It counts incidents rather than weighting them "
+            "by severity, because it is a statement about how much is reported. It "
+            "is withheld where a cell carries too little across the window for the "
+            "ratio to mean anything -- three incidents in a year with one of them "
+            "at 2pm is 800% of an average hour, which is arithmetic rather than "
+            "evidence."
         ),
         "timestamp_caveat": (
             "This is the most important limitation of the hourly view, and it is "
