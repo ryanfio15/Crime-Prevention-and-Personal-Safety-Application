@@ -485,14 +485,32 @@ def cmd_reprocess(args: argparse.Namespace) -> int:
         config = SourceConfig.load(conn, args.city)
         adapter = get_adapter(config)
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT * FROM etl.pull_run WHERE pull_id = %s AND source_id = %s",
-                (args.pull_id, args.city),
-            )
+            if args.pull_id is None:
+                # Replaying the most recent snapshot is the common case by far,
+                # and looking the id up first costs a whole deploy cycle on a
+                # platform where commands are service start commands.
+                cur.execute(
+                    """
+                    SELECT * FROM etl.pull_run
+                    WHERE source_id = %s AND bronze_uri IS NOT NULL
+                      AND status = 'succeeded' AND mode <> 'boundary'
+                    ORDER BY pull_id DESC LIMIT 1
+                    """,
+                    (args.city,),
+                )
+            else:
+                cur.execute(
+                    "SELECT * FROM etl.pull_run WHERE pull_id = %s AND source_id = %s",
+                    (args.pull_id, args.city),
+                )
             original = cur.fetchone()
         if original is None or not original["bronze_uri"]:
-            print(f"No stored bronze snapshot for pull {args.pull_id}", file=sys.stderr)
+            target = args.pull_id if args.pull_id is not None else "any pull"
+            print(f"No stored bronze snapshot for {target}", file=sys.stderr)
             return 1
+        log.info(
+            "replaying pull %s (%s)", original["pull_id"], original["bronze_uri"]
+        )
 
         started = time.monotonic()
         pull_id = _open_pull(
@@ -827,7 +845,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     reprocess = sub.add_parser("reprocess", help="replay a stored bronze snapshot")
     reprocess.add_argument("--city", default="phl")
-    reprocess.add_argument("--pull-id", type=int, required=True)
+    reprocess.add_argument(
+        "--pull-id",
+        type=int,
+        default=None,
+        help="defaults to the newest pull with a stored snapshot",
+    )
     reprocess.set_defaults(func=cmd_reprocess)
 
     gold_cmd = sub.add_parser("gold", help="refresh gold rollups only")

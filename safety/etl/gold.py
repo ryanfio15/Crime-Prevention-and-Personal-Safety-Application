@@ -922,6 +922,51 @@ def hour_coverage(conn: psycopg.Connection, source_id: str) -> float:
     return row["known"] / row["total"]
 
 
+# Once the hour is known from the source itself, the stored timestamp can be
+# checked against it. A modal shift of 0 means occurred_at holds a local wall
+# clock; a shift of 19 or 20 (that is, -5 or -4) means it is a true UTC instant
+# and the adapter has been mislabelling it, which would affect occurred_year and
+# every window boundary, not just this layer.
+_HOUR_SHIFT_SQL = """
+SELECT
+    mod(
+        (occurred_local_hour
+         - EXTRACT(hour FROM occurred_at AT TIME ZONE 'UTC')::int + 24)::int,
+        24
+    )            AS shift,
+    count(*)     AS n
+FROM silver.incident
+WHERE source_id = %(source_id)s AND occurred_local_hour IS NOT NULL
+GROUP BY 1
+ORDER BY n DESC
+LIMIT 3
+"""
+
+
+def log_hour_shift(conn: psycopg.Connection, source_id: str) -> None:
+    """Report how the published hour relates to the stored timestamp."""
+    with conn.cursor() as cur:
+        cur.execute(_HOUR_SHIFT_SQL, {"source_id": source_id})
+        rows = cur.fetchall()
+    if not rows:
+        return
+    total = sum(r["n"] for r in rows)
+    top = rows[0]
+    log.info(
+        "published hour vs stored timestamp: %s",
+        ", ".join(f"{r['shift']}h in {r['n'] / total * 100:.1f}%" for r in rows),
+    )
+    if top["shift"] != 0:
+        log.warning(
+            "the stored occurred_at is offset from the published hour by %s hours "
+            "for most records, so it is a true UTC instant rather than the local "
+            "wall clock it is treated as. The hourly layer is unaffected -- it "
+            "uses the published hour -- but occurred_year and the window "
+            "boundaries are derived from that timestamp and are worth revisiting.",
+            (24 - top["shift"]) % 24,
+        )
+
+
 def refresh_hourly_layer(
     conn: psycopg.Connection,
     source_id: str,
@@ -957,6 +1002,8 @@ def refresh_hourly_layer(
             "from the hourly layers",
             (1 - share) * 100,
         )
+
+    log_hour_shift(conn, source_id)
 
     rows = 0
     for scheme in schemes:
