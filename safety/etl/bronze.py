@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import unquote, urlparse
 
 from safety.config import settings
 from safety.etl.adapters.base import RawChunk
@@ -105,10 +106,32 @@ class LocalBronzeStore:
 
     def open_existing(self, uri: str) -> LocalBronzePull:
         """Reopen a stored snapshot by the URI recorded in etl.pull_run."""
-        path = Path.from_uri(uri) if uri.startswith("file:") else Path(uri)
+        path = _path_from_uri(uri)
         if not path.exists():
             raise FileNotFoundError(f"no bronze snapshot at {uri}")
         return LocalBronzePull(directory=path)
+
+
+def _path_from_uri(uri: str) -> Path:
+    """The inverse of Path.as_uri(), on the Python the image actually runs.
+
+    Path.from_uri() is 3.13+, and the container is python:3.12-slim -- so the
+    call this replaces had never once succeeded there. It went unnoticed because
+    `reprocess` is its only caller and development runs a newer interpreter, a
+    gap no amount of local testing would have closed.
+
+    Unquoting is not optional: as_uri() percent-encodes, and every level of the
+    bronze layout is a "key=value" directory, so a real snapshot URI is full of
+    %3D.
+    """
+    if not uri.startswith("file:"):
+        return Path(uri)
+    path = unquote(urlparse(uri).path)
+    # Windows drive letters come back as "/C:/data/...". POSIX paths keep the
+    # leading separator they need.
+    if len(path) > 2 and path[0] == "/" and path[2] == ":":
+        path = path[1:]
+    return Path(path)
 
 
 def build_manifest(
