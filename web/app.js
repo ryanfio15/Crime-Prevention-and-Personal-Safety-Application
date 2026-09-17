@@ -185,6 +185,36 @@ function fillColorExpression() {
   ];
 }
 
+/* Approximate width of a cell, in metres, per resolution. */
+const CELL_SPAN_M = { 8: 530, 9: 200, 10: 76 };
+
+/**
+ * Resting width of the hairline between fills.
+ *
+ * The surface-coloured hairline only reads as a 2px gap while a cell is more
+ * than a few pixels across. At resolution 10 the whole-city view puts ~26,000
+ * hexagons on screen at roughly two pixels each, and a 1.1px line is then most
+ * of the cell -- the map turns into a sheet of surface colour with no data
+ * visible at all. So the line fades in at the zoom where this resolution's
+ * cells are actually wide enough to carry it, and is absent below that.
+ *
+ * Selection and hover keep a fixed width at every zoom: those are pointer
+ * feedback on one cell, not a boundary between thousands.
+ */
+function outlineWidthExpression() {
+  const span = CELL_SPAN_M[state.res] ?? CELL_SPAN_M[8];
+  // Web-mercator ground resolution at Philadelphia's latitude is about
+  // 119,940 / 2^zoom metres per pixel, so this is the zoom at which a cell
+  // spans roughly six pixels.
+  const legible = Math.log2((6 * 119940) / span);
+  return [
+    "case",
+    ["boolean", ["feature-state", "selected"], false], 2.2,
+    ["boolean", ["feature-state", "hover"], false], 1.6,
+    ["interpolate", ["linear"], ["zoom"], legible - 1, 0, legible, 1.1],
+  ];
+}
+
 /* ------------------------------------------------------------------- legend */
 
 function renderLegend() {
@@ -265,6 +295,9 @@ async function loadLayer({ quiet = false } = {}) {
     if (source) source.setData(collection);
 
     map.setPaintProperty("cells-fill", "fill-color", fillColorExpression());
+    // The cell size may have just changed, and the hairline is sized per
+    // resolution -- see outlineWidthExpression.
+    map.setPaintProperty("cells-outline", "line-width", outlineWidthExpression());
     renderLegend();
     renderTable();
   } catch (error) {
@@ -754,12 +787,7 @@ async function initMap() {
         ["boolean", ["feature-state", "hover"], false], INK_SECONDARY,
         SURFACE_GAP,
       ],
-      "line-width": [
-        "case",
-        ["boolean", ["feature-state", "selected"], false], 2.2,
-        ["boolean", ["feature-state", "hover"], false], 1.6,
-        1.1,
-      ],
+      "line-width": outlineWidthExpression(),
     },
   });
 

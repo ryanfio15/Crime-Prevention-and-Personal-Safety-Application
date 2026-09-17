@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -75,6 +76,12 @@ API = "/api/v1"
 if settings.enable_rate_limit:
     app.add_middleware(RateLimitMiddleware)
 
+# A whole-city resolution-10 layer is ~14 MB of GeoJSON, nearly all of it
+# repeated coordinate digits, and it compresses about ten to one. Without this
+# the finest cell size is only usable on a fast connection, which is the
+# opposite of what S2's mobile-first resident/commuter segment needs.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
 
 def get_conn():
     assert pool is not None, "connection pool not initialised"
@@ -94,9 +101,16 @@ Conn = Annotated[Any, Depends(get_conn)]
 # because refresh cadence differs per city (S8.2).
 # ---------------------------------------------------------------------------
 
-_cache: dict[tuple, tuple[float, str, Any]] = {}
-_CACHE_MAX_ENTRIES = 256
-_cache_stats = {"hits": 0, "misses": 0}
+# Values are serialized payloads, not objects, so a hit costs no re-encoding and
+# the size of an entry is something this module can actually measure.
+_cache: dict[tuple, tuple[float, str, str]] = {}
+_CACHE_MAX_ENTRIES = 64
+# A count alone stopped being a bound on memory when resolution 10 arrived: one
+# whole-city layer at that size is ~14 MB, so 256 of them is several gigabytes
+# in a container that has nothing like that. The budget holds every res-8 and
+# res-9 layer the map cycles through, plus a couple of res-10 ones.
+_CACHE_MAX_BYTES = 96 * 1024 * 1024
+_cache_stats = {"hits": 0, "misses": 0, "bytes": 0, "evictions": 0}
 
 
 def _refresh_stamp(conn) -> str:
@@ -104,7 +118,7 @@ def _refresh_stamp(conn) -> str:
     return str(version.get("last_refreshed_at"))
 
 
-def cached(conn, key: tuple, producer):
+def cached(conn, key: tuple, producer) -> str:
     stamp = _refresh_stamp(conn)
     hit = _cache.get(key)
     if hit is not None and hit[1] == stamp:
@@ -113,9 +127,18 @@ def cached(conn, key: tuple, producer):
 
     _cache_stats["misses"] += 1
     value = producer()
-    if len(_cache) >= _CACHE_MAX_ENTRIES:
+    # Drop everything rather than tracking an eviction order: the map re-requests
+    # the same few layers constantly, so the cache refills within a handful of
+    # requests and an LRU would buy little for the bookkeeping it costs.
+    if (
+        len(_cache) >= _CACHE_MAX_ENTRIES
+        or _cache_stats["bytes"] + len(value) > _CACHE_MAX_BYTES
+    ):
         _cache.clear()
+        _cache_stats["bytes"] = 0
+        _cache_stats["evictions"] += 1
     _cache[key] = (time.time(), stamp, value)
+    _cache_stats["bytes"] += len(value)
     return value
 
 
@@ -211,21 +234,26 @@ def cells(
         parsed_bbox = (west, south, east, north)
 
     key = ("cells", city, res, window, category, min_count, parsed_bbox)
-    document = cached(
+    payload = cached(
         conn,
         key,
-        lambda: repo.cells_geojson(
-            conn,
-            source_id=city,
-            h3_res=res,
-            time_window=window,
-            category=category,
-            min_count=min_count,
-            bbox=parsed_bbox,
+        # Encoded inside the cache, not after it. At resolution 10 the document
+        # is ~14 MB and re-encoding it costs more than the query that built it.
+        lambda: json.dumps(
+            repo.cells_geojson(
+                conn,
+                source_id=city,
+                h3_res=res,
+                time_window=window,
+                category=category,
+                min_count=min_count,
+                bbox=parsed_bbox,
+            ),
+            default=str,
         ),
     )
     return Response(
-        content=json.dumps(document, default=str),
+        content=payload,
         media_type="application/geo+json",
         headers={"Cache-Control": "public, max-age=60"},
     )
