@@ -70,13 +70,16 @@
     <span class="field-note" id="f-hour-note">All hours</span>
   </div>
 
-  <label class="field">
+  <div class="field">
     <span class="field-label">Colour by</span>
     <select id="f-scale">
       <option value="safety" selected>Safety ranking</option>
       <option value="count">Incident count</option>
     </select>
-  </label>
+    <!-- Filled by syncSafetyAvailability when the ranking is not built at the
+         selected cell size, so the disabled option explains itself. -->
+    <span class="field-note" id="f-scale-note"></span>
+  </div>
 
   <!-- Only meaningful while the safety ranking is on screen. That is the
        opening view, so it starts visible and hides if the scale changes. -->
@@ -139,6 +142,10 @@
         <div><dt id="d-hourshare-label">At this hour</dt><dd id="d-hourshare">&mdash;</dd></div>
         <div><dt>City rank</dt><dd id="d-rank">&mdash;</dd></div>
         <div><dt>Density</dt><dd id="d-density">&mdash;</dd></div>
+        <!-- The denominator the safety ranking divided by, stated rather than
+             left implicit: a cell's standing depends on it as much as on the
+             incidents. -->
+        <div><dt>People here</dt><dd id="d-exposure">&mdash;</dd></div>
         <div><dt>This cell + neighbours</dt><dd id="d-neighbours">&mdash;</dd></div>
         <div><dt>H3 cell</dt><dd id="d-h3" class="mono">&mdash;</dd></div>
       </dl>

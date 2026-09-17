@@ -35,6 +35,10 @@ class SourceConfig:
     backfill_start_date: date | None
     last_success_watermark: datetime | None
     timezone: str
+    # Which census geographies the city covers, for the exposure denominator
+    # (safety/etl/census.py). NULL for a city that has had no census load.
+    state_fips: str | None
+    county_fips: list[str] | None
     attribution_text: str
     terms_url: str | None
     freshness_note: str | None

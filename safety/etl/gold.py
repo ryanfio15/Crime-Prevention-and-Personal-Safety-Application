@@ -45,6 +45,16 @@ OFFENSE_MIX_DEPTH = 8
 TRACKS = ("violent", "non_violent")
 SAFETY_TIERS = 4
 
+# Resolutions the safety ranking builds at when the scheme divides by ambient
+# population rather than by area. Mirrors safety.etl.census.EXPOSURE_RESOLUTIONS
+# -- a resolution-10 cell is smaller than a census block, so its population is
+# an apportionment assumption rather than a measurement, and a ranking computed
+# on one would be reporting this pipeline's own interpolation back to the user.
+#
+# An area-denominated scheme still builds at every resolution; area is exact at
+# any size.
+PERCAPITA_RESOLUTIONS = (8, 9)
+
 # Time of day. Block h covers [h:00, h+1:00) local; 23 is 23:00-24:00.
 HOUR_BLOCKS = 24
 
@@ -365,37 +375,68 @@ class Scheme:
     version: str
     eb_prior_km2: float
     self_weight: float
+    exposure_kind: str = "area_km2"
+    eb_prior_persons: float | None = None
+    jobs_weight: float = 1.0
+
+    @property
+    def per_capita(self) -> bool:
+        return self.exposure_kind == "ambient_population"
+
+    @property
+    def eb_prior(self) -> float:
+        """The prior in whatever units this scheme's denominator is measured in.
+
+        One knob, two unit systems: km2 of citywide-average evidence for an area
+        scheme, ambient persons for a per-capita one. Keeping them in separate
+        columns and resolving here means neither can be silently read as the
+        other -- 0.40 km2 and 0.40 people are not remotely the same prior.
+        """
+        if self.per_capita:
+            if self.eb_prior_persons is None:
+                raise ValueError(
+                    f"scheme '{self.version}' is per-capita but has no "
+                    "eb_prior_persons; the database CHECK should have caught this"
+                )
+            return self.eb_prior_persons
+        return self.eb_prior_km2
+
+    @property
+    def resolutions(self) -> tuple[int, ...]:
+        return PERCAPITA_RESOLUTIONS if self.per_capita else RESOLUTIONS
+
+
+_SCHEME_SELECT = """
+    SELECT scheme_version, eb_prior_km2, self_weight,
+           exposure_kind, eb_prior_persons, jobs_weight
+    FROM reference.severity_scheme
+"""
+
+
+def _as_scheme(row: dict[str, Any]) -> Scheme:
+    return Scheme(
+        row["scheme_version"],
+        row["eb_prior_km2"],
+        row["self_weight"],
+        row["exposure_kind"],
+        row["eb_prior_persons"],
+        row["jobs_weight"],
+    )
 
 
 def enabled_schemes(conn: psycopg.Connection) -> list[Scheme]:
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT scheme_version, eb_prior_km2, self_weight
-            FROM reference.severity_scheme
-            WHERE enabled
-            ORDER BY scheme_version
-            """
-        )
-        return [
-            Scheme(r["scheme_version"], r["eb_prior_km2"], r["self_weight"])
-            for r in cur.fetchall()
-        ]
+        cur.execute(f"{_SCHEME_SELECT} WHERE enabled ORDER BY scheme_version")
+        return [_as_scheme(r) for r in cur.fetchall()]
 
 
 def get_scheme(conn: psycopg.Connection, version: str) -> Scheme:
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT scheme_version, eb_prior_km2, self_weight
-            FROM reference.severity_scheme WHERE scheme_version = %s
-            """,
-            (version,),
-        )
+        cur.execute(f"{_SCHEME_SELECT} WHERE scheme_version = %s", (version,))
         row = cur.fetchone()
     if row is None:
         raise LookupError(f"no severity scheme '{version}'; load reference/severity first")
-    return Scheme(row["scheme_version"], row["eb_prior_km2"], row["self_weight"])
+    return _as_scheme(row)
 
 
 def active_scheme(conn: psycopg.Connection, source_id: str) -> str | None:
@@ -452,14 +493,33 @@ WITH weighted AS (
     GROUP BY 1
 ),
 universe AS (
-    SELECT h3_index, area_km2
-    FROM gold.cell_geometry
-    WHERE source_id = %(source_id)s AND h3_res = %(h3_res)s
+    -- Area and exposure travel together from here down. The ranking divides by
+    -- whichever one the scheme names; area_km2 stays in scope regardless,
+    -- because weighted_per_km2 is still written and is still true.
+    --
+    -- Area is the poorer denominator and that is the point of the exposure
+    -- column: a cell's weighted total scales with how many people are in it,
+    -- so ranking on area alone reports where the city is busy as much as where
+    -- it is dangerous.
+    SELECT
+        g.h3_index,
+        g.area_km2,
+        CASE WHEN %(per_capita)s
+             THEN COALESCE(e.residents, 0) + COALESCE(e.jobs, 0) * %(jobs_weight)s
+             ELSE g.area_km2
+        END AS exposure
+    FROM gold.cell_geometry g
+    LEFT JOIN gold.cell_exposure e
+           ON e.source_id = g.source_id
+          AND e.h3_index  = g.h3_index
+          AND e.h3_res    = g.h3_res
+    WHERE g.source_id = %(source_id)s AND g.h3_res = %(h3_res)s
 ),
 joined AS (
     SELECT
         u.h3_index,
         u.area_km2,
+        u.exposure,
         COALESCE(x.n_violent, 0)     AS n_violent,
         COALESCE(x.n_non_violent, 0) AS n_non_violent,
         COALESCE(x.w_violent, 0)     AS w_violent,
@@ -468,7 +528,7 @@ joined AS (
     LEFT JOIN weighted x USING (h3_index)
 ),
 unpivoted AS (
-    SELECT h3_index, area_km2, track, n, w
+    SELECT h3_index, area_km2, exposure, track, n, w
     FROM joined
     CROSS JOIN LATERAL (VALUES
         ('violent',     n_violent,     w_violent),
@@ -477,31 +537,38 @@ unpivoted AS (
 ),
 city AS (
     -- The rate each cell is shrunk toward: this track's citywide weighted
-    -- offense per km2.
-    SELECT track, sum(w) / NULLIF(sum(area_km2), 0) AS city_rate
+    -- offense per unit of exposure.
+    SELECT track, sum(w) / NULLIF(sum(exposure), 0) AS city_rate
     FROM unpivoted
     GROUP BY track
 ),
 adjusted AS (
     SELECT
-        u.h3_index, u.area_km2, u.track, u.n, u.w,
+        u.h3_index, u.area_km2, u.exposure, u.track, u.n, u.w,
         -- Poisson-gamma posterior rate: the cell's own weighted total plus
-        -- eb_prior_km2 worth of citywide-average offense, over its own area
-        -- plus that same prior area.
+        -- eb_prior worth of citywide-average offense, over its own exposure
+        -- plus that same prior.
         --
         -- The prior has to be an exposure rather than a count. A cell with no
         -- incidents was still watched for the whole window, so zero is evidence
         -- of a low rate, not missing information -- shrinking by n/(n+k) instead
         -- sends every empty cell to the citywide mean, which ranked a cell with
         -- six assaults safer than a cell with none.
+        --
+        -- With a population denominator the prior earns a second job: it is what
+        -- keeps a cell whose ambient population rounds to nothing from dividing
+        -- by zero. As exposure falls away the posterior tends to
+        -- city_rate + w/prior, which is bounded. That is why the airport and the
+        -- middle of Fairmount Park can be ranked at all rather than pinned to
+        -- the bottom by arithmetic.
         (u.w + COALESCE(c.city_rate, 0) * %(eb_prior)s)
-            / NULLIF(u.area_km2 + %(eb_prior)s, 0) AS adj
+            / NULLIF(u.exposure + %(eb_prior)s, 0) AS adj
     FROM unpivoted u
     JOIN city c USING (track)
 ),
 blended AS (
     SELECT
-        a.h3_index, a.area_km2, a.track, a.n, a.w, a.adj,
+        a.h3_index, a.area_km2, a.exposure, a.track, a.n, a.w, a.adj,
         -- Risk does not stop at a hexagon edge. A cell with no in-universe
         -- neighbours keeps its own value rather than being pulled toward zero.
         CASE WHEN nb.mean_adj IS NULL THEN a.adj
@@ -537,12 +604,17 @@ INSERT INTO gold.cell_safety (
     source_id, h3_index, h3_res, time_window, track, scheme_version,
     window_start, window_end, incident_count,
     weighted_total, weighted_per_km2, smoothed_per_km2,
+    exposure, weighted_per_1k,
     safety_percentile, safety_rank, city_cell_total, safety_tier, refreshed_at
 )
 SELECT
     %(source_id)s, h3_index, %(h3_res)s, %(time_window)s, track, %(scheme)s,
     %(window_start)s, %(window_end)s, n,
     w, w / area_km2, smoothed,
+    -- Both NULL for an area scheme: that row's denominator is area_km2, and a
+    -- per-1,000-people figure would be a number it never computed.
+    CASE WHEN %(per_capita)s THEN exposure END,
+    CASE WHEN %(per_capita)s THEN w / NULLIF(exposure / 1000.0, 0) END,
     pct, rnk, cell_total,
     CASE
         -- Tier 0 is "nothing of this track was reported here", which is not the
@@ -582,6 +654,45 @@ def weight_coverage(conn: psycopg.Connection, source_id: str, scheme: str) -> fl
     return row["sourced"] / row["total"]
 
 
+def _require_exposure(conn: psycopg.Connection, source_id: str, scheme: Scheme) -> None:
+    """Refuse to build a per-capita ranking with no population loaded.
+
+    The exposure join is a LEFT JOIN, so a missing gold.cell_exposure does not
+    fail -- it quietly makes every denominator zero, at which point the prior
+    alone decides the ranking and every cell in the city ties. That would look
+    like a working build producing a uniform map, which is a far worse failure
+    than an exception.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT h3_res, count(*)::int AS cells,
+                   coalesce(sum(residents + jobs), 0) AS ambient
+            FROM gold.cell_exposure
+            WHERE source_id = %s AND h3_res = ANY(%s)
+            GROUP BY h3_res
+            """,
+            (source_id, list(scheme.resolutions)),
+        )
+        built = {r["h3_res"]: r for r in cur.fetchall()}
+
+    missing = [res for res in scheme.resolutions if res not in built]
+    if missing:
+        raise LookupError(
+            f"scheme '{scheme.version}' divides by ambient population, but "
+            f"gold.cell_exposure has no rows for '{source_id}' at resolution "
+            f"{missing}. Run `python -m safety.etl.run census --city {source_id}` "
+            "first."
+        )
+    empty = [res for res, row in built.items() if row["ambient"] <= 0]
+    if empty:
+        raise LookupError(
+            f"gold.cell_exposure for '{source_id}' at resolution {empty} sums to "
+            "zero ambient population; the census load produced no counts, so the "
+            "ranking would be the prior alone"
+        )
+
+
 def refresh_cell_safety(
     conn: psycopg.Connection,
     source_id: str,
@@ -589,9 +700,11 @@ def refresh_cell_safety(
     scheme: Scheme,
 ) -> int:
     """Rebuild gold.cell_safety for one scheme, every resolution and window."""
+    if scheme.per_capita:
+        _require_exposure(conn, source_id, scheme)
     written = 0
     with conn.cursor() as cur:
-        for res in RESOLUTIONS:
+        for res in scheme.resolutions:
             h3_column = _h3_column(res)
             sql = _SAFETY_SQL.format(
                 h3_column=h3_column, weight_lookup=_WEIGHT_LOOKUP
@@ -616,8 +729,10 @@ def refresh_cell_safety(
                         "window_start": window.start,
                         "window_end": window.end,
                         "scheme": scheme.version,
-                        "eb_prior": scheme.eb_prior_km2,
+                        "eb_prior": scheme.eb_prior,
                         "self_weight": scheme.self_weight,
+                        "per_capita": scheme.per_capita,
+                        "jobs_weight": scheme.jobs_weight,
                     },
                 )
                 written += cur.rowcount
@@ -659,14 +774,30 @@ universe AS (
     -- Every cell exists in every hour block, including the ones with nothing
     -- reported: a cell that was quiet at 3am still sat there being watched, and
     -- dropping it would inflate every other cell's percentile in that block.
-    SELECT g.h3_index, g.area_km2, b.hour_block
+    --
+    -- Exposure is the same 24-hour figure in every block, which is the honest
+    -- limit of this layer: residents and jobs are where people sleep and work,
+    -- not where they are at 3am. It still beats area, which does not vary
+    -- either and does not even track population.
+    SELECT
+        g.h3_index,
+        g.area_km2,
+        CASE WHEN %(per_capita)s
+             THEN COALESCE(e.residents, 0) + COALESCE(e.jobs, 0) * %(jobs_weight)s
+             ELSE g.area_km2
+        END AS exposure,
+        b.hour_block
     FROM gold.cell_geometry g
+    LEFT JOIN gold.cell_exposure e
+           ON e.source_id = g.source_id
+          AND e.h3_index  = g.h3_index
+          AND e.h3_res    = g.h3_res
     CROSS JOIN generate_series(0, %(hour_blocks)s - 1) AS b(hour_block)
     WHERE g.source_id = %(source_id)s AND g.h3_res = %(h3_res)s
 ),
 joined AS (
     SELECT
-        u.h3_index, u.area_km2, u.hour_block,
+        u.h3_index, u.area_km2, u.exposure, u.hour_block,
         COALESCE(x.n_violent, 0)     AS n_violent,
         COALESCE(x.n_non_violent, 0) AS n_non_violent,
         COALESCE(x.w_violent, 0)     AS w_violent,
@@ -676,7 +807,7 @@ joined AS (
            ON x.h3_index = u.h3_index AND x.hour_block = u.hour_block
 ),
 unpivoted AS (
-    SELECT h3_index, area_km2, hour_block, track, n, w
+    SELECT h3_index, area_km2, exposure, hour_block, track, n, w
     FROM joined
     CROSS JOIN LATERAL (VALUES
         ('violent',     n_violent,     w_violent),
@@ -687,19 +818,19 @@ city AS (
     -- Per hour block, not citywide-per-day: the rate a 4am cell is shrunk
     -- toward has to be the 4am city, or the prior would drag every quiet hour
     -- toward a daytime average it has nothing to do with.
-    SELECT track, hour_block, sum(w) / NULLIF(sum(area_km2), 0) AS city_rate
+    SELECT track, hour_block, sum(w) / NULLIF(sum(exposure), 0) AS city_rate
     FROM unpivoted
     GROUP BY track, hour_block
 ),
 adjusted AS (
     SELECT
-        u.h3_index, u.area_km2, u.hour_block, u.track, u.n, u.w,
+        u.h3_index, u.area_km2, u.exposure, u.hour_block, u.track, u.n, u.w,
         -- Same Poisson-gamma posterior as the all-hours ranking. The prior is
-        -- an exposure in km2, so it shrinks by area/(area + prior) regardless
+        -- an exposure, so it shrinks by exposure/(exposure + prior) regardless
         -- of how much offense the cell carries -- which means slicing the
         -- window into 24 does not quietly change how hard the prior bites.
         (u.w + COALESCE(c.city_rate, 0) * %(eb_prior)s)
-            / NULLIF(u.area_km2 + %(eb_prior)s, 0) AS adj
+            / NULLIF(u.exposure + %(eb_prior)s, 0) AS adj
     FROM unpivoted u
     JOIN city c ON c.track = u.track AND c.hour_block = u.hour_block
 ),
@@ -748,6 +879,7 @@ INSERT INTO gold.cell_hour_safety (
     source_id, h3_index, h3_res, time_window, hour_block, track, scheme_version,
     window_start, window_end, incident_count,
     weighted_total, weighted_per_km2, smoothed_per_km2,
+    exposure, weighted_per_1k,
     safety_percentile, safety_rank, city_cell_total, safety_tier,
     baseline_percentile, percentile_delta, hour_index, refreshed_at
 )
@@ -756,6 +888,8 @@ SELECT
     r.track, %(scheme)s,
     %(window_start)s, %(window_end)s, r.n,
     r.w, r.w / r.area_km2, r.smoothed,
+    CASE WHEN %(per_capita)s THEN r.exposure END,
+    CASE WHEN %(per_capita)s THEN r.w / NULLIF(r.exposure / 1000.0, 0) END,
     r.pct, r.rnk, r.cell_total,
     CASE
         -- Tier 0 means nothing of this track was reported here at this hour.
@@ -849,8 +983,10 @@ def refresh_cell_hour_safety(
                         "window_start": window.start,
                         "window_end": window.end,
                         "scheme": scheme.version,
-                        "eb_prior": scheme.eb_prior_km2,
+                        "eb_prior": scheme.eb_prior,
                         "self_weight": scheme.self_weight,
+                        "per_capita": scheme.per_capita,
+                        "jobs_weight": scheme.jobs_weight,
                         "hour_blocks": HOUR_BLOCKS,
                         "min_evidence": MIN_HOUR_EVIDENCE,
                     },
@@ -1131,7 +1267,8 @@ INSERT INTO gold.city_snapshot (
     center_lat, center_lng, bbox_west, bbox_south, bbox_east, bbox_north,
     crosswalk_version, pipeline_version, attribution_text, terms_url,
     unmapped_offense_count, rejected_record_count,
-    severity_scheme_version, severity_weight_coverage, hour_known_share
+    severity_scheme_version, severity_weight_coverage, hour_known_share,
+    ambient_population, population_vintage, jobs_vintage
 )
 SELECT
     r.source_id, r.city_name, r.agency_name,
@@ -1144,7 +1281,8 @@ SELECT
     ST_XMax(b.geom::box2d), ST_YMax(b.geom::box2d),
     r.crosswalk_version, %(pipeline_version)s, r.attribution_text, r.terms_url,
     COALESCE(quality.unmapped, 0), COALESCE(quality.rejected, 0),
-    r.severity_scheme_version, %(weight_coverage)s, %(hour_coverage)s
+    r.severity_scheme_version, %(weight_coverage)s, %(hour_coverage)s,
+    exposure.ambient, exposure.pop_vintage, exposure.jobs_vintage
 FROM reference.source_registry r
 JOIN reference.city_boundary b ON b.source_id = r.source_id
 CROSS JOIN LATERAL (
@@ -1169,6 +1307,17 @@ CROSS JOIN LATERAL (
         (SELECT COALESCE(sum(records_rejected), 0) FROM etl.pull_run
           WHERE source_id = r.source_id AND status = 'succeeded')::int AS rejected
 ) quality
+CROSS JOIN LATERAL (
+    -- Read off the blocks rather than the apportioned cells: this is the
+    -- denominator as published, before any of this pipeline's arithmetic
+    -- touched it, which is the figure worth showing on a methodology page.
+    SELECT
+        NULLIF(COALESCE(sum(pop20), 0) + COALESCE(sum(jobs), 0), 0)::double precision
+            AS ambient,
+        CASE WHEN count(*) > 0 THEN 2020 END::smallint AS pop_vintage,
+        max(jobs_year)::smallint AS jobs_vintage
+    FROM reference.census_block WHERE source_id = r.source_id
+) exposure
 WHERE r.source_id = %(source_id)s
 ON CONFLICT (source_id) DO UPDATE SET
     data_as_of             = EXCLUDED.data_as_of,
@@ -1200,7 +1349,10 @@ ON CONFLICT (source_id) DO UPDATE SET
     severity_weight_coverage = COALESCE(
         EXCLUDED.severity_weight_coverage, city_snapshot.severity_weight_coverage),
     hour_known_share         = COALESCE(
-        EXCLUDED.hour_known_share, city_snapshot.hour_known_share)
+        EXCLUDED.hour_known_share, city_snapshot.hour_known_share),
+    ambient_population       = EXCLUDED.ambient_population,
+    population_vintage       = EXCLUDED.population_vintage,
+    jobs_vintage             = EXCLUDED.jobs_vintage
 """
 
 
@@ -1271,6 +1423,33 @@ def refresh_safety_layer(
     return rows, coverage
 
 
+def refresh_cell_exposure(conn: psycopg.Connection, source_id: str) -> dict[int, int]:
+    """Rebuild the population denominator, if this city has one loaded.
+
+    Imported here rather than at module scope: safety.etl.census pulls in pyshp
+    and httpx, and a plain `gold` refresh on a city with no census data should
+    not need either.
+    """
+    from safety.etl import census
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*)::int AS n FROM reference.census_block WHERE source_id = %s",
+            (source_id,),
+        )
+        row = cur.fetchone()
+    if not row or not row["n"]:
+        log.warning(
+            "no census blocks loaded for '%s'; skipping the exposure layer. "
+            "A per-capita severity scheme cannot be built until "
+            "`python -m safety.etl.run census --city %s` has run.",
+            source_id,
+            source_id,
+        )
+        return {}
+    return census.build_cell_exposure(conn, source_id)
+
+
 def refresh_all(
     conn: psycopg.Connection, source_id: str, pipeline_version: str
 ) -> dict[str, Any]:
@@ -1287,6 +1466,13 @@ def refresh_all(
         ", ".join(f"{w.name}[{w.start}..{w.end}]" for w in windows),
     )
 
+    # Exposure is keyed on the cell universe, so it has to follow it and precede
+    # anything that divides by it. Skipped, with a warning, when no census data
+    # has been loaded -- an area-denominated scheme still builds fine without it,
+    # and refusing here would make the census pull a hard prerequisite of every
+    # gold refresh rather than of the per-capita ranking specifically.
+    exposure_cells = refresh_cell_exposure(conn, source_id)
+
     activity_rows = refresh_cell_activity(conn, source_id, windows)
     safety_rows, coverage = refresh_safety_layer(conn, source_id, windows)
     # After the all-hours ranking, never before: the hourly layer's second
@@ -1302,6 +1488,7 @@ def refresh_all(
         "cells_r8": cells.get(8, 0),
         "cells_r9": cells.get(9, 0),
         "cells_r10": cells.get(10, 0),
+        "cell_exposure_rows": sum(exposure_cells.values()),
         "cell_activity_rows": activity_rows,
         "cell_safety_rows": safety_rows,
         "cell_hour_safety_rows": hour_rows,

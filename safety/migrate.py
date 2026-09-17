@@ -5,6 +5,7 @@ Run with:  python -m safety.migrate
 
 from __future__ import annotations
 
+import argparse
 import csv
 import logging
 import sys
@@ -150,7 +151,10 @@ _SCHEME_COLUMNS = (
     "scheme_version",
     "description",
     "source_citation",
+    "exposure_kind",
     "eb_prior_km2",
+    "eb_prior_persons",
+    "jobs_weight",
     "self_weight",
     "enabled",
     "notes",
@@ -174,6 +178,13 @@ def _as_bool(value: str | None, default: bool = True) -> bool:
     return value.strip().lower() in {"1", "t", "true", "yes", "y"}
 
 
+def _as_float(value: str | None) -> float | None:
+    """An empty CSV cell is "this scheme does not use that parameter"."""
+    if value is None or value.strip() == "":
+        return None
+    return float(value)
+
+
 def load_severity_schemes(conn: psycopg.Connection) -> int:
     """Upsert reference/severity/schemes.csv into reference.severity_scheme."""
     path = SEVERITY_DIR / "schemes.csv"
@@ -189,7 +200,10 @@ def load_severity_schemes(conn: psycopg.Connection) -> int:
             row["scheme_version"].strip(),
             row["description"],
             row["source_citation"],
+            (row.get("exposure_kind") or "area_km2").strip(),
             float(row["eb_prior_km2"]),
+            _as_float(row.get("eb_prior_persons")),
+            _as_float(row.get("jobs_weight")) or 1.0,
             float(row["self_weight"]),
             _as_bool(row.get("enabled")),
             row.get("notes") or None,
@@ -205,7 +219,10 @@ def load_severity_schemes(conn: psycopg.Connection) -> int:
             ON CONFLICT (scheme_version) DO UPDATE SET
                 description        = EXCLUDED.description,
                 source_citation    = EXCLUDED.source_citation,
+                exposure_kind      = EXCLUDED.exposure_kind,
                 eb_prior_km2       = EXCLUDED.eb_prior_km2,
+                eb_prior_persons   = EXCLUDED.eb_prior_persons,
+                jobs_weight        = EXCLUDED.jobs_weight,
                 self_weight        = EXCLUDED.self_weight,
                 enabled            = EXCLUDED.enabled,
                 notes              = EXCLUDED.notes
@@ -215,6 +232,64 @@ def load_severity_schemes(conn: psycopg.Connection) -> int:
     conn.commit()
     log.info("loaded %s severity scheme(s) from %s", len(payload), path.name)
     return len(payload)
+
+
+def copy_inherited_weights(conn: psycopg.Connection) -> int:
+    """Give a scheme the weight table of the one it declares it inherits from.
+
+    A scheme that changes only the denominator must carry *identical* severity
+    weights to the one it is being compared against, or safety-compare stops
+    being a read on the denominator and becomes a read on both at once. Copying
+    is how that identity is guaranteed; duplicating two hundred CSV rows would
+    let the two drift apart silently on the next edit.
+
+    Must run after load_severity_weights, since the parent's rows have to exist
+    before they can be copied.
+    """
+    path = SEVERITY_DIR / "schemes.csv"
+    if not path.exists():
+        return 0
+    with path.open(newline="", encoding="utf-8-sig") as fh:
+        rows = list(csv.DictReader(fh))
+
+    copied = 0
+    for row in rows:
+        parent = (row.get("inherits_weights_from") or "").strip()
+        if not parent:
+            continue
+        child = row["scheme_version"].strip()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO reference.offense_severity_weight
+                    (scheme_version, track, key_type, key_value, weight,
+                     sourced, source_item, notes)
+                SELECT %s, track, key_type, key_value, weight,
+                       sourced, source_item, notes
+                FROM reference.offense_severity_weight
+                WHERE scheme_version = %s
+                ON CONFLICT (scheme_version, track, key_type, key_value)
+                DO UPDATE SET
+                    weight      = EXCLUDED.weight,
+                    sourced     = EXCLUDED.sourced,
+                    source_item = EXCLUDED.source_item,
+                    notes       = EXCLUDED.notes
+                """,
+                (child, parent),
+            )
+            written = cur.rowcount
+        conn.commit()
+        copied += written
+        if not written:
+            log.warning(
+                "scheme '%s' inherits from '%s', which has no weights loaded; "
+                "the ranking will fall back to a weight of 1.0 for every offense",
+                child,
+                parent,
+            )
+        else:
+            log.info("scheme '%s' inherits %s weight(s) from '%s'", child, written, parent)
+    return copied
 
 
 def load_severity_weights(conn: psycopg.Connection) -> int:
@@ -295,6 +370,60 @@ def point_sources_at_scheme(conn: psycopg.Connection) -> int:
     conn.commit()
     if updated:
         log.info("pointed %s source(s) at severity scheme '%s'", updated, enabled[0])
+    return updated
+
+
+def activate_scheme(conn: psycopg.Connection, scheme_version: str, source_id: str | None) -> int:
+    """Promote a scheme to the one a city actually serves.
+
+    Deliberately explicit rather than automatic. point_sources_at_scheme only
+    ever fills a NULL, because promoting changes what every safety number in the
+    product means -- a per-capita ranking and an area ranking are different
+    quantities wearing the same label. That is a decision to be made after
+    looking at safety-compare, not a side effect of re-running the loader.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT enabled FROM reference.severity_scheme WHERE scheme_version = %s",
+            (scheme_version,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(
+                f"no severity scheme '{scheme_version}'; check reference/severity/schemes.csv"
+            )
+        if not row["enabled"]:
+            raise ValueError(
+                f"severity scheme '{scheme_version}' is disabled, so the pipeline "
+                "would never build it; enable it in schemes.csv first"
+            )
+
+        if source_id:
+            cur.execute(
+                """
+                UPDATE reference.source_registry
+                   SET severity_scheme_version = %s, updated_at = now()
+                 WHERE source_id = %s
+                """,
+                (scheme_version, source_id),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE reference.source_registry
+                   SET severity_scheme_version = %s, updated_at = now()
+                 WHERE severity_scheme_version IS DISTINCT FROM %s
+                """,
+                (scheme_version, scheme_version),
+            )
+        updated = cur.rowcount
+    conn.commit()
+    log.info(
+        "activated severity scheme '%s' for %s source(s); "
+        "re-run the safety and hourly layers for the change to reach the map",
+        scheme_version,
+        updated,
+    )
     return updated
 
 
@@ -551,10 +680,31 @@ def backfill_incident_hour(conn: psycopg.Connection) -> int:
     return filled
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="safety.migrate", description=__doc__)
+    parser.add_argument(
+        "--activate",
+        metavar="SCHEME",
+        default=None,
+        help=(
+            "promote a severity scheme to the one cities serve "
+            "(e.g. nscs_v2_percapita). Changes what the safety numbers mean, so "
+            "it is never done automatically"
+        ),
+    )
+    parser.add_argument(
+        "--city",
+        default=None,
+        help="limit --activate to one city; default is every source",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s"
     )
+    args = build_parser().parse_args(argv)
     wait_for_db()
     with connect() as conn:
         applied = apply_migrations(conn)
@@ -562,8 +712,13 @@ def main() -> int:
         # pointer they are referenced by.
         scheme_rows = load_severity_schemes(conn)
         weight_rows = load_severity_weights(conn)
+        # After the weight files, so an inheriting scheme copies a table that
+        # actually exists.
+        copy_inherited_weights(conn)
         crosswalk_rows = load_crosswalks(conn)
         point_sources_at_scheme(conn)
+        if args.activate:
+            activate_scheme(conn, args.activate, args.city)
         backfilled = backfill_h3_cells(conn)
         hours_filled = backfill_incident_hour(conn)
 

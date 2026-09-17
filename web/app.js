@@ -206,6 +206,13 @@ const TRACK_PROPS = {
 const HOURLY_RESOLUTIONS = [8, 9];
 const HOURLY_WINDOWS = ["last_12m", "last_24m"];
 
+/* Mirrors safety.etl.gold.PERCAPITA_RESOLUTIONS. The safety ranking divides by
+   ambient population apportioned from census blocks, and a res-10 cell is
+   smaller than a census block -- there is no population figure at that size
+   that is not interpolation. Counts are still served there, so the map falls
+   back to the count ramp rather than going blank. */
+const SAFETY_RESOLUTIONS = [8, 9];
+
 /** "20:00–21:00". The last block reads 23:00–24:00, not 23:00–00:00. */
 const hourLabel = (hour) =>
   `${String(hour).padStart(2, "0")}:00–${String(hour + 1).padStart(2, "0")}:00`;
@@ -432,7 +439,7 @@ function renderLegend() {
 
   $("legend-foot").innerHTML = safety
     ? `<span class="legend-zero"><i></i> Nothing of this kind reported</span>` +
-      `<br>Severity-weighted offence per km², smoothed` +
+      `<br>Severity-weighted offence per 1,000 residents and workers, smoothed` +
       (state.hour === null ? "" : " <b>within this hour</b>") +
       `. ${skew} A cell with no reports is not therefore safe.`
     : `<span class="legend-zero"><i></i> No reported incidents</span>` +
@@ -562,6 +569,15 @@ async function selectCell(h3) {
   $("d-density").textContent = headline.incidents_per_km2
     ? `${nf.format(Math.round(headline.incidents_per_km2))} per km²`
     : "—";
+
+  // Residents and workers separately, not just the sum: which of the two a
+  // cell's exposure comes from is most of what distinguishes a business
+  // district from a neighbourhood, and the ranking treats them alike.
+  const exposure = detail.exposure;
+  $("d-exposure").textContent = exposure
+    ? `${nf.format(exposure.residents)} living · ${nf.format(exposure.jobs)} working`
+    : "—";
+
   $("d-h3").textContent = h3;
 
   // S10: the cell plus its ring of neighbours is an O(1) H3 operation and an
@@ -1167,13 +1183,21 @@ async function initMap() {
       const tier = hourly ? props.htier : props.tier;
       const value = p[pct];
       const reported = hourly ? p.hcount : p.count;
+      // The denominator, alongside the count it was divided by. A cell ranked
+      // badly on twelve incidents among two hundred people is a different
+      // statement from one ranked badly on twelve among twelve thousand, and
+      // the percentile alone hides which it is.
+      const among =
+        p.exposure === null || p.exposure === undefined
+          ? ""
+          : ` · among ${nf.format(p.exposure)} people`;
       tooltip.innerHTML =
         (value === null || value === undefined
           ? `<b>No ${TRACK_LABELS[state.track]} offences reported</b>`
           : `Safety: <b>${safetyLabel(value)}</b>`) +
         `<small>${SAFETY_TIER_LABELS[p[tier]] ?? "—"} · ${TRACK_LABELS[state.track]}` +
         (hourly ? ` · ${hourLabel(state.hour)}` : "") +
-        ` · ${nf.format(reported ?? 0)} reported incidents</small>` +
+        ` · ${nf.format(reported ?? 0)} reported incidents${among}</small>` +
         second;
       return;
     }
@@ -1251,6 +1275,31 @@ function setHour(hour) {
   loadLayer();
 }
 
+/**
+ * Gate the safety ramp on cell sizes where a population denominator exists.
+ *
+ * Same principle as syncHourAvailability: the control says why up front rather
+ * than letting the request 400 or, worse, painting a layer of nulls that reads
+ * as "everywhere here is equally safe". Falls back to the count ramp, which is
+ * built at every resolution, instead of leaving the map blank.
+ */
+function syncSafetyAvailability() {
+  const ok = SAFETY_RESOLUTIONS.includes(state.res);
+  const option = $("f-scale").querySelector('option[value="safety"]');
+  option.disabled = !ok;
+
+  if (!ok && state.scale === "safety") {
+    state.scale = "count";
+    $("f-scale").value = "count";
+    $("f-track-field").hidden = true;
+  }
+  $("f-scale-note").textContent = ok
+    ? ""
+    : "Safety ranking needs a population denominator, which this cell size is " +
+      "too small to carry — showing incident count.";
+  return ok;
+}
+
 function wireControls() {
   $("f-window").onchange = (e) => {
     state.window = e.target.value;
@@ -1265,6 +1314,7 @@ function wireControls() {
   $("f-res").onchange = (e) => {
     state.res = Number(e.target.value);
     syncHourAvailability();
+    syncSafetyAvailability();
     // A res-8 index is meaningless on the res-9 layer, so drop the selection.
     closeDetail();
     loadLayer();
@@ -1357,6 +1407,7 @@ function watchForRefresh() {
   await initMap();
   wireControls();
   syncHourAvailability();
+  syncSafetyAvailability();
   // Expose read-only state for debugging and for the smoke-test driver.
   window.__safetyState = state;
   await Promise.all([loadFreshness(), loadLayer()]);

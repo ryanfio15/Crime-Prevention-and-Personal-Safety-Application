@@ -5,3 +5,7 @@ httpx==0.28.1
 pydantic-settings==2.15.0
 h3==4.5.0
 pyproj==3.7.2
+# Reads the TIGER/Line census-block shapefile for the exposure denominator.
+# Pure Python and dependency-free, which is why it is here rather than
+# geopandas: the only thing needed from the file is a polygon and two integers.
+pyshp==3.1.6

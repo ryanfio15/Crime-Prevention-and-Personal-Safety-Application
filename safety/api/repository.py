@@ -29,6 +29,14 @@ VALID_HOURS = tuple(range(24))
 HOURLY_RESOLUTIONS = (8, 9)
 HOURLY_WINDOWS = ("last_12m", "last_24m")
 
+# Mirrors safety.etl.gold.PERCAPITA_RESOLUTIONS, same duplication rationale.
+# The safety ranking divides severity-weighted offence by ambient population,
+# which is apportioned from census blocks -- and a resolution-10 cell is smaller
+# than a census block, so there is no population figure there that is not this
+# pipeline's own interpolation. The activity layer still serves resolution 10;
+# only the ranking stops.
+SAFETY_RESOLUTIONS = (8, 9)
+
 WINDOW_LABELS = {
     "last_30d": "Last 30 days",
     "last_90d": "Last 90 days",
@@ -186,7 +194,8 @@ def severity_scheme(conn: psycopg.Connection, source_id: str) -> dict[str, Any] 
         cur.execute(
             """
             SELECT s.scheme_version, s.description, s.source_citation,
-                   s.eb_prior_km2, s.self_weight
+                   s.eb_prior_km2, s.eb_prior_persons, s.self_weight,
+                   s.exposure_kind, s.jobs_weight
             FROM reference.severity_scheme s
             JOIN reference.source_registry r
               ON r.severity_scheme_version = s.scheme_version
@@ -332,12 +341,20 @@ layer AS (
            sv.weighted_total    AS weighted_violent,
            -- The quantity the ranking is actually computed on, so a
            -- value-anchored ramp orders cells the same way the percentile
-           -- beside it does.
+           -- beside it does. Under a per-capita scheme this is offence per
+           -- ambient person, not per km2 -- the client's ramp hinges on the
+           -- median of whatever it is handed, so the unit change passes
+           -- through without a ramp change.
            sv.smoothed_per_km2  AS smoothed_violent,
+           sv.weighted_per_1k   AS per1k_violent,
            sn.safety_percentile AS safety_nonviolent,
            sn.safety_tier       AS tier_nonviolent,
            sn.weighted_total    AS weighted_nonviolent,
            sn.smoothed_per_km2  AS smoothed_nonviolent,
+           sn.weighted_per_1k   AS per1k_nonviolent,
+           -- The denominator itself, so the panel can state what a cell was
+           -- ranked against rather than leaving it implicit.
+           sv.exposure          AS exposure,
            -- Time of day. All NULL unless the request named an hour; unlike the
            -- two tracks these cannot ride along, because carrying all 24 blocks
            -- on every feature multiplies the payload by 24.
@@ -425,6 +442,11 @@ SELECT jsonb_build_object(
         'time_window', %(time_window)s,
         'category',    %(category)s,
         'hour_block',  %(hour_block)s::smallint,
+        -- Whether the per-capita ranking exists at this cell size. The client
+        -- needs it as a distinct state: without it, a resolution where the
+        -- ranking is not built and a city where every cell happens to be
+        -- equally safe both arrive as a layer full of nulls.
+        'safety_available', %(safety_available)s::boolean,
         -- Null or zero means the hourly rollup has never been built. The
         -- client needs that as a distinct state: without it an unbuilt layer
         -- and a genuinely quiet cell both render as zero.
@@ -467,6 +489,12 @@ SELECT jsonb_build_object(
                     'stier_nonviolent',  l.tier_nonviolent,
                     'sw_nonviolent',     round(l.weighted_nonviolent::numeric, 1),
                     'sm_nonviolent',     round(l.smoothed_nonviolent::numeric, 3),
+                    -- Severity-weighted offence per 1,000 ambient
+                    -- residents-and-jobs, and the denominator behind it. Null
+                    -- under an area-denominated scheme.
+                    'p1k_violent',       round(l.per1k_violent::numeric, 2),
+                    'p1k_nonviolent',    round(l.per1k_nonviolent::numeric, 2),
+                    'exposure',          round(l.exposure::numeric, 0),
                     -- Rating 1 at the requested hour, then rating 2: how that
                     -- differs from the cell's all-hours standing, and the plain
                     -- ratio against its own average hour.
@@ -513,6 +541,7 @@ def cells_geojson(
         "time_window": time_window,
         "category": category,
         "hour_block": hour,
+        "safety_available": h3_res in SAFETY_RESOLUTIONS,
         "min_count": min_count,
         "bbox": "set" if bbox else None,
         "west": bbox[0] if bbox else None,
@@ -553,6 +582,18 @@ def cell_detail(
         if cell is None:
             return None
 
+        # The denominator this cell was ranked against. Its own row rather than
+        # a field on the safety rows, because it is a property of the place --
+        # the same figure for both tracks and every window.
+        cur.execute(
+            """
+            SELECT residents, jobs, block_count, pop_vintage, jobs_vintage
+            FROM gold.cell_exposure WHERE h3_index = %s
+            """,
+            (h3_index,),
+        )
+        exposure = cur.fetchone()
+
         cur.execute(
             """
             SELECT category, incident_count, incidents_per_km2, percentile,
@@ -590,7 +631,8 @@ def cell_detail(
         cur.execute(
             """
             SELECT s.track, s.safety_percentile, s.safety_rank, s.city_cell_total,
-                   s.safety_tier, s.incident_count, s.weighted_total, s.weighted_per_km2, s.scheme_version
+                   s.safety_tier, s.incident_count, s.weighted_total,
+                   s.weighted_per_km2, s.weighted_per_1k, s.exposure, s.scheme_version
             FROM gold.cell_safety s
             JOIN reference.source_registry r
               ON r.source_id = s.source_id
@@ -637,6 +679,7 @@ def cell_detail(
     headline = next((row for row in activity if row["category"] == "all"), None)
     return {
         "cell": cell,
+        "exposure": _exposure_payload(exposure),
         "time_window": time_window,
         "window_label": WINDOW_LABELS.get(time_window, time_window),
         "headline": headline,
@@ -665,6 +708,27 @@ def cell_detail(
             }
             for row in hour_safety
         ],
+    }
+
+
+def _exposure_payload(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The cell's ambient population, rounded to something honest.
+
+    Whole people, because the fractions are an artifact of splitting census
+    blocks across hexagons and printing 41.6 residents would claim a precision
+    the apportionment has not got.
+    """
+    if row is None:
+        return None
+    residents = row["residents"] or 0
+    jobs = row["jobs"] or 0
+    return {
+        "residents": round(residents),
+        "jobs": round(jobs),
+        "ambient": round(residents + jobs),
+        "block_count": row["block_count"],
+        "pop_vintage": row["pop_vintage"],
+        "jobs_vintage": row["jobs_vintage"],
     }
 
 

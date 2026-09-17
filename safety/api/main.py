@@ -210,6 +210,29 @@ def _validate_layer(res: int, window: str, category: str) -> None:
         raise HTTPException(400, f"category must be one of {list(repo.VALID_CATEGORIES)}")
 
 
+def _safety_available(res: int) -> bool:
+    """Whether the per-capita ranking exists at this cell size.
+
+    Not an error on /cells: the activity layer is served at every resolution and
+    the safety fields simply ride along where they exist. It is an error when a
+    caller asks for the ranking specifically, which is what _require_safety_res
+    is for -- an empty measure and an absent one look identical otherwise.
+    """
+    return res in repo.SAFETY_RESOLUTIONS
+
+
+def _require_safety_res(res: int) -> None:
+    if not _safety_available(res):
+        raise HTTPException(
+            400,
+            f"the safety ranking is built for res {list(repo.SAFETY_RESOLUTIONS)} "
+            f"only -- it divides by ambient population apportioned from census "
+            f"blocks, and a res {res} cell is smaller than a census block, so its "
+            "population would be an apportionment assumption rather than a "
+            "measurement. The incident-count layer is served at every resolution.",
+        )
+
+
 def _validate_hour(hour: int | None, res: int, window: str) -> None:
     """Reject an hour the pipeline does not build, with the reason.
 
@@ -253,6 +276,14 @@ def cells(
             "time-of-day ratings to every feature."
         ),
     ),
+    measure: str | None = Query(
+        None,
+        description=(
+            "Assert which measure the caller intends to render. Omit to get "
+            "whatever exists at this resolution; pass 'safety' to be told with a "
+            "400, rather than with nulls, when the ranking is not built here."
+        ),
+    ),
     bbox: str | None = Query(
         None, description="Viewport filter as 'west,south,east,north' in WGS84 degrees"
     ),
@@ -260,6 +291,11 @@ def cells(
     """The H3 hexagon layer as GeoJSON, coloured client-side from `count`."""
     _validate_layer(res, window, category)
     _validate_hour(hour, res, window)
+    if measure is not None:
+        if measure not in ("activity", "safety"):
+            raise HTTPException(400, "measure must be 'activity' or 'safety'")
+        if measure == "safety":
+            _require_safety_res(res)
 
     parsed_bbox: tuple[float, float, float, float] | None = None
     if bbox:
@@ -404,12 +440,19 @@ def _safety_measure(conn, record: dict[str, Any]) -> dict[str, Any]:
     """
     scheme = repo.severity_scheme(conn, record["source_id"])
     coverage = record.get("severity_weight_coverage")
+    per_capita = (scheme or {}).get("exposure_kind") == "ambient_population"
     return {
         "what_it_is": (
             "Two separate rankings -- one for violent offences, one for non-violent -- "
-            "of how much weighted offence a cell carries against every other cell in "
-            "the same city. 1.0 is the safest cell on that track, 0 the least safe."
+            "of how much weighted offence a cell carries "
+            + (
+                "per person present, against every other cell in the same city. "
+                if per_capita
+                else "against every other cell in the same city. "
+            )
+            + "1.0 is the safest cell on that track, 0 the least safe."
         ),
+        "denominator": _denominator(record, scheme) if per_capita else None,
         "why_two_rankings": (
             "The FBI's own combined Crime Index counted a murder and a shoplifting as "
             "one each, and the CJIS Advisory Policy Board discontinued it in June 2004 "
@@ -436,27 +479,125 @@ def _safety_measure(conn, record: dict[str, Any]) -> dict[str, Any]:
             ),
         },
         "smoothing": {
-            "credibility_prior_km2": scheme["eb_prior_km2"] if scheme else None,
+            "credibility_prior": (
+                scheme["eb_prior_persons"] if per_capita else scheme["eb_prior_km2"]
+            )
+            if scheme
+            else None,
+            "credibility_prior_units": "ambient people" if per_capita else "km²",
             "self_weight": scheme["self_weight"] if scheme else None,
             "note": (
-                "A cell's own figure is trusted in proportion to how much ground it "
-                "covers, and is then blended with its immediate neighbours. "
-                "Without this, a single serious incident in an otherwise empty cell "
+                (
+                    "A cell's own figure is trusted in proportion to how many people "
+                    "are in it, and is then blended with its immediate neighbours. "
+                    if per_capita
+                    else "A cell's own figure is trusted in proportion to how much "
+                    "ground it covers, and is then blended with its immediate "
+                    "neighbours. "
+                )
+                + "Without this, a single serious incident in an otherwise empty cell "
                 "would rank that cell the least safe in the city on a sample of one. "
                 "A consequence worth knowing: a quiet cell surrounded by busy ones is "
                 "pulled down, by design."
             ),
+            "also_the_floor": (
+                "It does a second job here. A few cells have almost nobody living or "
+                "working in them -- the airside of the airport, the middle of a park "
+                "-- and dividing by that alone would send them to the bottom of the "
+                "ranking by division rather than by evidence. The prior bounds them."
+            )
+            if per_capita
+            else None,
         },
         "known_limitations": [
-            "There is no population or footfall denominator, so a cell is not adjusted "
-            "for how many people pass through it. A business district with few "
-            "residents and heavy daytime traffic reads worse than its risk to any one "
-            "person warrants.",
             "The severity weights were collected in 1977 and reflect how the American "
             "public ranked seriousness then.",
             "Severity weighting moves the ranking less than might be expected, because "
             "the different reported offence types tend to rise and fall together.",
+        ]
+        + (
+            [
+                "Jobs stand in for daytime population; they are not measured "
+                "footfall. Somewhere with heavy through-traffic and few workers -- a "
+                "transit concourse, a stadium approach on a match day -- still reads "
+                "as emptier than it is.",
+                "The population figures are from the 2020 Census and the job figures "
+                "from 2023, against incidents reported since. Where the city has "
+                "built or emptied since then, the denominator lags.",
+            ]
+            if per_capita
+            else [
+                "There is no population or footfall denominator, so a cell is not "
+                "adjusted for how many people pass through it. A business district "
+                "with few residents and heavy daytime traffic reads worse than its "
+                "risk to any one person warrants."
+            ]
+        ),
+    }
+
+
+def _denominator(record: dict[str, Any], scheme: dict[str, Any] | None) -> dict[str, Any]:
+    """What the ranking divides by, and why it is not simply residents.
+
+    This is the disclosure the per-capita change most needs to carry. Dividing
+    by population is the obvious fix to "the map is really a population map",
+    and dividing by *residents* is the obvious way to do it -- and it is wrong
+    in a way that is worth stating rather than leaving for a user to discover
+    when the airport shows up as the most dangerous place in Philadelphia.
+    """
+    ambient = record.get("ambient_population")
+    return {
+        "what_it_is": (
+            "Ambient population: the people who live in a cell plus the people who "
+            "work in it. Reported offence is divided by this rather than by the "
+            "cell's area, so a place is measured against how many people are "
+            "actually there."
+        ),
+        "why_not_residents_alone": (
+            "Because the places with almost no residents are not empty. The "
+            "airport, the Navy Yard, the stadium complex and the central business "
+            "district all have real reported incidents and very few people living "
+            "in them. Dividing those by residents alone would rank them the least "
+            "safe places in the city on arithmetic rather than on evidence -- worse "
+            "than the area denominator it replaced, not better. Counting workplaces "
+            "is what stops a place being scored as deserted when it is only "
+            "deserted at night."
+        ),
+        "sources": [
+            "Residents: U.S. Census Bureau, 2020 Census population by tabulation "
+            "block (TIGER/Line TABBLOCK20).",
+            "Jobs: U.S. Census Bureau, LEHD LODES version 8 Workplace Area "
+            "Characteristics, "
+            f"{record.get('jobs_vintage') or 'latest available year'}.",
         ],
+        "city_ambient_population": round(ambient) if ambient else None,
+        "population_vintage": record.get("population_vintage"),
+        "jobs_vintage": record.get("jobs_vintage"),
+        "jobs_weight": (scheme or {}).get("jobs_weight"),
+        "jobs_weight_note": (
+            "How much one job counts against one resident. There is no published "
+            "figure for this; it is a chosen parameter, and at 1.0 a workplace and "
+            "a home count equally."
+        ),
+        "how_it_reaches_a_cell": (
+            "Census blocks are the smallest geography the Census Bureau publishes. "
+            "Each block's people are split across the hexagons it overlaps in "
+            "proportion to how much of its area falls in each. A resolution-8 "
+            "hexagon draws on roughly thirty blocks, which is what makes both the "
+            "apportionment error and the noise the Census Bureau adds to block "
+            "counts for privacy average out."
+        ),
+        "resolution_limit": (
+            "This is why the ranking is not offered at the finest cell size. A "
+            "resolution-10 hexagon is smaller than a typical city block, and "
+            "Philadelphia has more of them than it has census blocks -- any "
+            "population figure there would be the apportionment assumption handed "
+            "back as though it were a measurement."
+        ),
+        "not_a_demographic_overlay": (
+            "Only head counts are used: total residents, total jobs. No race, "
+            "income, or other characteristic is read, joined, or displayed."
+        ),
     }
 
 
@@ -531,9 +672,14 @@ def _time_of_day(record: dict[str, Any]) -> dict[str, Any]:
             "Hour blocks are local clock time, so an hour spans different amounts "
             "of daylight across the year, and the two daylight-saving transitions "
             "are not adjusted for.",
-            "There is still no population or footfall denominator. A cell that is "
-            "empty at 3am and crowded at 3pm is scored on incidents alone, not on "
-            "risk to any one person present.",
+            "The population a cell is divided by does not vary by hour, and this is "
+            "where that matters most. Residents and jobs describe where people "
+            "sleep and where they work; neither says how many are present at 3am. A "
+            "business district is divided by its full daytime workforce at every "
+            "hour of the night, so the small hours there are flattered, and a "
+            "nightlife street is divided by the few people who live on it. Read the "
+            "hourly ranking as a comparison between cells at the same hour, not as "
+            "a risk per person present at that hour.",
         ],
     }
 
@@ -554,7 +700,9 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
             "Not a prediction. Nothing here forecasts future events.",
             "Not a safety or risk score for an address, a block, or a person. The "
             "safety ranking compares whole cells against other cells in the same "
-            "city; it says nothing about any particular street or building.",
+            "city; it says nothing about any particular street or building. "
+            "Dividing by the people in a cell makes it a fairer comparison between "
+            "places, not a probability that anything will happen to you.",
             "Not a measure of crime. It measures reported and recorded incidents, "
             "which is a different quantity.",
             "A cell with no reported incidents is not therefore safe. It may be a "
@@ -588,8 +736,11 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
                 "~76 m across, ~0.015 km² average area. This is the finest cell "
                 "offered, and deliberately so: the source publishes coordinates "
                 "rounded to the block, so a smaller cell would show that rounding "
-                "rather than where crime happened."
+                "rather than where crime happened. Incident counts are shown at "
+                "this size; the safety ranking is not, because a cell this small "
+                "has no population figure behind it that is not guesswork."
             ),
+            "safety_resolutions": list(repo.SAFETY_RESOLUTIONS),
             "relative_measure": (
                 "Each cell's percentile is the fraction of cells in the same city with "
                 "strictly lower reported-incident density for the same window and "

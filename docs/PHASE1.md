@@ -39,9 +39,28 @@ walkthrough that needs no server and no command line.
 ```bash
 python -m safety.etl.run incremental --city phl       # pull since watermark, upsert
 python -m safety.etl.run reprocess   --city phl --pull-id 2   # replay bronze, no refetch
+python -m safety.etl.run census      --city phl       # population denominator
 python -m safety.etl.run gold        --city phl       # rebuild rollups only
 python -m safety.etl.run status                       # registry, pulls, data quality
 ```
+
+### The population denominator
+
+The safety ranking divides by **ambient population** — residents plus workplace
+jobs — rather than by cell area. Loading it is a one-off:
+
+```bash
+python -m safety.etl.run census --city phl            # TIGER blocks + LODES jobs
+python -m safety.etl.run gold   --city phl            # apportion, then re-rank
+python -m safety.migrate --activate nscs_v2_percapita # promote it to the live scheme
+python -m safety.etl.run safety --city phl
+```
+
+`--activate` is deliberately separate from the loader: promoting a scheme
+changes what every safety number in the product means, so it is a decision made
+after looking at `safety-compare`, not a side effect of re-running `migrate`.
+Add `--replay` to `census` to re-read the stored bronze snapshot instead of
+re-downloading the ~100 MB shapefile.
 
 ---
 
@@ -66,6 +85,7 @@ python -m safety.etl.run status                       # registry, pulls, data qu
 | §10 client-side cell resolution | `web/app.js` uses h3-js locally; `/cells/ring` is a key lookup |
 | §12 attribution + "data as of" | `gold.city_snapshot`, header badge, methodology sheet |
 | §13 responsible-design framing | `/api/v1/methodology`, "How to read this" sheet |
+| §13 per-capita rather than per-km² ranking | `safety/etl/census.py` → `gold.cell_exposure`, consumed by `gold.cell_safety` |
 
 ### Deliberately not built in Phase 1
 
@@ -136,6 +156,28 @@ colours and different labels.
 **Percentile is over the whole city cell universe**, including zero cells —
 that is what §3.3's "compared to other cells in the same city" means.
 
+**The safety ranking divides by people, not by area — and by residents *plus
+workers*.** Area made the ranking partly a population map: a cell's weighted
+total scales with how many people are in it, so Center City read as the least
+safe part of the city substantially because it is the busiest. Residents alone
+would have been worse, not better — the airport, the Navy Yard and the stadium
+complex have real incident counts over almost no resident count, and dividing by
+that ranks them worst in the city by arithmetic. Counting workplaces is what
+stops a place being scored as deserted when it is only deserted at night.
+
+**The credibility prior became the floor.** `eb_prior_persons` does the job
+`eb_prior_km2` did — trusting a cell's own figure in proportion to its exposure
+— and one more: as a cell's ambient population falls toward zero the posterior
+tends to `city_rate + w/prior` rather than to infinity. No separate clamp is
+needed, and there is no divide-by-zero to special-case.
+
+**The per-capita ranking stops at res 9.** A res-10 hexagon is smaller than a
+typical census block, and Philadelphia has more of them than it has blocks, so
+any population figure there is the apportionment assumption handed back as
+though it were data — the same objection that kept res 11 and 12 out. Counts are
+still served at res 10; the colour-by control disables the safety ramp there and
+says why.
+
 **Windows are anchored to the newest reported date, not to today.** Anchoring
 to `now` would render a source's publication lag as an absence of crime.
 
@@ -180,7 +222,7 @@ both modes rather than joining either end.
 |---|---|
 | `GET /api/v1/health` · `/version` | status, data-as-of, refresh stamp |
 | `GET /api/v1/cities` · `/cities/{id}` | city metadata, coverage, attribution |
-| `GET /api/v1/cells` | the hexagon layer as GeoJSON (`res`, `window`, `category`, `bbox`, `min_count`) |
+| `GET /api/v1/cells` | the hexagon layer as GeoJSON (`res`, `window`, `category`, `hour`, `measure`, `bbox`, `min_count`) |
 | `GET /api/v1/cells/{h3}` | one cell: activity, category split, monthly series, offense mix |
 | `GET /api/v1/cells/ring` | §10 cell + k-ring, indexed key lookup |
 | `GET /api/v1/cells/lookup` | lat/lng → cell → rollup (the geocoded-address path) |

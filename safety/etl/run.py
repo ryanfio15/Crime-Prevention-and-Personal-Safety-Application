@@ -8,6 +8,7 @@ a CLI so Phase 1 has no scheduler dependency:
     python -m safety.etl.run backfill    --city phl [--months 24]
     python -m safety.etl.run incremental --city phl
     python -m safety.etl.run reprocess   --city phl --pull-id 3
+    python -m safety.etl.run census      --city phl
     python -m safety.etl.run gold        --city phl
     python -m safety.etl.run status
 
@@ -30,7 +31,7 @@ import psycopg
 
 from safety import PIPELINE_VERSION
 from safety.db import connect, wait_for_db
-from safety.etl import gold, transform, validate
+from safety.etl import census, gold, transform, validate
 from safety.etl.adapters import SourceConfig, get_adapter
 from safety.etl.adapters.base import NormalizedIncident, RawChunk, SourceAdapter
 from safety.etl.adapters.philadelphia import default_backfill_window
@@ -581,6 +582,157 @@ def cmd_reprocess(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_census(args: argparse.Namespace) -> int:
+    """Load the population denominator: census blocks, then workplace jobs.
+
+    Two pulls rather than one, because they are two published datasets on
+    different release cycles -- the decennial population will not move until
+    2030, while LODES is annual. Recording them separately in etl.pull_run
+    keeps "where did this number come from" answerable per source, which is the
+    same reason a police pull gets its own row.
+    """
+    with connect() as conn:
+        config = SourceConfig.load(conn, args.city)
+        store = LocalBronzeStore()
+        loaded: dict[str, int] = {}
+
+        for dataset, fetch, load in (
+            (
+                census.BLOCKS_DATASET,
+                lambda: census.fetch_blocks(config),
+                lambda payload: census.load_blocks(conn, payload, config),
+            ),
+            (
+                census.JOBS_DATASET,
+                lambda: census.fetch_jobs(config, args.lodes_year),
+                lambda payload: census.load_jobs(
+                    conn, payload, config.source_id, args.lodes_year
+                ),
+            ),
+        ):
+            started = time.monotonic()
+            pull_id = _open_pull(
+                conn,
+                source_id=config.source_id,
+                dataset=dataset,
+                mode="reference",
+                since=None,
+                until=None,
+                crosswalk_version=config.crosswalk_version,
+            )
+            try:
+                if args.replay:
+                    payload, uri, size = _replay_reference(conn, config.source_id, dataset)
+                else:
+                    chunk = fetch()
+                    pull = store.open_pull(config.source_id, dataset, pull_id)
+                    pull.write_chunk(chunk)
+                    pull.write_manifest(
+                        build_manifest(
+                            source_id=config.source_id,
+                            dataset=dataset,
+                            pull_id=pull_id,
+                            mode="reference",
+                            since=None,
+                            until=None,
+                            chunks=[chunk],
+                            pipeline_version=PIPELINE_VERSION,
+                            crosswalk_version=config.crosswalk_version,
+                            attribution=_CENSUS_ATTRIBUTION[dataset],
+                        )
+                    )
+                    payload, uri, size = chunk.payload, pull.uri, pull.total_bytes
+
+                rows = load(payload)
+                loaded[dataset] = rows
+                _finish_pull(
+                    conn,
+                    pull_id,
+                    status="succeeded",
+                    started=started,
+                    bronze_uri=uri,
+                    bronze_bytes=size,
+                    fetched=rows,
+                    valid=rows,
+                    upserted=rows,
+                )
+            except Exception as exc:
+                _finish_pull(
+                    conn, pull_id, status="failed", started=started, error=str(exc)
+                )
+                raise
+
+        # The cell universe has to exist before anything can be apportioned into
+        # it. On a first run it will not, and that is a `gold` refresh away --
+        # which itself calls back into this, so the ordering resolves either way.
+        cells = gold.refresh_cell_exposure(conn, config.source_id)
+
+    print(
+        json.dumps(
+            {
+                "city": args.city,
+                "blocks": loaded.get(census.BLOCKS_DATASET, 0),
+                "job_rows": loaded.get(census.JOBS_DATASET, 0),
+                "exposure_cells": cells,
+                "next": (
+                    f"python -m safety.etl.run safety --city {args.city} "
+                    "  # rebuild the ranking on the new denominator"
+                ),
+            },
+            indent=2,
+            default=str,
+        )
+    )
+    return 0
+
+
+# Attribution per dataset, carried into the bronze manifest. S12 treats naming
+# the source as a requirement rather than a courtesy, and that applies to the
+# Census Bureau exactly as it does to a police department.
+_CENSUS_ATTRIBUTION = {
+    "census_blocks": (
+        "Population and block geography: U.S. Census Bureau, 2020 Census "
+        "Redistricting Data, TIGER/Line Shapefiles (TABBLOCK20)."
+    ),
+    "lodes_wac": (
+        "Workplace jobs: U.S. Census Bureau, Longitudinal Employer-Household "
+        "Dynamics, LODES version 8 Workplace Area Characteristics."
+    ),
+}
+
+
+def _replay_reference(
+    conn: psycopg.Connection, source_id: str, dataset: str
+) -> tuple[bytes, str, int]:
+    """Re-read the newest stored snapshot instead of re-downloading it.
+
+    The TIGER archive is large and the Census Bureau serves it slowly; iterating
+    on the loader should not mean fetching it again each time. Same replay path
+    `reprocess` uses for incident data (S5).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT bronze_uri, bronze_bytes FROM etl.pull_run
+            WHERE source_id = %s AND dataset = %s AND bronze_uri IS NOT NULL
+              AND status = 'succeeded'
+            ORDER BY pull_id DESC LIMIT 1
+            """,
+            (source_id, dataset),
+        )
+        row = cur.fetchone()
+    if row is None:
+        raise LookupError(
+            f"no stored '{dataset}' snapshot for '{source_id}' to replay; "
+            "run without --replay once first"
+        )
+    pull = LocalBronzeStore().open_existing(row["bronze_uri"])
+    chunks = list(pull.iter_chunks())
+    if not chunks:
+        raise LookupError(f"bronze snapshot at {row['bronze_uri']} is empty")
+    return chunks[0][1], row["bronze_uri"], row["bronze_bytes"] or 0
+
+
 def cmd_gold(args: argparse.Namespace) -> int:
     with connect() as conn:
         stats = gold.refresh_all(conn, args.city, PIPELINE_VERSION)
@@ -852,6 +1004,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="defaults to the newest pull with a stored snapshot",
     )
     reprocess.set_defaults(func=cmd_reprocess)
+
+    census_cmd = sub.add_parser(
+        "census", help="load the population denominator (census blocks + LODES jobs)"
+    )
+    census_cmd.add_argument("--city", default="phl")
+    census_cmd.add_argument(
+        "--lodes-year",
+        type=int,
+        default=census.LODES_YEAR,
+        help=f"LODES WAC data year (default {census.LODES_YEAR})",
+    )
+    census_cmd.add_argument(
+        "--replay",
+        action="store_true",
+        help="re-read the stored bronze snapshots instead of re-downloading",
+    )
+    census_cmd.set_defaults(func=cmd_census)
 
     gold_cmd = sub.add_parser("gold", help="refresh gold rollups only")
     gold_cmd.add_argument("--city", default="phl")
