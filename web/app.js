@@ -62,9 +62,100 @@ function rampGradient(colors) {
   return `linear-gradient(to right, ${stops.join(", ")})`;
 }
 
-/** The same ramp as MapLibre interpolate stops over a 0..1 input. */
-function rampStops(colors) {
-  return colors.flatMap((hex, i) => [i / (colors.length - 1), hex]);
+/** Midpoint of two hexes in sRGB. Adjacent ramp steps are ~0.025 apart in
+    lightness, so averaging channels here is indistinguishable from doing it in
+    OKLCH, and it avoids carrying a colour-space conversion for one blend. */
+function mixHex(a, b) {
+  const parse = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const [ar, ag, ab] = parse(a);
+  const [br, bg, bb] = parse(b);
+  const channel = (x, y) => Math.round((x + y) / 2).toString(16).padStart(2, "0");
+  return `#${channel(ar, br)}${channel(ag, bg)}${channel(ab, bb)}`;
+}
+
+/**
+ * The ramp with an explicit centre step inserted.
+ *
+ * Twenty steps have no middle one: they sit at i/19, and 0.5 falls between the
+ * tenth and eleventh. A value scale hinges at the median, so without a stop
+ * there the hinge lands inside a segment, MapLibre interpolates straight across
+ * it, and the median comes out at 0.476 of the bar instead of the centre. Small
+ * in pixels, but the centre of this bar is exactly the thing the scale claims
+ * to mean, so it should be exact. Both the fill and the legend gradient are
+ * built from this list, so they cannot drift apart.
+ */
+function withMidpoint(colors) {
+  const half = colors.length / 2;
+  return [
+    ...colors.slice(0, half),
+    mixHex(colors[half - 1], colors[half]),
+    ...colors.slice(half),
+  ];
+}
+
+/* Twenty-one steps: the ramp plus the centre the value scale hinges on. */
+const VALUE_RAMP = withMidpoint(COUNT_RAMP);
+
+/**
+ * Ramp stops laid out over a measured quantity, hinged at its median.
+ *
+ * Colour is proportional to the value rather than to the cell's rank: the
+ * bottom half of the ramp spans min..median and the top half median..max, so
+ * the middle colour always falls on the median value. Cells do not divide
+ * evenly either side of it -- the distribution is heavily skewed, and that
+ * skew is the thing a value scale is supposed to show rather than flatten.
+ *
+ * Two hinged segments rather than one straight line because the skew is
+ * severe: a single linear span from min to max would put the median down in
+ * the first tenth of the ramp and render almost the whole city in one colour.
+ */
+function valueRampStops(colors, domain) {
+  const { min, median, max } = domain;
+  const stops = [];
+  let previous = -Infinity;
+  colors.forEach((hex, i) => {
+    const t = i / (colors.length - 1);
+    let value = t <= 0.5
+      ? min + (median - min) * (t / 0.5)
+      : median + (max - median) * ((t - 0.5) / 0.5);
+    // MapLibre rejects an interpolate whose inputs are not strictly ascending,
+    // and a sparse layer readily puts min, median and max on the same number.
+    if (!(value > previous)) {
+      previous = previous + Math.max(Math.abs(previous), 1) * 1e-6;
+      value = previous;
+    }
+    previous = value;
+    stops.push(value, hex);
+  });
+  return stops;
+}
+
+/**
+ * min / median / max of `prop` across the cells this view actually paints.
+ *
+ * Computed here rather than served, for the same reason the hourly count rank
+ * is: the features are already in the browser, and the alternative is another
+ * precomputed table existing only to colour one view. Cells that render in the
+ * neutral fill are excluded -- they never take a colour from the ramp, so
+ * letting them set its endpoints would hand half the gradient to cells that
+ * are not drawn in it.
+ */
+function valueDomain(prop, isPainted) {
+  const values = [];
+  for (const feature of state.features) {
+    const p = feature.properties;
+    if (!isPainted(p)) continue;
+    const value = p[prop];
+    if (typeof value === "number") values.push(value);
+  }
+  if (!values.length) return null;
+  values.sort((a, b) => a - b);
+  return {
+    min: values[0],
+    median: values[Math.floor(values.length / 2)],
+    max: values[values.length - 1],
+    painted: values.length,
+  };
 }
 
 const TIER_LABELS = {
@@ -99,11 +190,13 @@ const TRACK_PROPS = {
     pct: "safety_violent", tier: "stier_violent",
     hpct: "hsafety_violent", htier: "hstier_violent",
     delta: "hdelta_violent",
+    rate: "sm_violent", hrate: "hsm_violent",
   },
   non_violent: {
     pct: "safety_nonviolent", tier: "stier_nonviolent",
     hpct: "hsafety_nonviolent", htier: "hstier_nonviolent",
     delta: "hdelta_nonviolent",
+    rate: "sm_nonviolent", hrate: "hsm_nonviolent",
   },
 };
 
@@ -157,8 +250,9 @@ const state = {
   features: [],
   // The open cell's detail payload, so a track switch re-reads rather than refetches.
   detail: null,
-  // Min / median / max of the selected hour's counts, for the count legend.
-  hourStats: { min: 0, median: 0, max: 0 },
+  // Domain the ramp is currently hinged on, so the legend and the fill
+  // cannot disagree about what the middle of the bar means.
+  rampDomain: null,
   refreshStamp: null,
   framed: false,
 };
@@ -202,44 +296,49 @@ let map;
 
 /* ------------------------------------------------------------- colour scale */
 
+/**
+ * Paint expression for both modes, on a value scale hinged at the median.
+ *
+ * Both modes now run the ramp low-value-green to high-value-red, so red is the
+ * concerning end in either and switching between them is a change of measure
+ * rather than a change of vocabulary. The safety mode's value is the smoothed
+ * severity-weighted rate -- the quantity its ranking is built on, so colour and
+ * percentile order cells identically even though only one of them is a rank.
+ *
+ * The chosen domain is stashed on `state` for the legend, so the key and the
+ * fill can never disagree about what the middle of the bar means.
+ */
 function fillColorExpression() {
   const props = TRACK_PROPS[state.track];
   const hourly = state.hour !== null;
 
-  if (state.scale === "safety") {
-    // Same ramp either way; only the reference class changes. With an hour
-    // selected the cell is ranked against other cells *at that hour*.
-    const { pct, tier } = hourly
-      ? { pct: props.hpct, tier: props.htier }
-      : { pct: props.pct, tier: props.tier };
-    // Interpolated on the raw percentile rather than stepped on the tier, so
-    // the map is as continuous as the statistic behind it.
-    return [
-      "case",
-      // Tier 0 keeps the neutral fill rather than joining the safe end: an
-      // absence of reports is not evidence of safety. `coalesce` also catches
-      // the case where the safety layer has not been built, so a missing value
-      // reads as "no data" instead of as the least safe colour.
-      ["==", ["coalesce", ["get", tier], 0], 0], ZERO_FILL,
-      ["interpolate", ["linear"], ["coalesce", ["get", pct], 0], ...rampStops(SAFETY)],
-    ];
-  }
+  const valueProp = state.scale === "safety"
+    ? (hourly ? props.hrate : props.rate)
+    : (hourly ? "hcount" : "count");
+  const tier = hourly ? props.htier : props.tier;
+  const isPainted = state.scale === "safety"
+    // Nothing of this kind reported is a separate state, not the safe end of
+    // the scale: an absence of reports is not evidence of safety.
+    ? (p) => (p[tier] ?? 0) !== 0
+    : (p) => (p[valueProp] ?? 0) > 0;
 
-  // Counts get the same continuous treatment, keyed on the cell's percentile
-  // rather than the raw number. The distribution is heavily skewed -- a handful
-  // of Center City cells carry an order of magnitude more than the median -- so
-  // interpolating on the count itself would render the rest of the city as one
-  // flat colour. The percentile is the same statistic the quantile steps were
-  // approximating, just read continuously.
-  //
-  // With an hour selected the same thing applies to that hour's counts, ranked
-  // in loadLayer against the layer already in hand.
-  const countProp = hourly ? "hcount" : "count";
-  const rankProp = hourly ? "hpercentile" : "percentile";
+  const domain = valueDomain(valueProp, isPainted);
+  state.rampDomain = domain;
+
+  if (!domain) return ZERO_FILL;
+
+  const guard = state.scale === "safety"
+    ? ["==", ["coalesce", ["get", tier], 0], 0]
+    : ["==", ["coalesce", ["get", valueProp], 0], 0];
+
   return [
     "case",
-    ["==", ["coalesce", ["get", countProp], 0], 0], ZERO_FILL,
-    ["interpolate", ["linear"], ["coalesce", ["get", rankProp], 0], ...rampStops(COUNT_RAMP)],
+    guard, ZERO_FILL,
+    [
+      "interpolate", ["linear"],
+      ["coalesce", ["get", valueProp], domain.min],
+      ...valueRampStops(VALUE_RAMP, domain),
+    ],
   ];
 }
 
@@ -275,6 +374,15 @@ function outlineWidthExpression() {
 
 /* ------------------------------------------------------------------- legend */
 
+/** Tick label for a domain endpoint: as precise as the magnitude deserves. */
+function formatDomainValue(value) {
+  if (!Number.isFinite(value)) return "—";
+  if (Number.isInteger(value)) return nf.format(value);
+  if (Math.abs(value) >= 100) return nf.format(Math.round(value));
+  if (Math.abs(value) >= 10) return value.toFixed(1);
+  return value.toFixed(2);
+}
+
 function renderLegend() {
   const legend = $("legend");
   const meta = state.meta;
@@ -289,95 +397,52 @@ function renderLegend() {
   // Appended to every title once a time is chosen, so no view can be mistaken
   // for the all-hours one.
   const atHour = state.hour === null ? "" : ` · ${hourLabel(state.hour)}`;
+  const safety = state.scale === "safety";
 
-  if (state.scale === "safety") {
-    $("legend-title").textContent =
-      `Safety ranking — ${TRACK_LABELS[state.track]} offences${atHour}`;
-    $("legend-ramp").innerHTML =
-      `<span style="background:${rampGradient(SAFETY)}"></span>`;
-    $("legend-ticks").innerHTML =
-      "<span>Least safe</span><span>Median</span><span>Safest</span>";
-    $("legend-foot").innerHTML =
-      `<span class="legend-zero"><i></i> Nothing of this kind reported</span>` +
-      `<br>Each cell ranked against the other ${nf.format(meta.cell_count)} cells` +
-      (state.hour === null ? "" : " <b>at this hour</b>") +
-      `, weighted by offence severity. A cell with no reports is not therefore safe.`;
+  $("legend-title").textContent = safety
+    ? `Safety ranking — ${TRACK_LABELS[state.track]} offences${atHour}`
+    : `Reported incidents per cell${atHour}`;
+
+  // Both modes run the same direction now: green at the low end of the
+  // measured value, red at the high end.
+  $("legend-ramp").innerHTML =
+    `<span style="background:${rampGradient(VALUE_RAMP)}"></span>`;
+
+  const domain = state.rampDomain;
+  if (!domain) {
+    $("legend-ticks").innerHTML = "";
+    $("legend-foot").innerHTML = safety
+      ? "The safety ranking has not been built for this layer."
+      : "Nothing reported in this layer.";
     return;
   }
 
-  $("legend-title").textContent = `Reported incidents per cell${atHour}`;
-  $("legend-ramp").innerHTML =
-    `<span style="background:${rampGradient(COUNT_RAMP)}"></span>`;
-
-  // The bar is the percentile, so these three counts sit where they belong:
-  // the quietest cell at the left edge, the median at the midpoint, the busiest
-  // at the right. No label under every step -- that is unreadable at this width.
-  //
-  // The server's quantiles describe the all-hours counts, so an hourly view
-  // reads its own, computed alongside the ranking in loadLayer.
-  const stats = state.hour === null
-    ? {
-        min: Math.max(Math.round(Number(meta.min_count) || 0), 1),
-        median: Math.round(Number(meta.breaks?.p50) || 0),
-        max: Math.round(meta.max_count ?? 0),
-      }
-    : state.hourStats;
-
-  $("legend-ticks").innerHTML = [stats.min, stats.median, stats.max]
-    .map((t) => `<span>${nf.format(t)}</span>`)
+  // The three values the ramp is hinged on, at the positions they occupy: the
+  // lowest painted cell at the left edge, the median in the middle, the highest
+  // at the right. The middle tick is the whole point of a value scale -- it is
+  // what the centre colour means.
+  $("legend-ticks").innerHTML = [domain.min, domain.median, domain.max]
+    .map((value) => `<span>${formatDomainValue(value)}</span>`)
     .join("");
-  $("legend-foot").innerHTML =
-    `<span class="legend-zero"><i></i> No reported incidents</span>` +
-    `<br>Placed by rank against the other ${nf.format(meta.cell_count)} cells, not by ` +
-    `the raw count &mdash; the distribution is heavily skewed.` +
-    (state.hour === null
-      ? ""
-      : `<br>Counts exclude incidents the source published with no clock time.`);
+
+  const skew =
+    `Colour follows the value itself and the middle of the bar is the median ` +
+    `of the ${nf.format(domain.painted)} cells carrying one. The distribution ` +
+    `is heavily skewed, so most cells sit left of centre.`;
+
+  $("legend-foot").innerHTML = safety
+    ? `<span class="legend-zero"><i></i> Nothing of this kind reported</span>` +
+      `<br>Severity-weighted offence per km², smoothed` +
+      (state.hour === null ? "" : " <b>within this hour</b>") +
+      `. ${skew} A cell with no reports is not therefore safe.`
+    : `<span class="legend-zero"><i></i> No reported incidents</span>` +
+      `<br>${skew}` +
+      (state.hour === null
+        ? ""
+        : `<br>Counts exclude incidents the source published with no clock time.`);
 }
 
 /* --------------------------------------------------------------- data fetch */
-
-/**
- * Rank the selected hour's counts against each other, in the client.
- *
- * The count ramp needs a percentile, and the server publishes one only for the
- * all-hours counts -- an hourly equivalent would be another 24x table built to
- * colour one view. This is a sort over a few thousand numbers already in the
- * browser's hands, which is a different thing from the server aggregating per
- * request: the rule that keeps the read path off silver is untouched.
- *
- * Writes `hpercentile` onto each feature before the source is set, so the paint
- * expression can read it like any other property.
- */
-function rankHourlyCounts(features) {
-  state.hourStats = { min: 0, median: 0, max: 0 };
-  if (state.hour === null || !features.length) return;
-
-  const counts = features.map((f) => f.properties.hcount ?? 0);
-  const sorted = [...counts].sort((a, b) => a - b);
-  const nonZero = sorted.filter((v) => v > 0);
-
-  // Midrank, so a tied block -- and at one hour most cells tie on zero -- sits
-  // at the centre of its own range instead of all taking the bottom.
-  const below = new Map();
-  for (let i = 0; i < sorted.length; i += 1) {
-    if (!below.has(sorted[i])) below.set(sorted[i], i);
-  }
-  const ties = new Map();
-  for (const value of sorted) ties.set(value, (ties.get(value) ?? 0) + 1);
-
-  features.forEach((feature, i) => {
-    const value = counts[i];
-    const midrank = below.get(value) + (ties.get(value) - 1) / 2;
-    feature.properties.hpercentile = midrank / Math.max(sorted.length - 1, 1);
-  });
-
-  state.hourStats = {
-    min: nonZero.length ? nonZero[0] : 0,
-    median: nonZero.length ? nonZero[Math.floor(nonZero.length / 2)] : 0,
-    max: sorted[sorted.length - 1],
-  };
-}
 
 async function loadLayer({ quiet = false } = {}) {
   if (!quiet) {
@@ -408,7 +473,6 @@ async function loadLayer({ quiet = false } = {}) {
 
     state.meta = collection.metadata;
     state.features = collection.features;
-    rankHourlyCounts(collection.features);
 
     const source = map.getSource("cells");
     if (source) source.setData(collection);

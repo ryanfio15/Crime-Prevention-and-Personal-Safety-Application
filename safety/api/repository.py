@@ -330,19 +330,26 @@ layer AS (
            sv.safety_percentile AS safety_violent,
            sv.safety_tier       AS tier_violent,
            sv.weighted_total    AS weighted_violent,
+           -- The quantity the ranking is actually computed on, so a
+           -- value-anchored ramp orders cells the same way the percentile
+           -- beside it does.
+           sv.smoothed_per_km2  AS smoothed_violent,
            sn.safety_percentile AS safety_nonviolent,
            sn.safety_tier       AS tier_nonviolent,
            sn.weighted_total    AS weighted_nonviolent,
+           sn.smoothed_per_km2  AS smoothed_nonviolent,
            -- Time of day. All NULL unless the request named an hour; unlike the
            -- two tracks these cannot ride along, because carrying all 24 blocks
            -- on every feature multiplies the payload by 24.
            hv.safety_percentile AS hsafety_violent,
            hv.safety_tier       AS htier_violent,
            hv.percentile_delta  AS hdelta_violent,
+           hv.smoothed_per_km2  AS hsmoothed_violent,
            hv.incident_count    AS hcount_violent,
            hn.safety_percentile AS hsafety_nonviolent,
            hn.safety_tier       AS htier_nonviolent,
            hn.percentile_delta  AS hdelta_nonviolent,
+           hn.smoothed_per_km2  AS hsmoothed_nonviolent,
            hn.incident_count    AS hcount_nonviolent
     FROM gold.cell_activity a
     JOIN gold.cell_geometry g ON g.h3_index = a.h3_index
@@ -455,18 +462,22 @@ SELECT jsonb_build_object(
                     'safety_violent',    round(l.safety_violent::numeric, 4),
                     'stier_violent',     l.tier_violent,
                     'sw_violent',        round(l.weighted_violent::numeric, 1),
+                    'sm_violent',        round(l.smoothed_violent::numeric, 3),
                     'safety_nonviolent', round(l.safety_nonviolent::numeric, 4),
                     'stier_nonviolent',  l.tier_nonviolent,
                     'sw_nonviolent',     round(l.weighted_nonviolent::numeric, 1),
+                    'sm_nonviolent',     round(l.smoothed_nonviolent::numeric, 3),
                     -- Rating 1 at the requested hour, then rating 2: how that
                     -- differs from the cell's all-hours standing, and the plain
                     -- ratio against its own average hour.
                     'hsafety_violent',    round(l.hsafety_violent::numeric, 4),
                     'hstier_violent',     l.htier_violent,
                     'hdelta_violent',     round(l.hdelta_violent::numeric, 4),
+                    'hsm_violent',        round(l.hsmoothed_violent::numeric, 3),
                     'hsafety_nonviolent', round(l.hsafety_nonviolent::numeric, 4),
                     'hstier_nonviolent',  l.htier_nonviolent,
                     'hdelta_nonviolent',  round(l.hdelta_nonviolent::numeric, 4),
+                    'hsm_nonviolent',     round(l.hsmoothed_nonviolent::numeric, 3),
                     -- Incidents in this cell during this hour block, both
                     -- tracks. Always at or below `count`: the ones the source
                     -- published with no clock time are not in any hour.
