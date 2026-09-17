@@ -121,7 +121,8 @@ def build_cell_universe(conn: psycopg.Connection, source_id: str) -> dict[int, i
         column = _h3_column(res)
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT DISTINCT {column} AS cell FROM silver.incident WHERE source_id = %s",
+                f"SELECT DISTINCT {column} AS cell FROM silver.incident "
+                f"WHERE source_id = %s AND {column} IS NOT NULL",
                 (source_id,),
             )
             occupied = {r["cell"] for r in cur.fetchall()}
@@ -207,7 +208,7 @@ def _build_cell_neighbors(
 
 def _h3_column(res: int) -> str:
     """Whitelist the resolution -> column mapping; never interpolate freely."""
-    columns = {8: "h3_r8", 9: "h3_r9"}
+    columns = {8: "h3_r8", 9: "h3_r9", 10: "h3_r10"}
     try:
         return columns[res]
     except KeyError:
@@ -725,7 +726,7 @@ INSERT INTO gold.city_snapshot (
     source_id, city_name, agency_name, data_as_of, last_refreshed_at,
     expected_cadence, publication_lag_days, freshness_note,
     incident_count, coverage_start, coverage_end,
-    cell_count_r8, cell_count_r9,
+    cell_count_r8, cell_count_r9, cell_count_r10,
     center_lat, center_lng, bbox_west, bbox_south, bbox_east, bbox_north,
     crosswalk_version, pipeline_version, attribution_text, terms_url,
     unmapped_offense_count, rejected_record_count,
@@ -736,7 +737,7 @@ SELECT
     stats.data_as_of, now(),
     r.expected_cadence, r.publication_lag_days, r.freshness_note,
     stats.incident_count, stats.coverage_start, stats.coverage_end,
-    cells.r8, cells.r9,
+    cells.r8, cells.r9, cells.r10,
     ST_Y(ST_Centroid(b.geom)), ST_X(ST_Centroid(b.geom)),
     ST_XMin(b.geom::box2d), ST_YMin(b.geom::box2d),
     ST_XMax(b.geom::box2d), ST_YMax(b.geom::box2d),
@@ -755,8 +756,9 @@ CROSS JOIN LATERAL (
 ) stats
 CROSS JOIN LATERAL (
     SELECT
-        count(*) FILTER (WHERE h3_res = 8)::int AS r8,
-        count(*) FILTER (WHERE h3_res = 9)::int AS r9
+        count(*) FILTER (WHERE h3_res = 8)::int  AS r8,
+        count(*) FILTER (WHERE h3_res = 9)::int  AS r9,
+        count(*) FILTER (WHERE h3_res = 10)::int AS r10
     FROM gold.cell_geometry WHERE source_id = r.source_id
 ) cells
 CROSS JOIN LATERAL (
@@ -778,6 +780,7 @@ ON CONFLICT (source_id) DO UPDATE SET
     coverage_end           = EXCLUDED.coverage_end,
     cell_count_r8          = EXCLUDED.cell_count_r8,
     cell_count_r9          = EXCLUDED.cell_count_r9,
+    cell_count_r10         = EXCLUDED.cell_count_r10,
     center_lat             = EXCLUDED.center_lat,
     center_lng             = EXCLUDED.center_lng,
     bbox_west              = EXCLUDED.bbox_west,
@@ -888,6 +891,7 @@ def refresh_all(
     return {
         "cells_r8": cells.get(8, 0),
         "cells_r9": cells.get(9, 0),
+        "cells_r10": cells.get(10, 0),
         "cell_activity_rows": activity_rows,
         "cell_safety_rows": safety_rows,
         "severity_weight_coverage": round(coverage, 4) if coverage is not None else None,

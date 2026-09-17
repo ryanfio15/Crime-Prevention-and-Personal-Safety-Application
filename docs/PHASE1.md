@@ -152,10 +152,12 @@ are stored, so the API can serve either.
 h3-js from CDN, no build step, served as static files by the same FastAPI
 process.
 
-- H3 hexagons over Philadelphia, coloured by incident count on a **quantile**
-  scale — the distribution is heavily skewed (median 134, p95 844, max 3,600 at
-  res 8 / 12 months), so a linear ramp would flatten the whole city.
-- Toggle to the §2 five-tier relative scale.
+- H3 hexagons over Philadelphia, coloured by the severity-weighted safety
+  ranking, with a toggle to plain incident count.
+- Both modes share one continuous ramp, keyed on the cell's **percentile** —
+  the count distribution is heavily skewed (median 134, p95 844, max 3,600 at
+  res 8 / 12 months), so a linear ramp over the raw count would flatten the
+  whole city. Count runs the ramp reversed, so red is the busy end in both.
 - Filters: time window, offense category, cell size (res 8 / 9), colour mode.
 - Click a hexagon for count, city rank, density, cell + neighbours (via the
   §10 k-ring endpoint), category breakdown, monthly trend, and the top offense
@@ -165,8 +167,10 @@ process.
 - Table view: the colour scale is never the only channel.
 - Polls `/api/v1/version` each minute and reloads when the ETL refreshes.
 
-Colour follows a validated sequential ramp: one hue, monotone lightness,
-selected for the dark surface rather than flipped from the light one.
+Colour follows a validated twenty-step diverging ramp built in OKLCH with
+lightness forced monotone across it, so the ordering survives red-green colour
+blindness as dark → light. A cell with nothing reported keeps a neutral fill in
+both modes rather than joining either end.
 
 ---
 

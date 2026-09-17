@@ -17,7 +17,7 @@ import psycopg
 
 # Whitelists. These bound every value that reaches SQL through anything other
 # than a bound parameter.
-VALID_RESOLUTIONS = (8, 9)
+VALID_RESOLUTIONS = (8, 9, 10)
 VALID_WINDOWS = ("last_30d", "last_90d", "last_12m", "last_24m")
 VALID_CATEGORIES = ("all", "violent", "property", "quality_of_life", "other")
 

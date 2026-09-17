@@ -13,10 +13,18 @@ import h3
 
 # S3.2: resolution 8 (~461 m edge, ~0.74 km^2) is the closest standard
 # resolution to the 500 m product requirement; resolution 9 (~174 m edge) is
-# the drill-down for dense urban cores. Both are stored on every incident.
+# the drill-down for dense urban cores, and resolution 10 (~76 m across) a
+# finer one again. All three are stored on every incident.
+#
+# 10 is the floor on purpose. The sources publish block-level coordinates, so a
+# resolution finer than about half a block shows the rounding in the published
+# data rather than the distribution of crime (S13). Resolutions 11 and 12 also
+# do not fit the serving model: one whole-city map request is 97 MB at 11 and
+# 681 MB at 12, against 14 MB here.
 PRIMARY_RES = 8
 DETAIL_RES = 9
-RESOLUTIONS = (PRIMARY_RES, DETAIL_RES)
+FINE_RES = 10
+RESOLUTIONS = (PRIMARY_RES, DETAIL_RES, FINE_RES)
 
 
 def cell_for(lat: float, lng: float, res: int) -> str:

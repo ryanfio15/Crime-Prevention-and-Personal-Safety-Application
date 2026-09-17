@@ -436,6 +436,13 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
             "primary_resolution_note": "~461 m edge, ~0.74 km² average area",
             "detail_resolution": 9,
             "detail_resolution_note": "~174 m edge, ~0.105 km² average area",
+            "fine_resolution": 10,
+            "fine_resolution_note": (
+                "~76 m across, ~0.015 km² average area. This is the finest cell "
+                "offered, and deliberately so: the source publishes coordinates "
+                "rounded to the block, so a smaller cell would show that rounding "
+                "rather than where crime happened."
+            ),
             "relative_measure": (
                 "Each cell's percentile is the fraction of cells in the same city with "
                 "strictly lower reported-incident density for the same window and "

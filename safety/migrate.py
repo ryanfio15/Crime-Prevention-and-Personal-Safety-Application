@@ -13,6 +13,7 @@ import psycopg
 
 from safety.config import CROSSWALK_DIR, MIGRATIONS_DIR, SEVERITY_DIR
 from safety.db import connect, wait_for_db
+from safety.h3grid import RESOLUTIONS, cell_for
 
 log = logging.getLogger(__name__)
 
@@ -297,6 +298,83 @@ def point_sources_at_scheme(conn: psycopg.Connection) -> int:
     return updated
 
 
+# ---------------------------------------------------------------------------
+# H3 backfill
+#
+# H3 lives in Python, not in the database, so a migration that adds a cell
+# column cannot populate it. This fills whatever is missing, for any resolution
+# in h3grid.RESOLUTIONS, and is a no-op once every row is covered -- which is
+# what lets it sit in the deploy path rather than needing a manual step.
+# ---------------------------------------------------------------------------
+
+_BACKFILL_BATCH = 50_000
+
+
+def backfill_h3_cells(conn: psycopg.Connection) -> int:
+    """Fill any NULL H3 cell column on silver.incident from its coordinates."""
+    filled = 0
+    for res in RESOLUTIONS:
+        column = f"h3_r{res}"
+        while True:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT source_id, occurred_year, incident_key, latitude, longitude
+                    FROM silver.incident
+                    WHERE {column} IS NULL
+                    LIMIT %s
+                    """,
+                    (_BACKFILL_BATCH,),
+                )
+                rows = cur.fetchall()
+            if not rows:
+                break
+
+            # A temp table plus one UPDATE ... FROM, rather than a statement per
+            # row: the first backfill covers every record the pipeline has ever
+            # loaded.
+            with conn.cursor() as cur:
+                cur.execute(
+                    "CREATE TEMP TABLE IF NOT EXISTS _h3_fill "
+                    "(source_id text, occurred_year smallint, incident_key text, cell text) "
+                    "ON COMMIT DROP"
+                )
+                with cur.copy(
+                    "COPY _h3_fill (source_id, occurred_year, incident_key, cell) FROM STDIN"
+                ) as copy:
+                    for row in rows:
+                        copy.write_row(
+                            (
+                                row["source_id"],
+                                row["occurred_year"],
+                                row["incident_key"],
+                                cell_for(row["latitude"], row["longitude"], res),
+                            )
+                        )
+                cur.execute(
+                    f"""
+                    UPDATE silver.incident i
+                       SET {column} = f.cell
+                      FROM _h3_fill f
+                     WHERE i.source_id     = f.source_id
+                       AND i.occurred_year = f.occurred_year
+                       AND i.incident_key  = f.incident_key
+                    """
+                )
+                filled += cur.rowcount
+                cur.execute("DROP TABLE _h3_fill")
+            conn.commit()
+            log.info("backfilled %s for %s row(s)", column, len(rows))
+
+    if filled:
+        log.info(
+            "H3 backfill filled %s cell value(s); re-run the gold rollups to "
+            "pick up the new resolution",
+            filled,
+        )
+    return filled
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s"
@@ -310,6 +388,7 @@ def main() -> int:
         weight_rows = load_severity_weights(conn)
         crosswalk_rows = load_crosswalks(conn)
         point_sources_at_scheme(conn)
+        backfilled = backfill_h3_cells(conn)
 
     if applied:
         print(f"Applied {len(applied)} migration(s): {', '.join(applied)}")
@@ -317,6 +396,8 @@ def main() -> int:
         print("Schema already up to date.")
     print(f"Crosswalk rows loaded/refreshed: {crosswalk_rows}")
     print(f"Severity schemes: {scheme_rows}, severity weights: {weight_rows}")
+    if backfilled:
+        print(f"H3 cells backfilled: {backfilled} (re-run the gold rollups)")
     return 0
 
 

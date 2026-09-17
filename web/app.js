@@ -10,10 +10,6 @@
 const API = "/api/v1";
 const CITY = "phl";
 
-/* Sequential blue, low -> high, stepped for the LIGHT surface: the light end
-   recedes toward the page and the dark end carries the high values. Same
-   documented steps as before, ordered for this surface rather than flipped. */
-const SEQ = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95"];
 /* A distinct state, not the bottom of the ramp: nothing was reported here. */
 const ZERO_FILL = "#e1e0d9";
 const SURFACE_GAP = "#fcfcfb";
@@ -53,12 +49,22 @@ const SAFETY = [
   "#65ca7e", "#63d481", "#62de84", "#62e988", "#61f38b",
 ];
 
-/** The ramp as CSS stops, for a legend that reads as one continuous bar. */
-function safetyGradient() {
-  const stops = SAFETY.map(
-    (hex, i) => `${hex} ${((i / (SAFETY.length - 1)) * 100).toFixed(1)}%`
+/* The incident count rides the same ramp, reversed: both views then agree that
+   red is the concerning end, so switching between them is a change of measure
+   and not a change of vocabulary. Quiet cells land in the green. */
+const COUNT_RAMP = [...SAFETY].reverse();
+
+/** A ramp as CSS stops, for a legend that reads as one continuous bar. */
+function rampGradient(colors) {
+  const stops = colors.map(
+    (hex, i) => `${hex} ${((i / (colors.length - 1)) * 100).toFixed(1)}%`
   );
   return `linear-gradient(to right, ${stops.join(", ")})`;
+}
+
+/** The same ramp as MapLibre interpolate stops over a 0..1 input. */
+function rampStops(colors) {
+  return colors.flatMap((hex, i) => [i / (colors.length - 1), hex]);
 }
 
 const TIER_LABELS = {
@@ -150,47 +156,11 @@ let map;
 
 /* ------------------------------------------------------------- colour scale */
 
-/** n colours from the validated 6-step ramp, endpoints preserved. */
-function ramp(n) {
-  if (n >= SEQ.length) return SEQ.slice();
-  if (n <= 1) return [SEQ[SEQ.length - 1]];
-  return Array.from({ length: n }, (_, i) =>
-    SEQ[Math.round((i * (SEQ.length - 1)) / (n - 1))]
-  );
-}
-
-/**
- * Thresholds for the count ramp.
- *
- * The distribution is heavily skewed -- a handful of Center City cells carry an
- * order of magnitude more than the median -- so a linear ramp would render the
- * whole city as one flat colour. These are the server-computed quantiles of the
- * layer actually on screen, forced strictly increasing so the step expression
- * stays valid when a narrow filter collapses several quantiles onto one value.
- */
-function countThresholds(meta) {
-  const breaks = meta?.breaks ?? {};
-  const max = Math.round(meta?.max_count ?? 0);
-  const candidates = ["p50", "p80", "p90", "p95", "p99"]
-    .map((key) => Math.round(Number(breaks[key]) || 0));
-
-  const thresholds = [];
-  let previous = 0;
-  for (const value of candidates) {
-    const next = Math.max(value, previous + 1);
-    if (next >= max) break;
-    thresholds.push(next);
-    previous = next;
-  }
-  return thresholds;
-}
-
 function fillColorExpression() {
   if (state.scale === "safety") {
     const { pct, tier } = TRACK_PROPS[state.track];
     // Interpolated on the raw percentile rather than stepped on the tier, so
     // the map is as continuous as the statistic behind it.
-    const stops = SAFETY.flatMap((hex, i) => [i / (SAFETY.length - 1), hex]);
     return [
       "case",
       // Tier 0 keeps the neutral fill rather than joining the safe end: an
@@ -198,32 +168,21 @@ function fillColorExpression() {
       // the case where the safety layer has not been built, so a missing value
       // reads as "no data" instead of as the least safe colour.
       ["==", ["coalesce", ["get", tier], 0], 0], ZERO_FILL,
-      ["interpolate", ["linear"], ["coalesce", ["get", pct], 0], ...stops],
+      ["interpolate", ["linear"], ["coalesce", ["get", pct], 0], ...rampStops(SAFETY)],
     ];
   }
 
-  if (state.scale === "tier") {
-    const colors = ramp(5);
-    return [
-      "match",
-      ["get", "tier"],
-      0, ZERO_FILL,
-      1, colors[0],
-      2, colors[1],
-      3, colors[2],
-      4, colors[3],
-      5, colors[4],
-      ZERO_FILL,
-    ];
-  }
-
-  const thresholds = countThresholds(state.meta);
-  const colors = ramp(thresholds.length + 1);
-  const expression = ["step", ["get", "count"], ZERO_FILL, 1, colors[0]];
-  thresholds.forEach((threshold, index) => {
-    expression.push(threshold, colors[index + 1]);
-  });
-  return expression;
+  // Counts get the same continuous treatment, keyed on the cell's percentile
+  // rather than the raw number. The distribution is heavily skewed -- a handful
+  // of Center City cells carry an order of magnitude more than the median -- so
+  // interpolating on the count itself would render the rest of the city as one
+  // flat colour. The percentile is the same statistic the quantile steps were
+  // approximating, just read continuously.
+  return [
+    "case",
+    ["==", ["coalesce", ["get", "count"], 0], 0], ZERO_FILL,
+    ["interpolate", ["linear"], ["coalesce", ["get", "percentile"], 0], ...rampStops(COUNT_RAMP)],
+  ];
 }
 
 /* ------------------------------------------------------------------- legend */
@@ -234,14 +193,16 @@ function renderLegend() {
   if (!meta) return;
   legend.setAttribute("aria-hidden", "false");
 
+  // Both measures are continuous, so the key is one gradient-filled bar rather
+  // than a row of swatches: stepped swatches would imply bands the data does
+  // not have.
+  $("legend-ramp").classList.add("is-smooth");
+
   if (state.scale === "safety") {
     $("legend-title").textContent =
       `Safety ranking — ${TRACK_LABELS[state.track]} offences`;
-    // One gradient-filled bar, not twenty adjacent swatches: the measure is
-    // continuous, so a stepped key would imply bands the data does not have.
-    $("legend-ramp").classList.add("is-smooth");
     $("legend-ramp").innerHTML =
-      `<span style="background:${safetyGradient()}"></span>`;
+      `<span style="background:${rampGradient(SAFETY)}"></span>`;
     $("legend-ticks").innerHTML =
       "<span>Least safe</span><span>Median</span><span>Safest</span>";
     $("legend-foot").innerHTML =
@@ -251,36 +212,22 @@ function renderLegend() {
     return;
   }
 
-  // Every other scale is banded, so restore the 2px gaps between swatches.
-  $("legend-ramp").classList.remove("is-smooth");
-
-  if (state.scale === "tier") {
-    const colors = ramp(5);
-    $("legend-title").textContent = "Relative activity within Philadelphia";
-    $("legend-ramp").innerHTML = colors
-      .map((c) => `<span style="background:${c}"></span>`)
-      .join("");
-    $("legend-ticks").innerHTML = "<span>Lowest fifth</span><span>Highest fifth</span>";
-    $("legend-foot").innerHTML =
-      `<span class="legend-zero"><i></i> No reported incidents</span>` +
-      `<br>Each cell ranked against the other ${nf.format(meta.cell_count)} cells in the city.`;
-    return;
-  }
-
-  const thresholds = countThresholds(meta);
-  const colors = ramp(thresholds.length + 1);
   $("legend-title").textContent = "Reported incidents per cell";
-  $("legend-ramp").innerHTML = colors
-    .map((c) => `<span style="background:${c}"></span>`)
-    .join("");
+  $("legend-ramp").innerHTML =
+    `<span style="background:${rampGradient(COUNT_RAMP)}"></span>`;
 
-  const ticks = ["1", ...thresholds.map((t) => nf.format(t)), nf.format(meta.max_count)];
-  // Only the ends and the midpoint are labelled; a number under every step is unreadable.
-  const shown = [ticks[0], ticks[Math.floor(ticks.length / 2)], ticks[ticks.length - 1]];
-  $("legend-ticks").innerHTML = shown.map((t) => `<span>${t}</span>`).join("");
+  // The bar is the percentile, so these three counts sit where they belong:
+  // the quietest cell at the left edge, the median at the midpoint, the busiest
+  // at the right. No label under every step -- that is unreadable at this width.
+  const lowest = Math.max(Math.round(Number(meta.min_count) || 0), 1);
+  const median = Math.round(Number(meta.breaks?.p50) || 0);
+  $("legend-ticks").innerHTML = [lowest, median, Math.round(meta.max_count ?? 0)]
+    .map((t) => `<span>${nf.format(t)}</span>`)
+    .join("");
   $("legend-foot").innerHTML =
     `<span class="legend-zero"><i></i> No reported incidents</span>` +
-    `<br>Steps are quantiles, not equal widths &mdash; the distribution is heavily skewed.`;
+    `<br>Placed by rank against the other ${nf.format(meta.cell_count)} cells, not by ` +
+    `the raw count &mdash; the distribution is heavily skewed.`;
 }
 
 /* --------------------------------------------------------------- data fetch */
@@ -667,8 +614,10 @@ async function openMethodology() {
       Cells are ${m.cell_model.grid} hexagons at resolution
       ${m.cell_model.primary_resolution} (${m.cell_model.primary_resolution_note}),
       with resolution ${m.cell_model.detail_resolution}
-      (${m.cell_model.detail_resolution_note}) available as a drill-down.
+      (${m.cell_model.detail_resolution_note}) and resolution
+      ${m.cell_model.fine_resolution} available as drill-downs.
     </p>
+    <p>${m.cell_model.fine_resolution_note}</p>
     <p>${m.cell_model.relative_measure}</p>
 
     ${m.safety_measure ? `
