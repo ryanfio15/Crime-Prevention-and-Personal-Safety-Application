@@ -306,6 +306,253 @@ retail theft, theft from building all live in the secondary description.
 
 ---
 
+## Fitting six cities on one volume
+
+`DEPLOY.md` sizes the database at 20 GB and is right about why: the gold layer
+scales with *cells*, not with incidents, and six cities are roughly ten times
+Philadelphia's area. On a volume smaller than that — a 5 GB plan, say — the
+question is which of those cells anything actually asks about.
+
+The obvious lever is to drop resolution 10, and measurement says it is a bigger
+lever than it looks: **69% of a Philadelphia-only database is resolution-10 rows.**
+The cell universe is 551 / 3,600 / 24,770 cells at resolutions 8 / 9 / 10, so
+resolution 10 is 86% of every table keyed by cell.
+
+It is still the wrong one to reach for *first*, for two reasons. It is the only one
+of these that costs the product a feature. And it does not touch the table
+`DEPLOY.md` names as dominant: `HOURLY_RESOLUTIONS` is `(8, 9)`, so
+`gold.cell_hour_safety` has never held a resolution-10 row, and dropping resolution
+10 would not save a byte of it.
+
+So: four things first that are invisible to what the product shows, then resolution
+10 narrowed rather than dropped — which recovers most of its cost while keeping the
+drill-down. After all five, resolution 10 still accounts for over half the database,
+and dropping it outright remains available and remains the largest single lever.
+
+Migration `012_storage_reclaim.sql` carries the one-time deletes; the pipeline
+changes that stop the rows coming back are listed beside each.
+
+**1. One severity scheme, not two.** `scheme_version` is in the primary key of
+both `gold.cell_safety` and `gold.cell_hour_safety`, so a second enabled scheme
+is a second complete copy of the ranking *and* of the 24-bucket hourly layer.
+`nscs_v1` was kept enabled after `nscs_v2_percapita` superseded it so the two
+stayed diffable with `safety-compare` — a comparison that had already been made.
+It is now `enabled = false` in `schemes.csv`, and `safety.migrate` grows a
+`prune_disabled_schemes` pass that reclaims the rows a disabled scheme left
+behind, since no refresh ever revisits them. The scheme row and its weight table
+stay: `nscs_v2_percapita` inherits its weights from there, and `safety --scheme
+nscs_v1` still builds it on demand when there is a reason to compare again.
+
+One side effect is a fix. `point_sources_at_scheme` only fills a city's NULL
+scheme pointer when exactly one scheme is enabled, so with two shipping enabled
+it always declined, and a fresh deploy that skipped `--activate` served no safety
+layer at all. That is the failure `DEPLOY.md` documented under
+"the ranking is empty". With one enabled scheme it resolves itself.
+
+**2. The resolution-10 ranking was built and never served.** `Scheme.resolutions`
+returned all three resolutions for an area-denominated scheme, on the correct
+reasoning that area is exact at any cell size. But
+`repository.SAFETY_RESOLUTIONS` is `(8, 9)` and `_require_safety_res` refuses a
+resolution-10 ranking whatever produced it — the API will not serve two rankings
+on two different denominators under one name. That was ~1.9M rows per city that
+nothing could read. `gold.SAFETY_RESOLUTIONS` now caps every scheme at `(8, 9)`,
+and a scheme parameter can no longer widen what the pipeline stores past what the
+API serves.
+
+This one also buys back time, and a lot of it. The comment on `neighbor_mean`
+records that the ring-1 blend at resolution 10 runs over 49,540 rows and *had* cost
+two minutes per window before it was rewritten as a grouped join — "most of a
+Philadelphia gold refresh". Four windows times two tracks of that work is now
+simply not done.
+
+**3. Census block polygons are a build-time input.** `reference.census_block`
+holds a MultiPolygon per 2020 tabulation block under a GiST index — 17,554 of them
+for Philadelphia — and the serving layer never reads the table. Only the boundary
+trim and the areal apportionment do, and both write their results into
+`gold.cell_exposure` and `gold.city_snapshot`. So `geom` becomes nullable and there
+is a new command:
+
+```bash
+python -m safety.etl.run release-geometry --city chi
+```
+
+It refuses unless every cell at the exposure resolutions already has a figure,
+empties the column, and `VACUUM FULL`s the table — cheap here, because the
+rewritten table no longer has the column that made it large. Restoring is a TIGER
+re-download (`census --city chi`), which is the cost being accepted.
+
+**This is the smallest of the four, by a long way.** Philadelphia's polygons are
+4.3 MB with a 1.8 MB GiST index, against a 17 MB table and a 1,251 MB database.
+TIGER block geometry is far simpler than a first guess suggests — most blocks are
+convex and few-sided. The reason to do it is that the exposure work below is worth
+having on its own, not the 6 MB.
+
+Two things fall out of making this safe. `build_cell_exposure` is now
+**incremental**: it apportions only cells with no exposure row, because
+`build_cell_universe` never deletes a cell and H3 geometry is fixed, so an
+existing figure cannot go stale on the cell's side. That removes the most
+expensive query in the pipeline from every gold refresh — a PostGIS intersection
+per (cell, block) pair, recomputing a decennial figure that had not moved — and
+`census` itself passes `rebuild=True`, which is the case where it genuinely has.
+And when the universe *does* grow after a release (an incident landing in a cell
+no previous pull reached), the build raises rather than writing zeros: a zeroed
+denominator reads on the map as "nobody lives here", not as a missing input. The
+gold refresh logs that as an error and carries on, so one stranded edge cell does
+not take the other five cities' rollups down with it.
+
+**4. An unused GiST index on 1.6M points.** `004` declared `incident_geom_gix`
+alongside the H3 indexes. The H3 ones carry every rollup; the point geometry has
+never been queried, because S9.3's first rule is that reads touch gold only and
+every `ST_*` call in the ETL is against `census_block.geom` or
+`city_boundary.geom`. Dropped; the column stays, since it is part of the S6
+canonical schema and cheap next to its index. Worth confirming against
+`pg_stat_user_indexes.idx_scan` on an established database before trusting the
+reasoning — though note that on the database these figures come from *every* index
+reports zero scans, including the primary key, so the statistics had been reset and
+say nothing either way. The code reading is the actual evidence.
+
+**5. Resolution-10 ring-1 adjacency, the same defect as 2.** `gold.cell_neighbor`
+has exactly two readers, `_SAFETY_SQL` and `_HOUR_SAFETY_SQL`, and both are the
+safety ranking — which item 2 just capped at `(8, 9)`. So six pairs per
+resolution-10 cell were being `COPY`ed in on every refresh and never joined
+against: 146,628 of Philadelphia's 170,558 rows, ~90 MB, and roughly four times
+that for Los Angeles. `build_cell_universe` now clears that resolution instead of
+building it, and clears rather than skips, so widening `SAFETY_RESOLUTIONS` later
+refills it with no migration.
+
+### Then resolution 10, narrowed rather than dropped
+
+`gold.cell_activity` is dense on purpose — one row per cell per window per
+category, because S3.3 ranks a cell against the whole city and a cell with no
+reported incidents is part of that distribution. Twenty rows per cell, and at
+resolution 10 that made it the largest table here: ~230,000 res-10 cells across
+six cities is ~4.6M rows, nearly all `incident_count = 0`.
+
+`ACTIVITY_WINDOWS` / `ACTIVITY_CATEGORIES` narrow resolution 10 to the two widest
+windows and category `all` — 2 rows per cell instead of 20, so ~90% of the cost
+of the drill-down without losing the drill-down. The statistical case is the one
+that already kept the hourly layer off resolution 10: a ~0.015 km² cell over 30
+days, split five ways, is a field of ties, and a percentile over ties is not a
+reading. The map's default view is unaffected at every resolution.
+
+What it costs is two UI states, both of which had to be built rather than left to
+look like data:
+
+- The window and category controls disable what is not built at the selected cell
+  size and say why, the same way the hour and colour-by controls already did
+  (`syncActivityScope`). An out-of-scope request answers 400 with the reason.
+- The detail panel's category chart would otherwise have rendered "No incidents
+  reported in this cell" for a cell that has plenty — `by_category` filters out
+  the `all` row, so at resolution 10 it is empty. `cell_detail` now publishes
+  `by_category_available`, and the panel points at the per-offence list, which is
+  built at every resolution and is the finer answer to the same question.
+
+### Measured, on Philadelphia
+
+One city, 347 km², 317,822 incidents, **1,251 MB**. The hourly layer had never been
+built in this database, so `gold.cell_hour_safety` is absent from these figures —
+read everything below knowing that the table `DEPLOY.md` expects to dominate is
+not in it.
+
+| Table | Size | Rows | of which res 10 |
+|---|---|---|---|
+| `gold.cell_activity` | 342 MB | 578,420 | 495,400 (86%) |
+| `silver.incident` (3 partitions) | 479 MB | 317,822 | — |
+| `gold.cell_safety` | 154 MB | 264,576 | 198,160 (75%) |
+| `gold.cell_monthly` | 131 MB | 529,445 | 335,519 (63%) |
+| `gold.cell_offense_mix` | 71 MB | 250,074 | 177,158 (71%) |
+| `gold.cell_neighbor` | 42 MB | 170,558 | 146,628 (86%) |
+| `gold.cell_geometry` | 19 MB | 28,921 | 24,770 (86%) |
+| `reference.census_block` | 17 MB | 17,554 | — |
+
+What the four changes actually free, at ~615 bytes per gold row:
+
+| Change | Rows removed | Freed |
+|---|---|---|
+| Narrow res-10 `cell_activity` | 445,860 | **~263 MB** |
+| Disable `nscs_v1` | 231,368 | **~135 MB** |
+| Drop res-10 `cell_neighbor` | 146,628 | **~90 MB** |
+| Drop `incident_geom_gix` | — | **~26 MB** |
+| Release `census_block.geom` | — | **~6 MB** |
+
+**~520 MB of 1,251, or 42%, for one city** — and the four cell-scaled items grow
+with area, so the proportion roughly holds as cities are added. `cell_safety` goes
+from 264,576 rows to 33,208; `cell_activity` from 578,420 to 132,560;
+`cell_neighbor` from 170,558 to 23,930.
+
+Note the overlap: every res-10 `cell_safety` row was an `nscs_v1` row, because
+`nscs_v2_percapita` never built at res 10. On *this* database the migration's res-10
+delete is therefore subsumed by the prune. It is not redundant in general — it is
+what cleans up if an area scheme is ever re-enabled, and `SAFETY_RESOLUTIONS` is
+what stops the rows coming back at all.
+
+The exposure change pays off separately, in time rather than space: a Philadelphia
+gold refresh with nothing pending went from **2.65s to 0.03s** on that step, and
+that gap widens with city size.
+
+#### The regression gate, applied to this change
+
+The same standard the Stage-0 changes were held to. Captured `gold.cell_activity`,
+re-ran `refresh_cell_activity`, and compared every row that exists in both:
+
+| res | rows compared | max percentile shift | rank / tier / count differences |
+|---|---|---|---|
+| 8 | 11,020 | **0.0** | **0** |
+| 9 | 72,000 | **0.0** | **0** |
+| 10 | 49,540 | **0.0** | **0** |
+
+Exactly the 18 out-of-scope res-10 (window, category) combinations disappear and
+nothing else moves — including the res-10 rows that are kept, which is what proves
+the category filter sitting ahead of the window functions cannot shift the
+partitions that remain.
+
+### How to get the real ones on your own database
+
+```sql
+SELECT schemaname || '.' || relname                        AS table,
+       pg_size_pretty(pg_total_relation_size(relid))       AS total,
+       n_live_tup, n_dead_tup
+FROM pg_stat_user_tables
+ORDER BY pg_total_relation_size(relid) DESC
+LIMIT 20;
+```
+
+Read `n_dead_tup` as carefully as the size. Every gold refresh is
+delete-then-insert inside a transaction, which leaves dead tuples equal to a full
+layer each time; on a multi-GB `cell_hour_safety` rebuilt weekly, autovacuum may
+not keep up, and steady-state disk can sit near twice the logical size. That is
+worth checking before concluding the data does not fit — and after these deletes,
+plain `VACUUM` makes the space reusable by the same tables, which is where it
+goes, while only `VACUUM FULL` hands it back to the filesystem for a new city's
+partitions to use.
+
+### Further levers, unused
+
+Measured against the *post-change* Philadelphia database (~730 MB), in order of
+size. Resolution 10 is still ~380 MB of it — 52% — so the first two are the same
+lever at different depths:
+
+- **`gold.cell_monthly` + `gold.cell_offense_mix` at resolution 10 — ~133 MB.** The
+  two biggest remaining res-10 tables, and bigger than items 3, 4 and 5 above
+  combined. Both are sparse (rows only where the count is positive), so they scale
+  with incidents rather than cells, but 24 months of monthly buckets per res-10
+  cell is still 512,677 rows for one city. Costs the res-10 detail panel its
+  sparkline and its offence list — and item 4's narrowing just made that list the
+  answer to the category question, so this is more expensive than it looks. Do not
+  take this one without taking the next.
+- **Drop resolution 10 entirely — ~380 MB, 52%.** Costs the ~75 m drill-down, which
+  is a real feature and the finest thing the product offers. But it is by far the
+  largest single number here, and if 5 GB will not hold six cities any other way,
+  this is the honest place to give something up rather than shaving statistics.
+- **Drop `last_24m` from `HOURLY_WINDOWS`.** Halves `gold.cell_hour_safety`, which
+  is absent from the measurements above and is expected to be the largest table
+  once `hourly` has run — so this may well outrank everything in this list on a
+  database where it exists. Costs the two-year hourly view, the more stable of the
+  two.
+- **Bronze off the database volume.** A different volume, so this only helps a
+  combined budget: `BRONZE_ROOT=/tmp/bronze` costs `reprocess --pull-id` and
+  nothing the website reads.
+
 ## Still to build
 
 **Washington DC** (`esri_featureserver`) is next, and is the paradigm test.

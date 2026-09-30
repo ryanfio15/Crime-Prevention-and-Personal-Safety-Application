@@ -45,15 +45,48 @@ OFFENSE_MIX_DEPTH = 8
 TRACKS = ("violent", "non_violent")
 SAFETY_TIERS = 4
 
-# Resolutions the safety ranking builds at when the scheme divides by ambient
-# population rather than by area. Mirrors safety.etl.census.EXPOSURE_RESOLUTIONS
-# -- a resolution-10 cell is smaller than a census block, so its population is
-# an apportionment assumption rather than a measurement, and a ranking computed
-# on one would be reporting this pipeline's own interpolation back to the user.
+# Resolutions the safety ranking builds at, for every scheme.
 #
-# An area-denominated scheme still builds at every resolution; area is exact at
-# any size.
-PERCAPITA_RESOLUTIONS = (8, 9)
+# The original reason is the per-capita denominator: this mirrors
+# safety.etl.census.EXPOSURE_RESOLUTIONS, and a resolution-10 cell is smaller
+# than a census block, so its population is an apportionment assumption rather
+# than a measurement. A ranking computed on one would be reporting this
+# pipeline's own interpolation back to the user.
+#
+# It applies to area-denominated schemes too, which it did not used to. Area is
+# exact at any cell size, so those built at resolution 10 as well -- but
+# safety/api/repository.py::SAFETY_RESOLUTIONS is (8, 9) and the serving layer
+# refuses a resolution-10 ranking whatever built it. Those rows were ~1.9M per
+# city that nothing could read. The scheme parameter cannot widen what the API
+# serves, so it no longer widens what the pipeline stores.
+SAFETY_RESOLUTIONS = (8, 9)
+
+# What the activity layer builds per resolution, where that is narrower than
+# TIME_WINDOWS x CATEGORIES.
+#
+# cell_activity is dense by construction -- every cell in the universe gets a
+# row per window per category, because a cell with no reported incidents is part
+# of the distribution (S3.3) and has to be ranked. That is 20 rows per cell, and
+# at resolution 10 it is the largest table in the database: six cities are on the
+# order of 230,000 resolution-10 cells, so 4.6M rows, nearly all of them
+# n = 0 / tier = 0.
+#
+# The narrowing is a data-volume judgement and is written here rather than in
+# DDL for the same reason HOURLY_RESOLUTIONS is. It is also close to free
+# statistically: a resolution-10 cell is ~0.015 km2, and splitting 30 days
+# across cells that size leaves a median of zero, so the short windows were
+# ranking a field of ties. The drill-down keeps the two windows and the one
+# category the map opens on.
+ACTIVITY_WINDOWS: dict[int, tuple[str, ...]] = {10: ("last_12m", "last_24m")}
+ACTIVITY_CATEGORIES: dict[int, tuple[str, ...]] = {10: ("all",)}
+
+
+def activity_scope(res: int) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The windows and categories the activity layer builds at a resolution."""
+    return (
+        ACTIVITY_WINDOWS.get(res, TIME_WINDOWS),
+        ACTIVITY_CATEGORIES.get(res, CATEGORIES),
+    )
 
 # Time of day. Block h covers [h:00, h+1:00) local; 23 is 23:00-24:00.
 HOUR_BLOCKS = 24
@@ -217,10 +250,40 @@ def build_cell_universe(conn: psycopg.Connection, source_id: str) -> dict[int, i
         counts[res] = len(ordered)
         log.info("cell universe res %s: %s cells", res, len(ordered))
 
-        _build_cell_neighbors(conn, source_id, res, cells)
+        # Only where the ranking that reads it is built. gold.cell_neighbor has
+        # exactly two readers, _SAFETY_SQL and _HOUR_SAFETY_SQL, and both are
+        # capped at SAFETY_RESOLUTIONS -- so resolution-10 adjacency was six
+        # pairs per cell, rewritten on every refresh, that nothing ever joined
+        # against. The DELETE inside the helper still runs for every resolution,
+        # so widening SAFETY_RESOLUTIONS later refills this with no migration.
+        if res in SAFETY_RESOLUTIONS:
+            _build_cell_neighbors(conn, source_id, res, cells)
+        else:
+            _clear_cell_neighbors(conn, source_id, res)
 
     conn.commit()
     return counts
+
+
+def _clear_cell_neighbors(conn: psycopg.Connection, source_id: str, res: int) -> None:
+    """Drop adjacency for a resolution the ranking is no longer built at.
+
+    Runs on every refresh rather than once in a migration, so the table cannot
+    hold pairs for a resolution outside SAFETY_RESOLUTIONS however that constant
+    moves -- including back the other way.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM gold.cell_neighbor WHERE source_id = %s AND h3_res = %s",
+            (source_id, res),
+        )
+        if cur.rowcount:
+            log.info(
+                "cell adjacency res %s: dropped %s pair(s); the ranking is not "
+                "built at this resolution, so nothing reads them",
+                res,
+                cur.rowcount,
+            )
 
 
 def _build_cell_neighbors(
@@ -311,6 +374,11 @@ unpivoted AS (
         ('quality_of_life', c_quality_of_life),
         ('other',           c_other)
     ) AS v(category, n)
+    -- Narrowed at resolution 10; see ACTIVITY_CATEGORIES. Filtered here, ahead
+    -- of the window functions below, which is both cheaper and safe: every
+    -- percentile partitions by category, so dropping whole categories cannot
+    -- move the ranking of the ones that remain.
+    WHERE category = ANY(%(categories)s)
 ),
 ranked AS (
     SELECT
@@ -353,15 +421,29 @@ FROM ranked
 def refresh_cell_activity(
     conn: psycopg.Connection, source_id: str, windows: list[Window]
 ) -> int:
-    """Rebuild gold.cell_activity for every resolution/window/category."""
+    """Rebuild gold.cell_activity for every resolution/window/category in scope."""
     written = 0
     with conn.cursor() as cur:
         for res in RESOLUTIONS:
             h3_column = _h3_column(res)
+            scope_windows, scope_categories = activity_scope(res)
+            if (scope_windows, scope_categories) != (TIME_WINDOWS, CATEGORIES):
+                log.info(
+                    "cell_activity res=%s is narrowed to windows %s, categories %s",
+                    res,
+                    ", ".join(scope_windows),
+                    ", ".join(scope_categories),
+                )
             for window in windows:
                 # Delete-then-insert inside the caller's transaction: readers
                 # keep seeing the previous rollup until commit, so the map
                 # never renders a half-built layer.
+                #
+                # The DELETE covers every window and every category at this
+                # resolution, including the ones about to be skipped. That is
+                # what makes narrowing the scope reclaim disk rather than strand
+                # rows nothing will overwrite again -- and it is why the scope
+                # can be widened back without a migration.
                 cur.execute(
                     """
                     DELETE FROM gold.cell_activity
@@ -369,6 +451,8 @@ def refresh_cell_activity(
                     """,
                     (source_id, res, window.name),
                 )
+                if window.name not in scope_windows:
+                    continue
                 cur.execute(
                     _ACTIVITY_SQL.format(h3_column=h3_column),
                     {
@@ -377,6 +461,7 @@ def refresh_cell_activity(
                         "time_window": window.name,
                         "window_start": window.start,
                         "window_end": window.end,
+                        "categories": list(scope_categories),
                     },
                 )
                 written += cur.rowcount
@@ -424,7 +509,10 @@ class Scheme:
 
     @property
     def resolutions(self) -> tuple[int, ...]:
-        return PERCAPITA_RESOLUTIONS if self.per_capita else RESOLUTIONS
+        # Not a function of the scheme any more. See SAFETY_RESOLUTIONS: an
+        # area-denominated scheme *could* be ranked at resolution 10, but the
+        # serving layer will not return it, so building it only cost disk.
+        return SAFETY_RESOLUTIONS
 
 
 _SCHEME_SELECT = """
@@ -1515,8 +1603,10 @@ def refresh_safety_layer(
     return rows, coverage
 
 
-def refresh_cell_exposure(conn: psycopg.Connection, source_id: str) -> dict[int, int]:
-    """Rebuild the population denominator, if this city has one loaded.
+def refresh_cell_exposure(
+    conn: psycopg.Connection, source_id: str, rebuild: bool = False
+) -> dict[int, int]:
+    """Top up the population denominator, if this city has one loaded.
 
     Imported here rather than at module scope: safety.etl.census pulls in pyshp
     and httpx, and a plain `gold` refresh on a city with no census data should
@@ -1539,7 +1629,24 @@ def refresh_cell_exposure(conn: psycopg.Connection, source_id: str) -> dict[int,
             source_id,
         )
         return {}
-    return census.build_cell_exposure(conn, source_id)
+
+    try:
+        return census.build_cell_exposure(conn, source_id, rebuild=rebuild)
+    except LookupError as exc:
+        # Same granularity argument as refresh_safety_layer: a denominator that
+        # cannot be extended is not a reason to roll back the rest of the gold
+        # refresh. It happens when the block polygons have been released and the
+        # cell universe has since grown -- an incident landing in a cell no
+        # previous pull reached.
+        #
+        # Those cells end up with no exposure row, which the ranking SQL already
+        # handles: the LEFT JOIN yields zero exposure and the scheme's
+        # credibility prior bounds it, so the cell is ranked near the citywide
+        # rate rather than dividing by zero. That is a worse figure than a real
+        # apportionment, for a handful of edge cells, and it is why this is an
+        # error and not a warning.
+        log.error("cannot extend the exposure layer for %s: %s", source_id, exc)
+        return {}
 
 
 def refresh_all(

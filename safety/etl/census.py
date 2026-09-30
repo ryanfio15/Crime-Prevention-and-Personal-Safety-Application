@@ -517,11 +517,63 @@ LEFT JOIN LATERAL (
 ) f ON true
 WHERE g.source_id = %(source_id)s
   AND g.h3_res = ANY(%(resolutions)s)
+  -- Only the cells that have no figure yet, unless the caller asked for a full
+  -- rebuild (which clears the layer first, making this condition vacuous).
+  -- build_cell_universe never deletes a cell and H3 geometry is fixed, so an
+  -- existing row cannot have gone stale on the cell's side; only a reload of
+  -- the blocks themselves invalidates one, and that is what rebuild is for.
+  AND NOT EXISTS (
+      SELECT 1 FROM gold.cell_exposure x
+       WHERE x.source_id = g.source_id
+         AND x.h3_index  = g.h3_index
+         AND x.h3_res    = g.h3_res
+  )
 GROUP BY g.source_id, g.h3_index, g.h3_res
 """
 
+_PENDING_SQL = """
+SELECT count(*)::int AS n
+FROM gold.cell_geometry g
+WHERE g.source_id = %(source_id)s
+  AND g.h3_res = ANY(%(resolutions)s)
+  AND NOT EXISTS (
+      SELECT 1 FROM gold.cell_exposure x
+       WHERE x.source_id = g.source_id
+         AND x.h3_index  = g.h3_index
+         AND x.h3_res    = g.h3_res
+  )
+"""
 
-def build_cell_exposure(conn: psycopg.Connection, source_id: str) -> dict[int, int]:
+
+def geometry_released(conn: psycopg.Connection, source_id: str) -> bool:
+    """Whether this city's block polygons have been dropped to reclaim disk.
+
+    The counts stay; only `geom` goes. That is enough for everything except a
+    fresh apportionment, so the question has to be asked before one is attempted
+    rather than discovered as a silently empty denominator.
+
+    Any missing polygon counts, not only a wholly released city. release_block_geometry
+    empties the column for a whole source at once, so a partial state should not
+    arise -- but the column was NOT NULL until 012 and nothing else ever writes a
+    NULL, so a single one means the apportionment would be built from an
+    incomplete set of blocks and understate the population it does reach. Refusing
+    is the right answer to that whatever produced it.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*) FILTER (WHERE geom IS NULL)::int AS released
+            FROM reference.census_block WHERE source_id = %s
+            """,
+            (source_id,),
+        )
+        row = cur.fetchone() or {"released": 0}
+    return row["released"] > 0
+
+
+def build_cell_exposure(
+    conn: psycopg.Connection, source_id: str, rebuild: bool = False
+) -> dict[int, int]:
     """Materialize gold.cell_exposure for every exposure resolution.
 
     A LEFT JOIN, so every cell in the universe gets a row -- including the ones
@@ -529,18 +581,59 @@ def build_cell_exposure(conn: psycopg.Connection, source_id: str) -> dict[int, i
     about that cell (the airside of the airport, the middle of the river), and
     it still has to be ranked; the scheme's credibility prior is what keeps it
     from dividing by zero.
+
+    Incremental by default: only cells with no exposure row are apportioned.
+    This used to re-apportion the whole city on every gold refresh, which is a
+    PostGIS intersection per (cell, block) pair against decennial population --
+    the most expensive query in the pipeline, recomputing a figure that had not
+    moved. `rebuild=True` is the escape hatch, and is what a census load itself
+    passes: new block counts or a new LODES year do invalidate every row.
     """
+    params = {
+        "source_id": source_id,
+        "resolutions": list(EXPOSURE_RESOLUTIONS),
+        "pop_vintage": POP_VINTAGE,
+    }
+
     with conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM gold.cell_exposure WHERE source_id = %s", (source_id,)
-        )
-        cur.execute(
-            _EXPOSURE_SQL,
-            {
-                "source_id": source_id,
-                "resolutions": list(EXPOSURE_RESOLUTIONS),
-                "pop_vintage": POP_VINTAGE,
-            },
+        cur.execute(_PENDING_SQL, params)
+        pending = (cur.fetchone() or {"n": 0})["n"]
+
+        # Checked before anything is written, and before the rebuild DELETE in
+        # particular: raising after that would leave the caller holding a
+        # transaction whose only pending change is the removal of the whole
+        # exposure layer, and refresh_all commits at the end regardless of what
+        # it caught along the way.
+        #
+        # Checked before the insert rather than after it for the same reason it
+        # is checked at all: with the polygons gone the apportionment succeeds
+        # and writes zeros, which reads on the map as "nobody lives here" instead
+        # of as a missing input.
+        if geometry_released(conn, source_id) and (pending or rebuild):
+            work = (
+                "every cell re-apportioned"
+                if rebuild
+                else f"{pending} cell(s) apportioned"
+            )
+            raise LookupError(
+                f"'{source_id}' needs {work}, but this city's census block polygons "
+                "have been released to reclaim disk (reference.census_block.geom is "
+                "NULL). Re-run `python -m safety.etl.run census --city "
+                f"{source_id}` to download them again; the block counts themselves "
+                "were not lost."
+            )
+
+        if rebuild:
+            cur.execute(
+                "DELETE FROM gold.cell_exposure WHERE source_id = %s", (source_id,)
+            )
+
+        cur.execute(_EXPOSURE_SQL, params)
+        log.info(
+            "cell_exposure: apportioned %s new cell(s) for %s%s",
+            cur.rowcount,
+            source_id,
+            " (full rebuild)" if rebuild else "",
         )
 
         cur.execute(
@@ -606,6 +699,86 @@ def build_cell_exposure(conn: psycopg.Connection, source_id: str) -> dict[int, i
             f"{list(EXPOSURE_RESOLUTIONS)} -- run the gold rollups first"
         )
     return counts
+
+
+def release_block_geometry(conn: psycopg.Connection, source_id: str) -> int:
+    """Drop this city's block polygons once the exposure layer is built.
+
+    The polygons are a build-time input and nothing else. Their only consumers
+    are the boundary trim and the areal apportionment above, both of which write
+    their results elsewhere -- gold.cell_exposure for the figures,
+    gold.city_snapshot for the citywide totals -- and the serving layer never
+    reads reference.census_block at all. What it costs is a re-download from
+    TIGER (a few minutes) before the apportionment can be redone.
+
+    It is worth doing because the polygons are the largest reference data in the
+    database and scale with the city rather than with the product: six metros of
+    2020 tabulation blocks, at ~100,000 blocks for Los Angeles County alone,
+    plus a GiST index over all of them.
+
+    The counts (pop20, housing20, jobs, aland20) stay, so the retention check,
+    the citywide ambient total and the job-outlier log all keep working.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            _PENDING_SQL,
+            {"source_id": source_id, "resolutions": list(EXPOSURE_RESOLUTIONS)},
+        )
+        pending = (cur.fetchone() or {"n": 0})["n"]
+        if pending:
+            raise LookupError(
+                f"{pending} cell(s) for '{source_id}' still have no exposure figure, "
+                "so releasing the polygons now would strand them with no way to "
+                "build one. Run `python -m safety.etl.run gold --city "
+                f"{source_id}` first, then release."
+            )
+
+        # The logical size of what is being given up, measured rather than
+        # estimated. pg_total_relation_size would not move here: NULLing a
+        # column leaves dead tuples behind, and the VACUUM FULL below is what
+        # actually returns the space to the filesystem.
+        cur.execute(
+            """
+            SELECT count(*)::int AS blocks,
+                   COALESCE(sum(pg_column_size(geom)), 0)::bigint AS geom_bytes
+            FROM reference.census_block
+            WHERE source_id = %s AND geom IS NOT NULL
+            """,
+            (source_id,),
+        )
+        row = cur.fetchone() or {"blocks": 0, "geom_bytes": 0}
+        if not row["blocks"]:
+            log.info("census block polygons for %s are already released", source_id)
+            return 0
+
+        cur.execute(
+            "UPDATE reference.census_block SET geom = NULL WHERE source_id = %s",
+            (source_id,),
+        )
+        released = cur.rowcount
+    conn.commit()
+
+    # VACUUM cannot run inside a transaction, and a plain VACUUM would only mark
+    # the space reusable by this table. FULL is what hands it back, and it is
+    # cheap in exactly this case: the rewritten table no longer has the column
+    # that made it large.
+    prior = conn.autocommit
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("VACUUM (FULL, ANALYZE) reference.census_block")
+    finally:
+        conn.autocommit = prior
+
+    log.info(
+        "released %s census block polygon(s) for %s, reclaiming about %.1f MB; "
+        "re-run `census --city %s` to restore them",
+        released,
+        source_id,
+        row["geom_bytes"] / 1_048_576,
+        source_id,
+    )
+    return released
 
 
 def city_ambient_total(conn: psycopg.Connection, source_id: str) -> dict[str, Any]:

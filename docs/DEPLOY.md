@@ -100,6 +100,16 @@ in step 3.
    from city areas, not measurements; watch the actual figure after the second
    city lands.
 
+   **If 20 GB is not available**, six cities still fit in about 5 GB, and the
+   reductions are all invisible to what the product shows: one severity scheme
+   instead of two, no resolution-10 safety rows (the API never served them), the
+   census block polygons released once the exposure layer is built, and the
+   resolution-10 activity layer narrowed to the two widest windows. All of it is
+   applied by `safety.migrate` plus one `release-geometry` per city — see
+   [`PHASE2.md`](PHASE2.md), "Fitting six cities on one volume", for what each one
+   costs and how to measure it. Do not reach for "drop resolution 10" first: it is
+   worth less than it looks, and it does not touch `gold.cell_hour_safety` at all.
+
    If no volume option appears at all, check your plan under **Usage** or
    **Billing** — Railway gates persistent volumes above the trial tier. The
    database genuinely needs one; there is no workaround that keeps your data.
@@ -447,21 +457,16 @@ Because step 3 passes `--skip-hourly`, the time-of-day view stays empty until
 python -m safety.etl.run hourly --all
 ```
 
-### The first load does not finish on its own — three more commands
+### The first load does not finish on its own — two more commands
 
 This catches everyone once, and the failure modes are quiet rather than obvious.
-Two severity schemes ship enabled: `nscs_v1` divides by cell area, and
-`nscs_v2_percapita` divides by ambient population. On a fresh database the second
-has no population to divide by, and no scheme is selected for serving.
+The safety ranking divides by ambient population, and on a fresh database there
+is none loaded yet to divide by.
 
 Run these on the `ops` service, one per deploy, in this order:
 
 ```
 python -m safety.etl.run census --city phl
-```
-
-```
-python -m safety.migrate --activate nscs_v2_percapita
 ```
 
 ```
@@ -473,15 +478,21 @@ counts and apportions them into cells; without it the log says `no census blocks
 loaded for 'phl'; skipping the exposure layer` and the per-capita scheme cannot
 be built. It needs the coverage boundary, which the backfill has already fetched.
 
-`--activate` is the one that is easy to miss. `safety.migrate` only auto-selects a
-scheme when exactly one is enabled; with two it leaves
-`severity_scheme_version` NULL and says so in the log. The map layer joins
-`gold.cell_safety` on that value, so a NULL means the join matches nothing and
-**the safety ramp is simply absent** — counts still render, so the page looks
-like it is working. Activating is deliberately manual because promoting a scheme
-changes what every safety number in the product means.
-
 `gold` then rebuilds the rankings against the new denominator.
+
+**This used to be three commands.** A `python -m safety.migrate --activate
+nscs_v2_percapita` was needed in between, and it was the step everyone missed.
+`safety.migrate` only auto-selects a serving scheme when exactly one is enabled,
+and two used to ship enabled — so it left `severity_scheme_version` NULL, the map
+layer's join on that value matched nothing, and **the safety ramp was simply
+absent** while counts still rendered, which looks like a working page. Only
+`nscs_v2_percapita` ships enabled now (see `PHASE2.md`, "Fitting six cities on one
+volume", for why the second copy was costing more than it was worth), so the
+pointer is filled automatically and this resolves itself.
+
+`--activate` still exists and is still the only way to *change* a serving scheme,
+because promoting one changes what every safety number in the product means. It is
+just no longer part of a first load.
 
 Verify with `/api/v1/cells?city=phl&res=8` — `metadata.severity_scheme` should
 name a scheme rather than being null.
@@ -653,8 +664,24 @@ trade-off this makes.
 the logs distinguish them. Either the population denominator is missing —
 `no census blocks loaded`, fixed by `census --city <id>` then `gold --city <id>`
 — or no scheme is selected for serving, which is `severity_scheme_version` being
-NULL and is fixed by `safety.migrate --activate nscs_v2_percapita`. See the end of
-step 4.
+NULL and is fixed by `safety.migrate --activate nscs_v2_percapita`. The second is
+now rare: with one scheme enabled the pointer is filled automatically. See the end
+of step 4.
+
+**The safety ramp is greyed out at the ~75 m cell size, and the category and
+window controls are partly disabled there.** Working as intended, not a data
+problem. The ranking needs a population denominator and a res-10 cell is smaller
+than a census block; the activity layer at that size is built for the last 12 and
+24 months and all offence types together, because a cell that small split five ways
+over 30 days is empty almost everywhere. Each control says which. `PHASE2.md`
+covers the reasoning and how to widen it.
+
+**`cannot extend the exposure layer for <city>` in the gold log.** The city's
+census block polygons were released to reclaim disk (`release-geometry`) and the
+cell universe has since grown — usually one incident landing in a cell no previous
+pull had reached. Those cells are ranked against the citywide rate rather than
+their own population until it is fixed, which is `census --city <id>` to re-download
+the blocks. The rest of the refresh commits normally.
 
 **The ETL run fails after several minutes of successful work.** Look for
 `cannot build severity scheme '<name>' ... skipping it`. A scheme that cannot be

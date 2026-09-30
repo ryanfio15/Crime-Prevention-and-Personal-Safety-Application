@@ -381,6 +381,109 @@ def point_sources_at_scheme(conn: psycopg.Connection) -> int:
     return updated
 
 
+# Gold tables keyed by scheme_version, widest first so the hourly layer goes
+# before the all-hours ranking its baseline came from.
+_SCHEME_KEYED_TABLES = ("gold.cell_hour_safety", "gold.cell_safety")
+
+
+def prune_disabled_schemes(conn: psycopg.Connection) -> int:
+    """Reclaim the gold rows of a scheme that has been switched off.
+
+    scheme_version is part of the primary key of both tables above, so an extra
+    enabled scheme is an extra complete copy of the safety ranking -- and of the
+    hourly layer, which is that same ranking recomputed 24 times per window.
+    Setting `enabled` to false in schemes.csv stops the pipeline building one,
+    but the rows it has already written are not touched by any later refresh:
+    every rebuild is scoped to the scheme being rebuilt, which is what makes a
+    refresh of one scheme leave the others alone. So they would sit there
+    indefinitely, unreadable and unrefreshed.
+
+    A scheme still named by reference.source_registry is never pruned, even when
+    disabled. Those rows are what that city's map is drawn from, and deleting
+    them would blank it. Disabled-but-serving is a misconfiguration worth
+    reporting rather than acting on -- the fix is `--activate`, not a DELETE.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT scheme_version FROM reference.severity_scheme WHERE NOT enabled"
+        )
+        disabled = {r["scheme_version"] for r in cur.fetchall()}
+        if not disabled:
+            return 0
+
+        cur.execute(
+            """
+            SELECT DISTINCT severity_scheme_version AS v
+            FROM reference.source_registry
+            WHERE severity_scheme_version IS NOT NULL
+            """
+        )
+        in_use = {r["v"] for r in cur.fetchall()}
+
+    serving = sorted(disabled & in_use)
+    for version in serving:
+        log.warning(
+            "severity scheme '%s' is disabled but is still the scheme one or more "
+            "cities serve; keeping its rows. Point them at an enabled scheme with "
+            "`python -m safety.migrate --activate <scheme>`",
+            version,
+        )
+
+    prunable = sorted(disabled - in_use)
+    if not prunable:
+        return 0
+
+    removed = 0
+    with conn.cursor() as cur:
+        for table in _SCHEME_KEYED_TABLES:
+            cur.execute(
+                f"DELETE FROM {table} WHERE scheme_version = ANY(%s)", (prunable,)
+            )
+            if cur.rowcount:
+                log.info("pruned %s row(s) from %s", cur.rowcount, table)
+            removed += cur.rowcount
+    conn.commit()
+
+    if removed:
+        log.info(
+            "reclaimed %s gold row(s) for disabled scheme(s) %s",
+            removed,
+            ", ".join(prunable),
+        )
+        _vacuum(conn, _SCHEME_KEYED_TABLES)
+    return removed
+
+
+def _vacuum(conn: psycopg.Connection, tables: tuple[str, ...]) -> None:
+    """Plain VACUUM over tables a large DELETE has just been run against.
+
+    Plain and not FULL, deliberately. FULL would hand the space back to the
+    filesystem, but it takes an ACCESS EXCLUSIVE lock and needs free disk for a
+    whole rewritten copy -- the wrong thing to do unprompted on the small volume
+    that motivates pruning in the first place. Plain VACUUM marks the space
+    reusable by the same table, which is exactly where it goes: both of these are
+    rebuilt by delete-then-insert on every refresh, so they reuse it immediately
+    instead of growing the file again.
+
+    If the space is needed by something else -- a new city's partitions -- the
+    operator wants VACUUM FULL, and the log says so rather than guessing.
+    """
+    prior = conn.autocommit
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            for table in tables:
+                cur.execute(f"VACUUM (ANALYZE) {table}")
+    finally:
+        conn.autocommit = prior
+    log.info(
+        "vacuumed %s; the freed pages are reusable by those tables. To hand them "
+        "back to the filesystem instead, run VACUUM FULL on them during a quiet "
+        "window (it locks the table and needs room for a second copy).",
+        ", ".join(tables),
+    )
+
+
 def activate_scheme(conn: psycopg.Connection, scheme_version: str, source_id: str | None) -> int:
     """Promote a scheme to the one a city actually serves.
 
@@ -774,6 +877,9 @@ def main(argv: list[str] | None = None) -> int:
         point_sources_at_scheme(conn)
         if args.activate:
             activate_scheme(conn, args.activate, args.city)
+        # After --activate, so a scheme being promoted in this same run is never
+        # a candidate, and after the loader, so `enabled` reflects the CSV.
+        pruned = prune_disabled_schemes(conn)
         backfilled = backfill_h3_cells(conn)
         hours_filled = backfill_incident_hour(conn)
 
@@ -783,6 +889,8 @@ def main(argv: list[str] | None = None) -> int:
         print("Schema already up to date.")
     print(f"Crosswalk rows loaded/refreshed: {crosswalk_rows}")
     print(f"Severity schemes: {scheme_rows}, severity weights: {weight_rows}")
+    if pruned:
+        print(f"Gold rows reclaimed from disabled scheme(s): {pruned}")
     if backfilled:
         print(f"H3 cells backfilled: {backfilled} (re-run the gold rollups)")
     if hours_filled:

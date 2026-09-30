@@ -47,6 +47,9 @@
       <option value="last_12m" selected>Last 12 months</option>
       <option value="last_24m">Last 24 months</option>
     </select>
+    <!-- Filled by syncActivityScope when the selected cell size is too small to
+         carry a shorter window, so the disabled options explain themselves. -->
+    <span class="field-note" id="f-window-note"></span>
   </label>
 
   <label class="field">
@@ -58,6 +61,7 @@
       <option value="quality_of_life">Quality of life</option>
       <option value="other">Other</option>
     </select>
+    <span class="field-note" id="f-category-note"></span>
   </label>
 
   <label class="field">

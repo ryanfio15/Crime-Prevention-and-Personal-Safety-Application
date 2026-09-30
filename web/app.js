@@ -210,12 +210,26 @@ const TRACK_PROPS = {
 const HOURLY_RESOLUTIONS = [8, 9];
 const HOURLY_WINDOWS = ["last_12m", "last_24m"];
 
-/* Mirrors safety.etl.gold.PERCAPITA_RESOLUTIONS. The safety ranking divides by
+/* Mirrors safety.etl.gold.SAFETY_RESOLUTIONS. The safety ranking divides by
    ambient population apportioned from census blocks, and a res-10 cell is
    smaller than a census block -- there is no population figure at that size
    that is not interpolation. Counts are still served there, so the map falls
    back to the count ramp rather than going blank. */
 const SAFETY_RESOLUTIONS = [8, 9];
+
+/* Mirrors safety.etl.gold.ACTIVITY_WINDOWS / ACTIVITY_CATEGORIES. The activity
+   layer is dense -- one row per cell per window per category, since a cell with
+   no reported incidents is still part of the distribution it is ranked against
+   -- so resolution 10 is built for the two widest windows and the combined
+   category only. At ~0.015 km² a single category over 30 days leaves nearly
+   every cell on zero, tied with every other, and a percentile over a field of
+   ties is not a reading. Same bounds on the server, which answers the rest with
+   the reason; the client knows them so the controls can say so first. */
+const ACTIVITY_WINDOWS = { 10: ["last_12m", "last_24m"] };
+const ACTIVITY_CATEGORIES = { 10: ["all"] };
+
+const activityWindows = (res) => ACTIVITY_WINDOWS[res] ?? null;
+const activityCategories = (res) => ACTIVITY_CATEGORIES[res] ?? null;
 
 /** "20:00–21:00". The last block reads 23:00–24:00, not 23:00–00:00. */
 const hourLabel = (hour) =>
@@ -695,7 +709,7 @@ async function selectCell(h3) {
 
   renderSafety(detail.safety);
   renderHours(detail);
-  renderCategoryBars(detail.by_category);
+  renderCategoryBars(detail.by_category, detail.by_category_available);
   renderSparkline(detail.monthly, headline.window_end);
   renderOffenseMix(detail.top_offenses);
 }
@@ -852,8 +866,21 @@ function renderHours(detail) {
     "offence occurred.";
 }
 
-function renderCategoryBars(rows) {
+/**
+ * `available === false` means the split is not built at this cell size, which is
+ * a different statement from an empty cell and must not borrow its wording. The
+ * per-offence list below the chart is built at every resolution, so there is a
+ * finer answer to send the reader to rather than a dead end.
+ */
+function renderCategoryBars(rows, available = true) {
   const container = $("d-categories");
+  if (available === false) {
+    container.innerHTML =
+      `<p class="bar-empty">Not split by category at this cell size — a cell this ` +
+      `small is empty in most single categories, so the split would be mostly ` +
+      `zeroes. The reported offences listed below cover this cell.</p>`;
+    return;
+  }
   if (!rows?.length) {
     container.innerHTML = `<p class="bar-empty">No incidents reported in this cell.</p>`;
     return;
@@ -1414,6 +1441,47 @@ function syncSafetyAvailability() {
   return ok;
 }
 
+/**
+ * Gate the window and category controls on what is built at this cell size.
+ *
+ * Same principle as syncHourAvailability and syncSafetyAvailability, applied to
+ * the two controls that have always been free: at resolution 10 the layer only
+ * exists for the widest windows and the combined category. Coerces the current
+ * selection rather than leaving one that is about to 400 -- the narrowing keeps
+ * the default view (last 12 months, all incidents) at every resolution, so there
+ * is always something to fall back to.
+ *
+ * Every caller reloads the layer straight afterwards, so a coerced selection is
+ * picked up by that fetch rather than needing one of its own.
+ */
+function syncActivityScope() {
+  const windows = activityWindows(state.res);
+  const categories = activityCategories(state.res);
+
+  for (const option of $("f-window").options) {
+    option.disabled = windows !== null && !windows.includes(option.value);
+  }
+  for (const option of $("f-category").options) {
+    option.disabled = categories !== null && !categories.includes(option.value);
+  }
+
+  if (windows && !windows.includes(state.window)) {
+    state.window = "last_12m";
+    $("f-window").value = state.window;
+  }
+  if (categories && !categories.includes(state.category)) {
+    state.category = "all";
+    $("f-category").value = state.category;
+  }
+
+  $("f-window-note").textContent = windows
+    ? "Shorter windows leave a cell this small empty — not enough to rank."
+    : "";
+  $("f-category-note").textContent = categories
+    ? "A cell this small is empty in most single categories."
+    : "";
+}
+
 function wireControls() {
   $("f-city").onchange = (e) => selectCity(e.target.value);
   $("f-window").onchange = (e) => {
@@ -1428,6 +1496,9 @@ function wireControls() {
   };
   $("f-res").onchange = (e) => {
     state.res = Number(e.target.value);
+    // Before syncHourAvailability, which reads state.window: the new resolution
+    // may have just moved it.
+    syncActivityScope();
     syncHourAvailability();
     syncSafetyAvailability();
     // A res-8 index is meaningless on the res-9 layer, so drop the selection.
@@ -1535,6 +1606,7 @@ function watchForRefresh() {
   }
 
   wireControls();
+  syncActivityScope();
   syncHourAvailability();
   syncSafetyAvailability();
   // Expose read-only state for debugging and for the smoke-test driver.

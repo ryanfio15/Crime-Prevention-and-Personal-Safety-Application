@@ -979,7 +979,11 @@ def cmd_census(args: argparse.Namespace) -> int:
         # The cell universe has to exist before anything can be apportioned into
         # it. On a first run it will not, and that is a `gold` refresh away --
         # which itself calls back into this, so the ordering resolves either way.
-        cells = gold.refresh_cell_exposure(conn, config.source_id)
+        #
+        # rebuild=True because the blocks were just reloaded: a gold refresh only
+        # tops up the cells that have no figure yet, which is the right default
+        # when the denominator has not moved and the wrong one here.
+        cells = gold.refresh_cell_exposure(conn, config.source_id, rebuild=True)
 
     print(
         json.dumps(
@@ -992,6 +996,33 @@ def cmd_census(args: argparse.Namespace) -> int:
                     f"python -m safety.etl.run safety --city {args.city} "
                     "  # rebuild the ranking on the new denominator"
                 ),
+            },
+            indent=2,
+            default=str,
+        )
+    )
+    return 0
+
+
+def cmd_release_geometry(args: argparse.Namespace) -> int:
+    """Reclaim the census block polygons once the exposure layer is built.
+
+    A disk-space command, not a pipeline stage: nothing downstream needs it run,
+    and running it costs a TIGER re-download before the apportionment can be
+    redone. Worth it on a small volume, where six metros of block geometry is
+    the largest reference data in the database and the serving layer never reads
+    a byte of it.
+    """
+    with connect() as conn:
+        config = SourceConfig.load(conn, args.city)
+        released = census.release_block_geometry(conn, config.source_id)
+
+    print(
+        json.dumps(
+            {
+                "city": args.city,
+                "blocks_released": released,
+                "restore": f"python -m safety.etl.run census --city {args.city}",
             },
             indent=2,
             default=str,
@@ -1216,7 +1247,21 @@ def cmd_safety_compare(args: argparse.Namespace) -> int:
         versus = cur.fetchone()
 
     if not summary or not summary["cells"]:
-        print(f"No overlapping cells for schemes '{args.a}' and '{args.b}'. Build both first.")
+        # The usual cause is now a deliberate one: a superseded scheme is
+        # disabled in schemes.csv so the pipeline stops keeping a second complete
+        # copy of the ranking, and `python -m safety.migrate` reclaims the rows it
+        # had written. Building one on demand is the supported way back -- `safety
+        # --scheme` takes a disabled scheme precisely so a comparison can be
+        # re-run -- with the caveat that the next migrate will prune it again.
+        print(
+            f"No overlapping cells for schemes '{args.a}' and '{args.b}'.\n"
+            f"Build both first, e.g.:\n"
+            f"  python -m safety.etl.run safety --city {args.city} --scheme {args.a}\n"
+            f"  python -m safety.etl.run safety --city {args.city} --scheme {args.b}\n"
+            "A scheme disabled in reference/severity/schemes.csv still builds when "
+            "named explicitly, but `python -m safety.migrate` prunes its rows again "
+            "afterwards; re-enable it there if you want it kept."
+        )
         return 1
 
     print(f"{args.city} res={args.res} window={args.window} track={args.track}")
@@ -1521,6 +1566,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_all_flag(census_cmd)
     census_cmd.set_defaults(func=_fannable(cmd_census))
+
+    release_cmd = sub.add_parser(
+        "release-geometry",
+        help="drop census block polygons after the exposure layer is built (disk only)",
+    )
+    release_cmd.add_argument("--city", default="phl")
+    _add_all_flag(release_cmd)
+    release_cmd.set_defaults(func=_fannable(cmd_release_geometry))
 
     gold_cmd = sub.add_parser("gold", help="refresh gold rollups only")
     gold_cmd.add_argument("--city", default="phl")

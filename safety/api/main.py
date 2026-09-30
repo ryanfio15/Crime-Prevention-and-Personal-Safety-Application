@@ -236,6 +236,28 @@ def _validate_layer(res: int, window: str, category: str) -> None:
     if category not in repo.VALID_CATEGORIES:
         raise HTTPException(400, f"category must be one of {list(repo.VALID_CATEGORIES)}")
 
+    # Same principle as _validate_hour: an unbuilt combination would otherwise
+    # come back as a layer of zeroes, which is indistinguishable from a city
+    # where nothing was reported. Told, with the reason.
+    windows, categories = repo.activity_scope(res)
+    if window not in windows:
+        raise HTTPException(
+            400,
+            f"res {res} is built for window {list(windows)} only -- a cell that "
+            "size holds too little over a shorter window for a percentile to "
+            f"separate anything ({', '.join(w for w in repo.VALID_WINDOWS if w not in windows)} "
+            "leave nearly every cell on zero, tied with every other). Use a "
+            "coarser resolution for the shorter windows.",
+        )
+    if category not in categories:
+        raise HTTPException(
+            400,
+            f"res {res} is built for category {list(categories)} only -- splitting "
+            "a cell that size by offense category leaves almost every cell empty "
+            "in every category, so the ranking would be a field of ties. Use a "
+            "coarser resolution to break the layer down by category.",
+        )
+
 
 def _safety_available(res: int) -> bool:
     """Whether the per-capita ranking exists at this cell size.
@@ -843,9 +865,15 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
                 "rounded to the block, so a smaller cell would show that rounding "
                 "rather than where crime happened. Incident counts are shown at "
                 "this size; the safety ranking is not, because a cell this small "
-                "has no population figure behind it that is not guesswork."
+                "has no population figure behind it that is not guesswork. Counts "
+                "here cover the last 12 and 24 months, and all offense types "
+                "together: a cell this small is empty in most single categories "
+                "over most shorter windows, so those breakdowns would rank a set "
+                "of cells that all hold zero against each other."
             ),
             "safety_resolutions": list(repo.SAFETY_RESOLUTIONS),
+            "fine_resolution_windows": list(repo.ACTIVITY_WINDOWS[10]),
+            "fine_resolution_categories": list(repo.ACTIVITY_CATEGORIES[10]),
             "relative_measure": (
                 "Each cell's percentile is the fraction of cells in the same city with "
                 "strictly lower reported-incident density for the same window and "

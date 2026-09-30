@@ -29,13 +29,46 @@ VALID_HOURS = tuple(range(24))
 HOURLY_RESOLUTIONS = (8, 9)
 HOURLY_WINDOWS = ("last_12m", "last_24m")
 
-# Mirrors safety.etl.gold.PERCAPITA_RESOLUTIONS, same duplication rationale.
+# Mirrors safety.etl.gold.SAFETY_RESOLUTIONS, same duplication rationale.
 # The safety ranking divides severity-weighted offence by ambient population,
 # which is apportioned from census blocks -- and a resolution-10 cell is smaller
 # than a census block, so there is no population figure there that is not this
 # pipeline's own interpolation. The activity layer still serves resolution 10;
 # only the ranking stops.
 SAFETY_RESOLUTIONS = (8, 9)
+
+# Mirrors safety.etl.gold.ACTIVITY_WINDOWS / ACTIVITY_CATEGORIES, same
+# duplication rationale again.
+#
+# The activity layer is dense -- one row per cell per window per category,
+# because a cell with no reported incidents is still part of the distribution it
+# is ranked against. At resolution 10 that is twenty rows for each of a city's
+# ~25,000-100,000 cells, nearly all of them zero, and the two short windows are
+# ranking a field of ties: a ~0.015 km2 cell over 30 days is almost always empty
+# in every category at once. So resolution 10 is built for the two widest windows
+# and the combined category only, and the narrower combinations are refused with
+# the reason rather than answered with an empty layer.
+ACTIVITY_WINDOWS = {10: ("last_12m", "last_24m")}
+ACTIVITY_CATEGORIES = {10: ("all",)}
+
+
+def activity_scope(h3_res: int) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The windows and categories the activity layer is built at a resolution."""
+    return (
+        ACTIVITY_WINDOWS.get(h3_res, VALID_WINDOWS),
+        ACTIVITY_CATEGORIES.get(h3_res, VALID_CATEGORIES),
+    )
+
+
+def category_breakdown_built(h3_res: int) -> bool:
+    """Whether the activity layer carries a per-category split at this cell size.
+
+    'all' on its own is a total, not a breakdown, so a scope of ('all',) has
+    nothing for the detail panel's category chart to draw.
+    """
+    _, categories = activity_scope(h3_res)
+    return any(category != "all" for category in categories)
+
 
 WINDOW_LABELS = {
     "last_30d": "Last 30 days",
@@ -742,6 +775,13 @@ def cell_detail(
         "headline": headline,
         "tier_label": TIER_LABELS.get(headline["activity_tier"]) if headline else None,
         "by_category": [row for row in activity if row["category"] != "all"],
+        # Whether an empty by_category means "nothing was reported here" or
+        # "this breakdown is not built at this cell size". The two look identical
+        # in the payload and read very differently on screen, and the second is
+        # the case at resolution 10 -- see activity_scope. The per-offense list
+        # in top_offenses is built at every resolution and is the finer answer to
+        # the same question, so the panel has somewhere to point.
+        "by_category_available": category_breakdown_built(cell["h3_res"]),
         "monthly": monthly,
         "top_offenses": offenses,
         "safety": [
