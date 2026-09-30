@@ -201,6 +201,11 @@ process.
   res 8 / 12 months), so a linear ramp over the raw count would flatten the
   whole city. Count runs the ramp reversed, so red is the busy end in both.
 - Filters: time window, offense category, cell size (res 8 / 9), colour mode.
+- Time of day follows the **city's** clock by default ("Now"), read in the
+  registry's `timezone` rather than the viewer's, and advances on the hour
+  (checked every 30 s and on tab focus). Typing an hour pins it; "All hours"
+  turns the hourly layer off. Where the hourly layer is not built, "Now" falls
+  back to all hours and says so rather than painting an empty map.
 - Click a hexagon for count, city rank, density, cell + neighbours (via the
   §10 k-ring endpoint), category breakdown, monthly trend, and the top offense
   types with their NIBRS codes.

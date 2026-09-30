@@ -165,7 +165,7 @@ def list_cities(conn: psycopg.Connection) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT s.*, r.location_precision_note, r.enabled
+            SELECT s.*, r.location_precision_note, r.enabled, r.timezone
             FROM gold.city_snapshot s
             JOIN reference.source_registry r USING (source_id)
             ORDER BY s.city_name
@@ -178,7 +178,7 @@ def get_city(conn: psycopg.Connection, source_id: str) -> dict[str, Any] | None:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT s.*, r.location_precision_note, r.enabled
+            SELECT s.*, r.location_precision_note, r.enabled, r.timezone
             FROM gold.city_snapshot s
             JOIN reference.source_registry r USING (source_id)
             WHERE s.source_id = %s

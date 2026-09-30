@@ -58,14 +58,15 @@
     </select>
   </label>
 
-  <!-- Development control. In production the hour comes from the user's own
-       clock; typing one by hand is how the time-of-day layer gets exercised
-       until then, and how any hour other than "now" can be inspected at all. -->
-  <div class="field field-dev" id="f-hour-field">
-    <span class="field-label" id="f-hour-label">Time of day <b class="dev-tag">dev</b></span>
+  <!-- Follows the city's clock by default ("Now"), advancing on the hour.
+       Typing an hour pins it, which is how any hour other than the current one
+       can be inspected; "All hours" turns the time-of-day layer off. -->
+  <div class="field field-hour" id="f-hour-field">
+    <span class="field-label" id="f-hour-label">Time of day</span>
     <div class="hour-input">
       <input type="time" id="f-hour" step="3600" aria-labelledby="f-hour-label">
-      <button type="button" class="linkish" id="f-hour-clear">All hours</button>
+      <button type="button" class="linkish" id="f-hour-now" aria-pressed="true">Now</button>
+      <button type="button" class="linkish" id="f-hour-clear" aria-pressed="false">All hours</button>
     </div>
     <span class="field-note" id="f-hour-note">All hours</span>
   </div>

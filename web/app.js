@@ -217,6 +217,25 @@ const SAFETY_RESOLUTIONS = [8, 9];
 const hourLabel = (hour) =>
   `${String(hour).padStart(2, "0")}:00–${String(hour + 1).padStart(2, "0")}:00`;
 
+/** The hour block it is right now on the city's clock, 0-23.
+ *  Falls back to the device clock until the city's zone is known, or if the
+ *  browser does not recognise it. */
+function cityHourNow() {
+  try {
+    const hour = new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      hourCycle: "h23",
+      timeZone: state.timezone ?? undefined,
+    })
+      .formatToParts(new Date())
+      .find((part) => part.type === "hour").value;
+    // Some engines still render midnight as "24" under hourCycle h23.
+    return Number(hour) % 24;
+  } catch {
+    return new Date().getHours();
+  }
+}
+
 /* Rating 2 in words. Same bands as safety/api/repository.py::delta_label --
    wide on purpose, because an hourly percentile is far noisier than the
    all-hours one it is compared against and narrow bands would dress that noise
@@ -251,6 +270,14 @@ const state = {
   track: "violent",
   // null = all hours. Otherwise the local hour block 0-23.
   hour: null,
+  // What drives `hour`: "now" follows the city's clock, "manual" is an hour
+  // typed into the control, "all" is the time-of-day layer switched off.
+  hourMode: "now",
+  // IANA zone of the city, from /cities/{id}. The hourly layers are bucketed
+  // on the city's wall clock, so "now" has to be read there too -- a viewer in
+  // Los Angeles looking at Philadelphia at 15:00 is looking at 18:00 data.
+  timezone: null,
+  cityName: null,
   selected: null,
   hovered: null,
   meta: null,
@@ -490,8 +517,12 @@ async function loadLayer({ quiet = false } = {}) {
     map.setPaintProperty("cells-outline", "line-width", outlineWidthExpression());
     renderLegend();
     renderTable();
-    // Only now is it known whether the hourly layer exists at all.
+    // Only now is it known whether the hourly layer exists at all. If "Now"
+    // asked for an hour the pipeline never built, fall back to all hours once
+    // rather than leaving an empty layer on screen.
+    const requestedHour = state.hour;
     syncHourAvailability();
+    if (state.hour !== requestedHour) loadLayer({ quiet: true });
   } catch (error) {
     console.error(error);
     $("loading").textContent = "Could not load cell data. Is the API running?";
@@ -507,6 +538,8 @@ async function loadFreshness() {
   const response = await fetch(`${API}/cities/${CITY}`);
   if (!response.ok) return;
   const city = await response.json();
+  state.timezone = city.timezone ?? null;
+  state.cityName = city.city_name ?? null;
 
   // Frame the city from its own stored bounding box rather than a hardcoded
   // centre, so a second city needs no client change (design doc S11).
@@ -1241,38 +1274,86 @@ function repaint() {
  * the control says so up front rather than letting the request 400 or, worse,
  * return a layer of nulls that looks like "nothing happens here at 3am".
  * Clears any hour already set, since it is about to stop being served.
+ *
+ * Also resolves state.hour from state.hourMode: in "now" mode this is where the
+ * hour is read off the city's clock, so calling it is how the map keeps up.
+ * "Now" survives a trip through an unbuilt window and resumes on the way back;
+ * a typed hour does not, because it was cleared when it stopped being served.
  */
 function syncHourAvailability() {
   const ok =
     HOURLY_RESOLUTIONS.includes(state.res) && HOURLY_WINDOWS.includes(state.window);
+  // Unknown until the first layer arrives; assume built rather than flash a
+  // fallback on every page load.
+  const built = !state.meta || Boolean(state.meta.hour_known_share);
   const field = $("f-hour-field");
   field.setAttribute("aria-disabled", String(!ok));
   $("f-hour").disabled = !ok;
+  $("f-hour-now").disabled = !ok;
   $("f-hour-clear").disabled = !ok;
 
-  if (!ok && state.hour !== null) {
+  if (!ok && state.hourMode === "manual") state.hourMode = "all";
+  if (!ok || state.hourMode === "all") {
     state.hour = null;
-    $("f-hour").value = "";
+  } else if (state.hourMode === "now") {
+    state.hour = built ? cityHourNow() : null;
   }
+  $("f-hour").value =
+    state.hour === null ? "" : `${String(state.hour).padStart(2, "0")}:00`;
+  $("f-hour-now").setAttribute("aria-pressed", String(ok && state.hourMode === "now"));
+  $("f-hour-clear").setAttribute("aria-pressed", String(ok && state.hourMode === "all"));
+
+  const where = state.cityName ? ` in ${state.cityName}` : "";
   if (!ok) {
     $("f-hour-note").textContent =
       "Not built at this cell size / window — too few incidents per hour.";
+  } else if (!built && state.hourMode !== "all") {
+    // An empty layer and a quiet city look identical on the map. Say which --
+    // and still say what time it is, or pressing "Now" appears to do nothing.
+    $("f-hour-note").textContent =
+      state.hourMode === "now"
+        ? `Now${where} · ${hourLabel(cityHourNow())} — no time-of-day data ` +
+          "loaded yet, showing all hours."
+        : "No time-of-day data loaded — run the hourly rollup.";
   } else if (state.hour === null) {
     $("f-hour-note").textContent = "All hours";
-  } else if (state.meta && !state.meta.hour_known_share) {
-    // An empty layer and a quiet city look identical on the map. Say which.
-    $("f-hour-note").textContent = "No time-of-day data loaded — run the hourly rollup.";
+  } else if (state.hourMode === "now") {
+    $("f-hour-note").textContent = `Now${where} · ${hourLabel(state.hour)}`;
   } else {
     $("f-hour-note").textContent = `Block ${hourLabel(state.hour)}`;
   }
   return ok;
 }
 
-function setHour(hour) {
-  state.hour = hour;
+function setHourMode(mode, hour = null) {
+  state.hourMode = mode;
+  if (mode === "manual") state.hour = hour;
   syncHourAvailability();
   if (state.selected) selectCell(state.selected);
   loadLayer();
+}
+
+/**
+ * Keep "Now" current. Checked well inside the hour so a turn of the clock
+ * shows within half a minute, and again whenever the tab becomes visible,
+ * since a backgrounded tab's timers are throttled and a laptop lid can close
+ * across several hours. Costs nothing between hours: only a changed block
+ * triggers a request.
+ */
+function followClock() {
+  if (state.hourMode !== "now") return;
+  const before = state.hour;
+  syncHourAvailability();
+  if (state.hour === before) return;
+  if (state.selected) selectCell(state.selected);
+  loadLayer({ quiet: true });
+}
+
+function watchClock() {
+  setInterval(followClock, 30_000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") followClock();
+  });
 }
 
 /**
@@ -1326,20 +1407,19 @@ function wireControls() {
     repaint();
   };
 
-  // Any minute within the hour selects that block. The note beside the input
-  // echoes which one, so 20:45 is never ambiguous.
+  // Any minute within the hour selects that block and pins it, so the map stops
+  // following the clock. The note beside the input echoes which block, so 20:45
+  // is never ambiguous. Clearing the input goes back to following the clock.
   $("f-hour").onchange = (e) => {
     const value = e.target.value;
     if (!value) {
-      setHour(null);
+      setHourMode("now");
       return;
     }
-    setHour(Number(value.split(":")[0]));
+    setHourMode("manual", Number(value.split(":")[0]));
   };
-  $("f-hour-clear").onclick = () => {
-    $("f-hour").value = "";
-    setHour(null);
-  };
+  $("f-hour-now").onclick = () => setHourMode("now");
+  $("f-hour-clear").onclick = () => setHourMode("all");
 
   // Both tracks ride along on every feature, so switching is a repaint with no
   // request and no loading state.
@@ -1411,6 +1491,10 @@ function watchForRefresh() {
   // Expose read-only state for debugging and for the smoke-test driver.
   window.__safetyState = state;
   await Promise.all([loadFreshness(), loadLayer()]);
+  // The first layer went out on the device clock, before the city's zone was
+  // known. Correct it now if the two disagree, then keep following.
+  followClock();
+  watchClock();
 
   const version = await fetch(`${API}/version`).then((r) => r.json()).catch(() => null);
   state.refreshStamp = version ? String(version.last_refreshed_at) : null;
