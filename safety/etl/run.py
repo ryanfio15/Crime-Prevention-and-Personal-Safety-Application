@@ -554,17 +554,37 @@ _DUE_FRACTION = 0.8
 # an incident pull would be wrong.
 _INCIDENT_MODES = ("backfill", "incremental")
 
+# And only these outcomes. A pull that reached the source and came back -- with
+# rows or with nothing -- is a completed look; anything else is not.
+#
+# 'failed' and 'blocked' are deliberately absent, and getting this wrong is worse
+# than it sounds. A source that 404s, times out, or changes its export format
+# overnight would otherwise count as checked and be left alone for a full cadence
+# interval, so a transient outage at 03:00 would mean no data until tomorrow --
+# with a scheduler running every six hours and precisely the condition a retry
+# would fix.
+#
+# 'running' is absent too, for the opposite reason. A container killed mid-pull
+# leaves its row at 'running' forever; counting that as a look would suppress
+# every retry indefinitely. The cost is that a genuinely in-flight pull does not
+# block a second one, which needs a run to overrun its own interval -- 19 hours
+# against a twelve-minute refresh. The benign failure is the right one to pick.
+_COMPLETED_STATUSES = ("succeeded", "no_new_data")
+
 _SOURCES_SQL = f"""
 SELECT
     r.source_id,
     r.expected_cadence,
     r.last_success_at,
-    -- When an incident pull last *ran*, which is a different question from when
-    -- one last succeeded. `last_success_at` only moves on a succeeded pull, and
-    -- `_ingest` returns early with 'no_new_data' without touching it -- the
+    -- When an incident pull last *completed*, which is a different question from
+    -- when one last succeeded. `last_success_at` only moves on a succeeded pull,
+    -- and `_ingest` returns early with 'no_new_data' without touching it -- the
     -- normal outcome for a bi-weekly source. Keying "due" on success would
     -- therefore leave Los Angeles permanently overdue and checked every single
     -- tick, which is the exact waste this flag exists to avoid.
+    --
+    -- Completed, though, not merely started: see _COMPLETED_STATUSES for why a
+    -- failed pull must not count as a look.
     checks.last_checked_at,
     EXTRACT(EPOCH FROM (now() - checks.last_checked_at)) / 86400.0 AS days_since_check
 FROM reference.source_registry r
@@ -572,7 +592,8 @@ CROSS JOIN LATERAL (
     SELECT max(started_at) AS last_checked_at
     FROM etl.pull_run p
     WHERE p.source_id = r.source_id
-      AND p.mode = ANY(%(modes)s)
+      AND p.mode   = ANY(%(modes)s)
+      AND p.status = ANY(%(statuses)s)
 ) checks
 WHERE r.enabled
 ORDER BY checks.last_checked_at ASC NULLS FIRST, r.source_id
@@ -593,7 +614,13 @@ def enabled_sources(conn: psycopg.Connection, due_only: bool = False) -> list[st
     registry decides who actually gets pulled (S8.2).
     """
     with conn.cursor() as cur:
-        cur.execute(_SOURCES_SQL, {"modes": list(_INCIDENT_MODES)})
+        cur.execute(
+            _SOURCES_SQL,
+            {
+                "modes": list(_INCIDENT_MODES),
+                "statuses": list(_COMPLETED_STATUSES),
+            },
+        )
         rows = cur.fetchall()
 
     if not due_only:
