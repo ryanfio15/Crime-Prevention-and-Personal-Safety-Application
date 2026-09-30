@@ -587,24 +587,30 @@ adjusted AS (
     FROM unpivoted u
     JOIN city c USING (track)
 ),
+neighbor_mean AS (
+    -- Grouped join rather than a correlated LATERAL, for the same reason the
+    -- hourly build uses one: the LATERAL form re-scans `adjusted` once per row.
+    -- At resolution 8 that is 1,102 rows and costs about two seconds; at
+    -- resolution 10 it is 49,540 and cost two minutes per window, which was
+    -- most of a Philadelphia gold refresh and would have been most of six.
+    -- Computing every cell's neighbour mean in one pass is the same arithmetic.
+    SELECT nbr.h3_index, x.track, avg(x.adj) AS mean_adj
+    FROM gold.cell_neighbor nbr
+    JOIN adjusted x ON x.h3_index = nbr.neighbor_h3
+    WHERE nbr.source_id = %(source_id)s AND nbr.h3_res = %(h3_res)s
+    GROUP BY 1, 2
+),
 blended AS (
     SELECT
         a.h3_index, a.area_km2, a.exposure, a.track, a.n, a.w, a.adj,
         -- Risk does not stop at a hexagon edge. A cell with no in-universe
         -- neighbours keeps its own value rather than being pulled toward zero.
-        CASE WHEN nb.mean_adj IS NULL THEN a.adj
-             ELSE %(self_weight)s * a.adj + (1 - %(self_weight)s) * nb.mean_adj
+        CASE WHEN nm.mean_adj IS NULL THEN a.adj
+             ELSE %(self_weight)s * a.adj + (1 - %(self_weight)s) * nm.mean_adj
         END AS smoothed
     FROM adjusted a
-    LEFT JOIN LATERAL (
-        SELECT avg(x.adj) AS mean_adj
-        FROM gold.cell_neighbor nbr
-        JOIN adjusted x
-          ON x.h3_index = nbr.neighbor_h3 AND x.track = a.track
-        WHERE nbr.source_id = %(source_id)s
-          AND nbr.h3_res   = %(h3_res)s
-          AND nbr.h3_index = a.h3_index
-    ) nb ON true
+    LEFT JOIN neighbor_mean nm
+           ON nm.h3_index = a.h3_index AND nm.track = a.track
 ),
 ranked AS (
     SELECT
@@ -1462,7 +1468,33 @@ def refresh_safety_layer(
     rows = 0
     coverage: float | None = None
     for scheme in schemes:
-        rows += refresh_cell_safety(conn, source_id, windows, scheme)
+        try:
+            rows += refresh_cell_safety(conn, source_id, windows, scheme)
+        except LookupError as exc:
+            # A scheme that cannot be built is skipped, not fatal. _require_exposure
+            # raises rather than producing a uniform map, which is right -- but the
+            # granularity was wrong: raising here aborted the whole gold refresh,
+            # so a per-capita scheme with no census loaded rolled back cell_activity
+            # and the area-based ranking too, and left the map empty. Nothing about
+            # those depends on this scheme.
+            #
+            # Still loud, and still not silently uniform: the scheme's rows are
+            # simply absent, so the serving layer's LEFT JOIN finds nothing and the
+            # map falls back to counts.
+            log.error(
+                "cannot build severity scheme '%s' for %s, skipping it: %s",
+                scheme.version,
+                source_id,
+                exc,
+            )
+            if scheme.version == active:
+                log.error(
+                    "'%s' is the scheme %s actually serves, so its safety ranking "
+                    "will be empty until this is resolved",
+                    scheme.version,
+                    source_id,
+                )
+            continue
         share = weight_coverage(conn, source_id, scheme.version)
         log.info(
             "severity weights for scheme %s: %.1f%% of incidents carry a published figure",

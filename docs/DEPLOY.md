@@ -447,6 +447,45 @@ Because step 3 passes `--skip-hourly`, the time-of-day view stays empty until
 python -m safety.etl.run hourly --all
 ```
 
+### The first load does not finish on its own — three more commands
+
+This catches everyone once, and the failure modes are quiet rather than obvious.
+Two severity schemes ship enabled: `nscs_v1` divides by cell area, and
+`nscs_v2_percapita` divides by ambient population. On a fresh database the second
+has no population to divide by, and no scheme is selected for serving.
+
+Run these on the `ops` service, one per deploy, in this order:
+
+```
+python -m safety.etl.run census --city phl
+```
+
+```
+python -m safety.migrate --activate nscs_v2_percapita
+```
+
+```
+python -m safety.etl.run gold --city phl
+```
+
+**Why each one.** `census` downloads the TIGER block shapefile and LODES job
+counts and apportions them into cells; without it the log says `no census blocks
+loaded for 'phl'; skipping the exposure layer` and the per-capita scheme cannot
+be built. It needs the coverage boundary, which the backfill has already fetched.
+
+`--activate` is the one that is easy to miss. `safety.migrate` only auto-selects a
+scheme when exactly one is enabled; with two it leaves
+`severity_scheme_version` NULL and says so in the log. The map layer joins
+`gold.cell_safety` on that value, so a NULL means the join matches nothing and
+**the safety ramp is simply absent** — counts still render, so the page looks
+like it is working. Activating is deliberately manual because promoting a scheme
+changes what every safety number in the product means.
+
+`gold` then rebuilds the rankings against the new denominator.
+
+Verify with `/api/v1/cells?city=phl&res=8` — `metadata.severity_scheme` should
+name a scheme rather than being null.
+
 ---
 
 ## Step 5 — Check that it worked
@@ -610,9 +649,18 @@ frequent job passes `--skip-hourly`, so those layers come from `etl-hourly`'s la
 weekly run. If it has never run, run it once from `ops`. See step 3b for the
 trade-off this makes.
 
-**A newly enabled city shows no safety ranking, only counts.** Its population
-denominator has not been loaded. Run `census --city <id>` from `ops`, then
-`gold --city <id>`. Until then the ranking has no ambient population to divide by.
+**A newly enabled city shows no safety ranking, only counts.** Two causes, and
+the logs distinguish them. Either the population denominator is missing —
+`no census blocks loaded`, fixed by `census --city <id>` then `gold --city <id>`
+— or no scheme is selected for serving, which is `severity_scheme_version` being
+NULL and is fixed by `safety.migrate --activate nscs_v2_percapita`. See the end of
+step 4.
+
+**The ETL run fails after several minutes of successful work.** Look for
+`cannot build severity scheme '<name>' ... skipping it`. A scheme that cannot be
+built is skipped rather than fatal, so the rest of the refresh still commits; if
+the skipped one is the scheme the city serves, the log says that too. The usual
+cause is a per-capita scheme with no census data loaded.
 
 **The `api` service restarts under load.** Check `CACHE_MAX_BYTES` against the
 instance's memory (step 2). The default is sized for six cities and will use what
