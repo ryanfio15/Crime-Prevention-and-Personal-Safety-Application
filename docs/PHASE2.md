@@ -173,6 +173,10 @@ it identifies the caller for rate-limiting only. Everything works without it; a
 
 ### The regression gate: Philadelphia must not move
 
+`python scripts/storage.py baseline` then `... gate` runs everything below and
+interprets the result, including the row-count drop the storage reclaim makes on
+purpose. The SQL is kept here because the gate is the argument, not the script.
+
 Run **before** touching anything, to capture a baseline:
 
 ```sql
@@ -508,16 +512,30 @@ partitions that remain.
 
 ### How to get the real ones on your own database
 
-```sql
-SELECT schemaname || '.' || relname                        AS table,
-       pg_size_pretty(pg_total_relation_size(relid))       AS total,
-       n_live_tup, n_dead_tup
-FROM pg_stat_user_tables
-ORDER BY pg_total_relation_size(relid) DESC
-LIMIT 20;
+`scripts/storage.py` is the toolkit for all of this — a script rather than SQL to
+paste, because `psql` is not on the PATH in the usual dev environment and the
+regression gate is a multi-statement comparison:
+
+```bash
+python scripts/storage.py sizes      # what is actually big (read-only)
+python scripts/storage.py baseline   # capture, BEFORE safety.migrate
+python scripts/storage.py gate       # prove Philadelphia did not move
+python scripts/storage.py compact    # hand freed pages back to the filesystem
 ```
 
-Read `n_dead_tup` as carefully as the size. Every gold refresh is
+`gate` is the §0 regression gate above, and it knows the row count is *supposed*
+to fall — it reports the intentionally-dropped rows separately from the ones it
+compares, and fails only on a percentile that moved.
+
+`compact` exists because a migration cannot `VACUUM`: it runs in a transaction, so
+nothing reclaims 012's deletes until something does it explicitly. Plain `VACUUM`
+would be enough if the space were only wanted back by the same tables — it is not,
+the point is a new city's partitions — so it is `VACUUM FULL`, which locks each
+table and needs free disk for a second copy of the largest one. Read `sizes` before
+running it.
+
+Read `n_dead_tup` as carefully as the size (and note `n_live_tup` is an estimate,
+so it can exceed a real `count(*)`). Every gold refresh is
 delete-then-insert inside a transaction, which leaves dead tuples equal to a full
 layer each time; on a multi-GB `cell_hour_safety` rebuilt weekly, autovacuum may
 not keep up, and steady-state disk can sit near twice the logical size. That is
