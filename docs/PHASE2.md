@@ -469,7 +469,8 @@ not in it.
 | `gold.cell_geometry` | 19 MB | 28,921 | 24,770 (86%) |
 | `reference.census_block` | 17 MB | 17,554 | — |
 
-What the four changes actually free, at ~615 bytes per gold row:
+What the four changes actually free, at ~615 bytes per gold row — but see the
+caveat under the table, because that figure is not the row width:
 
 | Change | Rows removed | Freed |
 |---|---|---|
@@ -483,6 +484,21 @@ What the four changes actually free, at ~615 bytes per gold row:
 with area, so the proportion roughly holds as cities are added. `cell_safety` goes
 from 264,576 rows to 33,208; `cell_activity` from 578,420 to 132,560;
 `cell_neighbor` from 170,558 to 23,930.
+
+**That 615 bytes is size-on-disk per row, not row width, and the difference is
+mostly dead space.** Compacting the same database showed `gold.cell_activity`
+falling from 342 MB to 156 MB at an *identical* 578,420 rows — over half of it was
+bloat, because every gold refresh is delete-then-insert. Compacted, the real rates
+are ~283 B/row for `cell_activity`, ~377 for `cell_safety`, ~129 for
+`cell_neighbor`.
+
+Both numbers are true of different questions. Rows × 615 B approximates the *file
+space* those rows were occupying, bloat included, which is what a volume runs out
+of — so the table above is a fair guide to what a delete plus a compaction returns.
+Rows × 283 B is what the surviving data will actually weigh once compacted. Use the
+first to predict a reclaim, the second to predict a steady state, and do not mix
+them: extrapolating capacity from the first over-provisions by about a factor of
+two.
 
 Note the overlap: every res-10 `cell_safety` row was an `nscs_v1` row, because
 `nscs_v2_percapita` never built at res 10. On *this* database the migration's res-10
