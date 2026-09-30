@@ -1,0 +1,44 @@
+-- 013: drop the 24-month hourly layer.
+--
+-- safety.etl.gold.HOURLY_WINDOWS goes from ("last_12m", "last_24m") to
+-- ("last_12m",). This clears what the old scope built.
+--
+-- Why, measured rather than estimated. On Railway with Philadelphia and Chicago
+-- loaded, against a 5 GB volume that has to hold six cities:
+--
+--     gold.cell_hour_safety   1042 MB   <- largest table in the database, 31%
+--     gold.cell_activity       525 MB
+--     gold.cell_monthly        337 MB
+--     gold.cell_safety         206 MB
+--     gold.cell_hour_profile   197 MB
+--     ...                              total 3316 MB
+--
+-- cell_hour_safety is the only layer multiplied by 24, which is the whole reason
+-- it leads that list: cells x windows x 24 hours x 2 tracks. Two cities already
+-- occupy a third of the volume there, and Los Angeles alone is roughly four times
+-- Philadelphia's cell count. It does not reach six cities.
+--
+-- Unlike everything in 012, this one costs a real feature: the 24-month
+-- time-of-day view is gone, not merely unserved. It is the honest place to give
+-- something up, and last_24m is the more redundant of the pair -- at a year wide
+-- the hourly distribution is already stable and the second year largely restates
+-- it, whereas the same argument does not hold for the all-hours layers where 24
+-- months is the widest evidence available.
+--
+-- No rebuild is needed after this. The surviving last_12m rows are untouched and
+-- were not derived from the window being dropped -- each window is ranked
+-- independently, and baseline_percentile is denormalized from gold.cell_safety's
+-- matching window. So a deploy plus a compaction is the whole operation, which
+-- matters because rebuilding the hourly layer is the most expensive job here.
+--
+-- Reversible with no migration. Both refresh_cell_hour_safety and
+-- refresh_cell_hour_profile now DELETE across every window before skipping the
+-- ones out of scope, so putting last_24m back in HOURLY_WINDOWS and running
+-- `safety.etl.run hourly --all` rebuilds it.
+
+DELETE FROM gold.cell_hour_safety  WHERE time_window = 'last_24m';
+DELETE FROM gold.cell_hour_profile WHERE time_window = 'last_24m';
+
+-- Reclaiming the pages these deletes free needs a VACUUM, which cannot run in a
+-- migration's transaction:
+--     python scripts/storage.py compact

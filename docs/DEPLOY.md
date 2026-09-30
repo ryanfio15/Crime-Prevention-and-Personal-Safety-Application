@@ -100,15 +100,25 @@ in step 3.
    from city areas, not measurements; watch the actual figure after the second
    city lands.
 
-   **If 20 GB is not available**, six cities still fit in about 5 GB, and the
-   reductions are all invisible to what the product shows: one severity scheme
-   instead of two, no resolution-10 safety rows (the API never served them), the
-   census block polygons released once the exposure layer is built, and the
-   resolution-10 activity layer narrowed to the two widest windows. All of it is
-   applied by `safety.migrate` plus one `release-geometry` per city — see
-   [`PHASE2.md`](PHASE2.md), "Fitting six cities on one volume", for what each one
-   costs and how to measure it. Do not reach for "drop resolution 10" first: it is
-   worth less than it looks, and it does not touch `gold.cell_hour_safety` at all.
+   **If 20 GB is not available**, most of the reductions are invisible to what the
+   product shows: one severity scheme instead of two, no resolution-10 safety rows
+   or adjacency (the API never served either), the census block polygons released
+   once the exposure layer is built, and the resolution-10 activity layer narrowed
+   to the two widest windows. Applied by `safety.migrate` plus one
+   `release-geometry` per city.
+
+   One is not invisible. The time-of-day layer is built for the last 12 months
+   only, not 24, because `gold.cell_hour_safety` is the only layer multiplied by 24
+   and measured **1,042 MB at two cities** — 31% of a 3,316 MB database. That
+   trade, the measurements behind all of it, and the levers still unused are in
+   [`PHASE2.md`](PHASE2.md) under "Fitting six cities on one volume".
+
+   Two cities land near 2.2 GB after all of it, so **5 GB is realistically four or
+   five cities, not six** — Los Angeles is the one that breaks it. Budget
+   accordingly rather than discovering it on the sixth backfill.
+
+   Whatever you change, run `python scripts/storage.py compact` afterwards: a
+   migration cannot `VACUUM`, so deleted rows stay on disk until something asks.
 
    If no volume option appears at all, check your plan under **Usage** or
    **Billing** — Railway gates persistent volumes above the trial tier. The
@@ -391,10 +401,13 @@ Skipped by the six-hourly job, so something has to build them.
 7. Click **Deploy**.
 
 **Why weekly is enough, and what it costs.** The hourly layers rank cells within
-each of 24 hour-blocks, over 12- and 24-month windows, at two cell sizes, per
-severity scheme — the single most expensive thing the pipeline builds, and the
-piece most likely to make a scheduled run time out. Because those windows are a
-year or wider, a week of new incidents shifts an hourly percentile very little.
+each of 24 hour-blocks, over a 12-month window, at two cell sizes, per severity
+scheme — the single most expensive thing the pipeline builds, and the piece most
+likely to make a scheduled run time out. Because that window is a year wide, a
+week of new incidents shifts an hourly percentile very little.
+
+(It covered 12- *and* 24-month windows until the 24-month one was dropped for
+volume — `gold.cell_hour_safety` was 1,042 MB at two cities. See `PHASE2.md`.)
 
 The cost is real though, and worth knowing rather than discovering: between runs,
 the hourly view reflects last Sunday's build while the all-hours percentile it is

@@ -777,10 +777,14 @@ def _time_of_day(
             "resolutions": list(repo.HOURLY_RESOLUTIONS),
             "windows": list(repo.HOURLY_WINDOWS),
             "note": (
-                "Built only for the two widest windows at the two coarser cell "
-                "sizes. Splitting a window 24 ways divides the evidence by 24, and "
-                "at the finest cell size over 30 days the median cell-hour has no "
-                "reported incidents at all -- there is no distribution left to rank."
+                "Built for the last 12 months at the two coarser cell sizes. "
+                "Splitting a window 24 ways divides the evidence by 24, and at the "
+                "finest cell size over 30 days the median cell-hour has no reported "
+                "incidents at all -- there is no distribution left to rank. The "
+                "24-month window is not built: recomputing a ranking inside every "
+                "hour of the day is the most storage-intensive thing this pipeline "
+                "produces, and at a year wide the hourly pattern is already stable "
+                "enough that a second year mostly restates it."
             ),
         },
         "known_limitations": [

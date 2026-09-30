@@ -208,7 +208,7 @@ const TRACK_PROPS = {
    anything outside this with a reason; the client knows the same bounds so it
    can disable the control up front rather than let a request fail. */
 const HOURLY_RESOLUTIONS = [8, 9];
-const HOURLY_WINDOWS = ["last_12m", "last_24m"];
+const HOURLY_WINDOWS = ["last_12m"];
 
 /* Mirrors safety.etl.gold.SAFETY_RESOLUTIONS. The safety ranking divides by
    ambient population apportioned from census blocks, and a res-10 cell is

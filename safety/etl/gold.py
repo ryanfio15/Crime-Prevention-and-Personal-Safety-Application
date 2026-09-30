@@ -91,17 +91,29 @@ def activity_scope(res: int) -> tuple[tuple[str, ...], tuple[str, ...]]:
 # Time of day. Block h covers [h:00, h+1:00) local; 23 is 23:00-24:00.
 HOUR_BLOCKS = 24
 
-# The hourly layer is built narrower than the all-hours one, and the reason is
-# statistical before it is about disk. Splitting a window across 24 buckets
+# The hourly layer is built narrower than the all-hours one. The resolution cap
+# is statistical before it is about disk: splitting a window across 24 buckets
 # leaves each one with a twenty-fourth of the evidence, and 30 days at
 # resolution 10 puts the median cell-hour at zero reported incidents -- there is
-# no distribution there to rank. The two widest windows at the two coarser
-# resolutions are where the counts still support the statistic.
+# no distribution there to rank.
 #
-# Widening this is a one-line change; the tables accept every window and
-# resolution the all-hours layer does.
+# The window cap is the other way round, and worth being honest about: it is a
+# disk decision. gold.cell_hour_safety is the largest table in the database by a
+# wide margin -- 1,042 MB at two cities, 31% of the total, against a 5 GB volume
+# that has to hold six -- because it is the only layer multiplied by 24. Dropping
+# last_24m halves it, and halves gold.cell_hour_profile with it.
+#
+# last_12m is the one kept because last_24m is the more redundant of the pair: at
+# a year wide the hourly distribution is already stable, and the second year
+# mostly reasserts it. Both were within the range where the counts support the
+# statistic, so this gives up a real view rather than a marginal one -- see
+# docs/PHASE2.md.
+#
+# Widening either is a one-line change and needs no migration: both hourly
+# refreshes delete across every window before skipping the ones out of scope, so
+# the rows come back on the next build.
 HOURLY_RESOLUTIONS = (8, 9)
-HOURLY_WINDOWS = ("last_12m", "last_24m")
+HOURLY_WINDOWS = ("last_12m",)
 
 # Below this many incidents across the whole window, a cell's hour-to-hour
 # ratio is noise dressed as a measurement, and hour_index is left NULL rather
@@ -1113,13 +1125,16 @@ def refresh_cell_hour_safety(
     reads rather than recomputes.
     """
     written = 0
-    hourly = [w for w in windows if w.name in HOURLY_WINDOWS]
     with conn.cursor() as cur:
         for res in HOURLY_RESOLUTIONS:
             sql = _HOUR_SAFETY_SQL.format(
                 h3_column=_h3_column(res), weight_lookup=_WEIGHT_LOOKUP
             )
-            for window in hourly:
+            # Every window, not just the in-scope ones: the DELETE is what makes
+            # narrowing HOURLY_WINDOWS reclaim disk instead of stranding rows no
+            # later refresh will revisit, and what lets it be widened again with
+            # no migration. Same shape as refresh_cell_activity.
+            for window in windows:
                 cur.execute(
                     """
                     DELETE FROM gold.cell_hour_safety
@@ -1128,6 +1143,8 @@ def refresh_cell_hour_safety(
                     """,
                     (source_id, res, window.name, scheme.version),
                 )
+                if window.name not in HOURLY_WINDOWS:
+                    continue
                 cur.execute(
                     sql,
                     {
@@ -1161,11 +1178,11 @@ def refresh_cell_hour_profile(
 ) -> int:
     """Rebuild the sparse per-cell hourly breakdown behind the detail panel."""
     written = 0
-    hourly = [w for w in windows if w.name in HOURLY_WINDOWS]
     with conn.cursor() as cur:
         for res in HOURLY_RESOLUTIONS:
             sql = _HOUR_PROFILE_SQL.format(h3_column=_h3_column(res))
-            for window in hourly:
+            # Delete across every window, then skip; see refresh_cell_hour_safety.
+            for window in windows:
                 cur.execute(
                     """
                     DELETE FROM gold.cell_hour_profile
@@ -1173,6 +1190,8 @@ def refresh_cell_hour_profile(
                     """,
                     (source_id, res, window.name),
                 )
+                if window.name not in HOURLY_WINDOWS:
+                    continue
                 cur.execute(
                     sql,
                     {

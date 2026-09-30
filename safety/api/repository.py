@@ -27,7 +27,10 @@ VALID_HOURS = tuple(range(24))
 # asserted against the ETL by safety/api/main.py's error text: a request for an
 # hour outside this scope gets told why, not an empty map.
 HOURLY_RESOLUTIONS = (8, 9)
-HOURLY_WINDOWS = ("last_12m", "last_24m")
+# One window, not two. gold.cell_hour_safety is the only layer multiplied by 24
+# and was the largest table in the database; last_24m was the more redundant of
+# the pair, since the hourly distribution is already stable at a year wide.
+HOURLY_WINDOWS = ("last_12m",)
 
 # Mirrors safety.etl.gold.SAFETY_RESOLUTIONS, same duplication rationale.
 # The safety ranking divides severity-weighted offence by ambient population,

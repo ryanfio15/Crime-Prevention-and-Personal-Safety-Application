@@ -39,6 +39,7 @@ _RECLAIMED_TABLES = (
     "gold.cell_activity",
     "gold.cell_safety",
     "gold.cell_hour_safety",
+    "gold.cell_hour_profile",
     "gold.cell_neighbor",
     "reference.census_block",
 )

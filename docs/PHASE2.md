@@ -562,14 +562,62 @@ lever at different depths:
   is a real feature and the finest thing the product offers. But it is by far the
   largest single number here, and if 5 GB will not hold six cities any other way,
   this is the honest place to give something up rather than shaving statistics.
-- **Drop `last_24m` from `HOURLY_WINDOWS`.** Halves `gold.cell_hour_safety`, which
-  is absent from the measurements above and is expected to be the largest table
-  once `hourly` has run — so this may well outrank everything in this list on a
-  database where it exists. Costs the two-year hourly view, the more stable of the
-  two.
 - **Bronze off the database volume.** A different volume, so this only helps a
   combined budget: `BRONZE_ROOT=/tmp/bronze` costs `reprocess --pull-id` and
   nothing the website reads.
+
+## The hourly layer, measured with two cities on it
+
+Everything above was measured on a database where `gold.cell_hour_safety` had never
+been built. On Railway, with Philadelphia and Chicago loaded and the hourly job
+having run, it is not a footnote — it is the largest table there is:
+
+| Table | Size |
+|---|---|
+| `gold.cell_hour_safety` | **1,042 MB** |
+| `gold.cell_activity` | 525 MB |
+| `gold.cell_monthly` | 337 MB |
+| `gold.cell_safety` | 206 MB |
+| `gold.cell_hour_profile` | 197 MB |
+| *(+ silver partitions, geometry, census)* | |
+| **total** | **3,316 MB** |
+
+31% of the volume, for two of six cities, and it is the only layer multiplied by
+24 — cells × windows × 24 hours × 2 tracks. Los Angeles alone is about four times
+Philadelphia's cell count. It does not reach six cities on 5 GB.
+
+So `HOURLY_WINDOWS` is now `("last_12m",)`, which halves that table and
+`cell_hour_profile` with it — about **620 MB** at two cities, and it scales.
+Migration `013_hourly_one_window.sql` clears what the old scope built.
+
+**This is the first change here that costs a real feature.** Everything in 012 was
+either unreadable or statistically empty; the 24-month time-of-day view was
+neither. `last_24m` is the more redundant of the pair — at a year wide the hourly
+distribution is already stable and the second year largely restates it — but that
+is an argument for which one to drop, not that dropping one is free. It notably
+does *not* transfer to the all-hours layers, where 24 months is the widest evidence
+the product has.
+
+Two things make it cheap to undo or to operate:
+
+- **No rebuild is needed to apply it.** The surviving `last_12m` rows were not
+  derived from the window being dropped: each window is ranked independently, and
+  `baseline_percentile` is denormalized from `cell_safety`'s matching window. A
+  deploy plus `storage.py compact` is the whole operation — which matters, because
+  rebuilding the hourly layer is the most expensive job in the pipeline.
+- **No migration is needed to reverse it.** Both `refresh_cell_hour_safety` and
+  `refresh_cell_hour_profile` now `DELETE` across every window before skipping the
+  ones out of scope, the same shape as `refresh_cell_activity`. Put `last_24m` back
+  in the tuple, run `hourly --all`, and the rows return.
+
+### Still not enough for six cities
+
+After 012 and 013, two cities sit near 2.2 GB. That extrapolates to roughly 6–7 GB
+for six, and Los Angeles is the one that breaks it. The remaining levers, in order,
+are `cell_monthly` + `cell_offense_mix` at resolution 10, then resolution 10
+outright. Four of the five remaining cities have no adapter yet, so there is time —
+but the volume is the constraint that decides how many cities this deployment can
+hold, not the adapters.
 
 ## Still to build
 
