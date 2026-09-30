@@ -155,15 +155,28 @@ LEFT JOIN LATERAL (
     -- S7.3: pick the crosswalk row that was in effect on the incident's own
     -- date, so an upstream RMS migration does not retroactively rewrite how
     -- older records were classified.
+    --
+    -- Two match tiers, most specific first: the exact code/text pair, then a
+    -- row whose text key is the '*' sentinel, meaning "any description under
+    -- this code". The fallback exists because offense text is not a stable key
+    -- at every source -- Philadelphia publishes 30 fixed labels that can be
+    -- enumerated by hand, while Chicago's IUCR descriptions are an order of
+    -- magnitude more numerous and drift in wording. Without the sentinel a
+    -- rewording upstream sends real incidents to 'unmapped' over a typo.
+    --
+    -- A city with an exact row for every pair it publishes never reaches tier
+    -- 2, so this changes nothing for Philadelphia.
     SELECT c.*
     FROM reference.offense_crosswalk c
     WHERE c.source_id           = s.source_id
       AND c.crosswalk_version   = %(crosswalk_version)s
       AND c.raw_offense_code    = s.raw_offense_code
-      AND c.raw_offense_text_key = upper(btrim(s.raw_offense_text))
+      AND c.raw_offense_text_key IN (upper(btrim(s.raw_offense_text)), '*')
       AND c.effective_from      <= s.occurred_local_date
       AND (c.effective_to IS NULL OR c.effective_to > s.occurred_local_date)
-    ORDER BY c.effective_from DESC
+    ORDER BY
+        CASE WHEN c.raw_offense_text_key = '*' THEN 2 ELSE 1 END,
+        c.effective_from DESC
     LIMIT 1
 ) x ON true
 WHERE s.pull_id = %(pull_id)s

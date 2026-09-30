@@ -39,10 +39,19 @@ class SourceConfig:
     # (safety/etl/census.py). NULL for a city that has had no census load.
     state_fips: str | None
     county_fips: list[str] | None
+    # TIGER/Line PLACE code backing the coverage polygon, resolved by name on
+    # the first boundary load (safety/etl/boundary.py). NULL for a city whose
+    # boundary comes from its own portal, as Philadelphia's does.
+    place_fips: str | None
     attribution_text: str
     terms_url: str | None
     freshness_note: str | None
     location_precision_note: str | None
+    # S12 prose that differs per source rather than per product. The first is the
+    # dominant caveat on the hourly view: Philadelphia publishes a dispatch time,
+    # Seattle an actual offence start time.
+    occurrence_basis_note: str | None
+    denominator_examples_note: str | None
     enabled: bool
 
     @classmethod

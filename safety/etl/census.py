@@ -11,6 +11,14 @@ no resident count, and dividing by that alone ranks them the least safe places
 in the city by division rather than by evidence. Jobs are what stop a place
 being scored as empty when it is only empty at night.
 
+Blocks are fetched a whole state at a time, narrowed to the city's counties by
+the registry's `county_fips`, and then trimmed to the blocks that actually
+intersect the coverage boundary. That last step is not belt-and-braces: only
+Philadelphia is coterminous with its county. Chicago sits inside a Cook County
+with roughly twice its population, and Austin spans three counties while filling
+none of them -- so a county-only filter would make "this city's ambient
+population" wrong by a factor of two or more.
+
 Two sources, both keyed on 2020 census blocks so they join on GEOID with no
 crosswalk:
 
@@ -266,15 +274,91 @@ def load_blocks(conn: psycopg.Connection, payload: bytes, config: SourceConfig) 
         )
     conn.commit()
 
+    kept = _trim_to_boundary(conn, config.source_id)
+
     residents = sum(row[2] for row in payload_rows)
     log.info(
-        "loaded %s census blocks for %s (%s residents, %s vintage)",
+        "loaded %s census blocks for %s (%s residents before the boundary trim, "
+        "%s vintage)",
         len(payload_rows),
         config.source_id,
         f"{residents:,}",
         POP_VINTAGE,
     )
-    return len(payload_rows)
+    return kept if kept is not None else len(payload_rows)
+
+
+_TRIM_SQL = """
+DELETE FROM reference.census_block b
+USING reference.city_boundary c
+WHERE b.source_id = %(source_id)s
+  AND c.source_id = %(source_id)s
+  AND NOT ST_Intersects(b.geom, c.geom)
+"""
+
+
+def _trim_to_boundary(conn: psycopg.Connection, source_id: str) -> int | None:
+    """Drop loaded blocks that fall outside the city, and report the reduction.
+
+    The county filter above is a prefilter, not an answer. Only Philadelphia is
+    coterminous with its county; Chicago sits inside a Cook County more than
+    twice its population, and Austin spans three counties it fills none of. Left
+    untrimmed, every figure that sums this table over a source -- the retention
+    check below, `city_ambient_total`, and the `ambient_population` the
+    methodology page publishes -- would be describing the counties rather than
+    the city, by a factor of two or more.
+
+    Blocks that merely straddle the boundary are kept. They are genuinely partly
+    in the city, and the areal apportionment already only credits a cell with the
+    share that overlaps it; dropping them would lose the city's edge population
+    entirely. That is also why retention lands slightly under 100% rather than
+    exactly on it.
+
+    Returns the number of blocks kept, or None when there is no boundary to trim
+    against yet.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 AS present FROM reference.city_boundary WHERE source_id = %s",
+            (source_id,),
+        )
+        if cur.fetchone() is None:
+            log.warning(
+                "no coverage boundary stored for '%s', so the loaded blocks are "
+                "still the whole county set. Every citywide population figure "
+                "will be too large until the boundary lands and this re-runs.",
+                source_id,
+            )
+            return None
+
+        cur.execute(_TRIM_SQL, {"source_id": source_id})
+        dropped = cur.rowcount
+
+        cur.execute(
+            """
+            SELECT count(*)::int AS blocks, COALESCE(sum(pop20), 0)::bigint AS residents
+            FROM reference.census_block WHERE source_id = %s
+            """,
+            (source_id,),
+        )
+        remaining = cur.fetchone()
+    conn.commit()
+
+    log.info(
+        "boundary trim for %s: dropped %s block(s) outside the city, kept %s "
+        "(%s residents)",
+        source_id,
+        dropped,
+        remaining["blocks"],
+        f"{remaining['residents']:,}",
+    )
+    if not remaining["blocks"]:
+        raise LookupError(
+            f"every census block loaded for '{source_id}' fell outside its "
+            "coverage boundary. Either county_fips names the wrong counties or "
+            "the boundary is not where the blocks are."
+        )
+    return remaining["blocks"]
 
 
 def _shapefile_stem(root: Path) -> Path:

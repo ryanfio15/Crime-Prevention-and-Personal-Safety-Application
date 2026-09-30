@@ -165,38 +165,57 @@ def build_cell_universe(conn: psycopg.Connection, source_id: str) -> dict[int, i
             )
         cells |= occupied
 
-        payload = [
-            (
-                cell,
-                source_id,
-                res,
-                cell_area_km2(cell),
-                *cell_centroid(cell),
-                json.dumps(cell_polygon_geojson(cell)),
-            )
-            for cell in sorted(cells)
-        ]
+        # COPY into a temp table, then one INSERT ... SELECT, rather than a
+        # statement per cell. The cell universe scales with city area: ~25,000
+        # resolution-10 cells for Philadelphia's 350 km2, roughly four times that
+        # for Los Angeles. An executemany of 100,000 rows, each parsing its own
+        # GeoJSON literal, is minutes of round trips for work the server can do
+        # in one pass.
+        ordered = sorted(cells)
         with conn.cursor() as cur:
-            cur.executemany(
+            cur.execute(
+                "CREATE TEMP TABLE _cell_fill ("
+                "  h3_index text, source_id text, h3_res smallint,"
+                "  area_km2 double precision, lng double precision,"
+                "  lat double precision, boundary text"
+                ") ON COMMIT DROP"
+            )
+            with cur.copy(
+                "COPY _cell_fill (h3_index, source_id, h3_res, area_km2, lng, lat, boundary) "
+                "FROM STDIN"
+            ) as copy:
+                for cell in ordered:
+                    lng, lat = cell_centroid(cell)
+                    copy.write_row(
+                        (
+                            cell,
+                            source_id,
+                            res,
+                            cell_area_km2(cell),
+                            lng,
+                            lat,
+                            json.dumps(cell_polygon_geojson(cell)),
+                        )
+                    )
+            cur.execute(
                 """
                 INSERT INTO gold.cell_geometry
                     (h3_index, source_id, h3_res, area_km2, centroid, boundary, built_at)
-                VALUES (
-                    %s, %s, %s, %s,
-                    ST_SetSRID(ST_MakePoint(%s, %s), 4326),
-                    ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326),
-                    now()
-                )
+                SELECT h3_index, source_id, h3_res, area_km2,
+                       ST_SetSRID(ST_MakePoint(lng, lat), 4326),
+                       ST_SetSRID(ST_GeomFromGeoJSON(boundary), 4326),
+                       now()
+                FROM _cell_fill
                 ON CONFLICT (h3_index) DO UPDATE SET
                     area_km2 = EXCLUDED.area_km2,
                     centroid = EXCLUDED.centroid,
                     boundary = EXCLUDED.boundary,
                     built_at = EXCLUDED.built_at
-                """,
-                payload,
+                """
             )
-        counts[res] = len(payload)
-        log.info("cell universe res %s: %s cells", res, len(payload))
+            cur.execute("DROP TABLE _cell_fill")
+        counts[res] = len(ordered)
+        log.info("cell universe res %s: %s cells", res, len(ordered))
 
         _build_cell_neighbors(conn, source_id, res, cells)
 
@@ -219,19 +238,21 @@ def _build_cell_neighbors(
         for neighbor in grid_disk(cell, 1)
         if neighbor != cell and neighbor in cells
     ]
+    # Six pairs per cell, so this is the larger of the two writes by a wide
+    # margin -- around 150,000 rows for Philadelphia at resolution 10 and roughly
+    # four times that for Los Angeles. COPY straight in; the DELETE above already
+    # cleared the partition being rebuilt, so there is no conflict to resolve and
+    # no temp table needed.
     with conn.cursor() as cur:
         cur.execute(
             "DELETE FROM gold.cell_neighbor WHERE source_id = %s AND h3_res = %s",
             (source_id, res),
         )
-        cur.executemany(
-            """
-            INSERT INTO gold.cell_neighbor (source_id, h3_res, h3_index, neighbor_h3)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
-            """,
-            payload,
-        )
+        with cur.copy(
+            "COPY gold.cell_neighbor (source_id, h3_res, h3_index, neighbor_h3) FROM STDIN"
+        ) as copy:
+            for row in payload:
+                copy.write_row(row)
     log.info("cell adjacency res %s: %s pairs", res, len(payload))
     return len(payload)
 
@@ -652,6 +673,45 @@ def weight_coverage(conn: psycopg.Connection, source_id: str, scheme: str) -> fl
     if not row or not row["total"]:
         return 0.0
     return row["sourced"] / row["total"]
+
+
+# Which offenses fell all the way through to the coarse UCR bucket, and how
+# many incidents each accounts for. `weight_coverage` gives the share; this says
+# what to do about it.
+#
+# The gap is expected to be non-empty for a while, and that is the honest state:
+# the severity scale is a 1977 survey of 204 criminal events, and NIBRS has more
+# offense codes than that. A code with no vignette behind it cannot be given a
+# published weight -- inventing one and marking it `sourced = true` would be
+# worse than the documented fallback. So the fallbacks stay, and this makes them
+# reviewable rather than silent (S8.5's rule, applied to weights).
+_UNWEIGHTED_SQL = f"""
+SELECT
+    i.nibrs_code,
+    i.raw_offense_code,
+    i.raw_offense_text,
+    i.severity_bucket,
+    CASE WHEN i.product_category = 'violent' THEN 'violent' ELSE 'non_violent' END
+        AS track,
+    count(*)::int AS incidents
+FROM silver.incident i
+{_WEIGHT_LOOKUP}
+WHERE i.source_id = %(source_id)s
+  -- Matched nothing more specific than the bucket, or matched nothing at all.
+  AND (w.sourced IS NOT TRUE)
+GROUP BY 1, 2, 3, 4, 5
+ORDER BY incidents DESC
+"""
+
+
+def unweighted_offenses(
+    conn: psycopg.Connection, source_id: str, scheme: str, limit: int = 40
+) -> list[dict[str, Any]]:
+    """Offenses whose severity weight is a derived fallback, busiest first."""
+    with conn.cursor() as cur:
+        cur.execute(_UNWEIGHTED_SQL, {"source_id": source_id, "scheme": scheme})
+        rows = cur.fetchall()
+    return rows[:limit]
 
 
 def _require_exposure(conn: psycopg.Connection, source_id: str, scheme: Scheme) -> None:
@@ -1451,9 +1511,25 @@ def refresh_cell_exposure(conn: psycopg.Connection, source_id: str) -> dict[int,
 
 
 def refresh_all(
-    conn: psycopg.Connection, source_id: str, pipeline_version: str
+    conn: psycopg.Connection,
+    source_id: str,
+    pipeline_version: str,
+    include_hourly: bool = True,
 ) -> dict[str, Any]:
-    """Full gold refresh for one city. Runs as a single transaction."""
+    """Full gold refresh for one city. Runs as a single transaction.
+
+    `include_hourly=False` leaves the time-of-day layers alone. They are by far
+    the most expensive thing here -- the same ranking recomputed 24 times, at two
+    resolutions and two windows, per scheme -- and also the slowest-moving, since
+    both their windows are 12 months or wider. A day of new incidents moves an
+    hourly percentile computed over two years almost not at all.
+
+    Skipping them is therefore the right trade for a frequent incremental, with
+    `safety.etl.run hourly` on its own slower schedule. It is a real trade, not a
+    free one: until that runs, the hourly view reflects the previous build. The
+    all-hours percentile it is compared against does get rebuilt here, so the two
+    are briefly derived from different windows of data.
+    """
     anchor = data_anchor(conn, source_id)
     if anchor is None:
         raise LookupError(f"no silver rows for '{source_id}'; nothing to roll up")
@@ -1475,11 +1551,27 @@ def refresh_all(
 
     activity_rows = refresh_cell_activity(conn, source_id, windows)
     safety_rows, coverage = refresh_safety_layer(conn, source_id, windows)
-    # After the all-hours ranking, never before: the hourly layer's second
-    # rating is a comparison against the percentile that one produces.
-    hour_rows, hour_profile_rows, hour_share = refresh_hourly_layer(
-        conn, source_id, windows
-    )
+
+    hour_rows: int | None = None
+    hour_profile_rows: int | None = None
+    hour_share: float | None = None
+    if include_hourly:
+        # After the all-hours ranking, never before: the hourly layer's second
+        # rating is a comparison against the percentile that one produces.
+        hour_rows, hour_profile_rows, hour_share = refresh_hourly_layer(
+            conn, source_id, windows
+        )
+    else:
+        # Said out loud. A silently stale layer is the failure mode this whole
+        # module is written against, and hour_known_share passing as None below
+        # keeps the snapshot's previous figure rather than blanking it.
+        log.info(
+            "skipping the time-of-day layers for %s; run "
+            "`safety.etl.run hourly --city %s` to rebuild them",
+            source_id,
+            source_id,
+        )
+
     monthly_rows, mix_rows = refresh_cell_detail(conn, source_id, windows)
     refresh_city_snapshot(conn, source_id, pipeline_version, coverage, hour_share)
     conn.commit()
@@ -1491,8 +1583,11 @@ def refresh_all(
         "cell_exposure_rows": sum(exposure_cells.values()),
         "cell_activity_rows": activity_rows,
         "cell_safety_rows": safety_rows,
+        # None, not 0: "not rebuilt this run" and "rebuilt and produced nothing"
+        # are different outcomes and the caller prints this.
         "cell_hour_safety_rows": hour_rows,
         "cell_hour_profile_rows": hour_profile_rows,
+        "hourly_skipped": not include_hourly,
         "severity_weight_coverage": round(coverage, 4) if coverage is not None else None,
         "cell_monthly_rows": monthly_rows,
         "cell_offense_mix_rows": mix_rows,
