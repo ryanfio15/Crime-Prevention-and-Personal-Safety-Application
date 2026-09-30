@@ -214,6 +214,14 @@ def cmd_compact(conn: psycopg.Connection) -> int:
     a whole new copy before dropping the old one, so it needs free disk equal to
     the *post-delete* size of the largest table here -- which is exactly the
     resource being rationed. The check below is why the sizes are printed first.
+
+    **Smallest first**, which is the opposite of the obvious order and matters on
+    a nearly-full volume. Each table rewritten frees its own bloat immediately, so
+    working upwards means the largest table -- the one whose copy needs the most
+    headroom -- is attempted when the most space has already been recovered.
+    Largest-first attempts the riskiest rewrite at the moment free space is at its
+    minimum, which is how a compaction run fails halfway and leaves the volume
+    worse than it started.
     """
     with conn.cursor() as cur:
         rows = cur.execute(
@@ -223,18 +231,27 @@ def cmd_compact(conn: psycopg.Connection) -> int:
                    pg_size_pretty(pg_total_relation_size(c.oid)) AS size
             FROM pg_class c
             WHERE c.oid = ANY (%s::regclass[])
-            ORDER BY pg_total_relation_size(c.oid) DESC
+            ORDER BY pg_total_relation_size(c.oid) ASC
             """,
             (list(_RECLAIMED_TABLES),),
         ).fetchall()
+        free = cur.execute(
+            """
+            SELECT pg_size_pretty(sum(pg_total_relation_size(relid))) AS used,
+                   sum(pg_total_relation_size(relid)) AS used_bytes
+            FROM pg_stat_user_tables
+            """
+        ).fetchone()
 
     largest = max((r["bytes"] for r in rows), default=0)
-    print("about to rewrite:")
+    print("about to rewrite, smallest first:")
     for row in rows:
         print(f"  {row['name']:<34} {row['size']:>10}")
     print(
-        f"\nneeds up to {largest / 1_048_576:.0f} MB free while the largest is "
-        "rewritten, and locks each table in turn."
+        f"\nlargest is {largest / 1_048_576:.0f} MB, so that much free volume is "
+        "needed for its copy;\nit runs last, after the others have given their "
+        f"bloat back. Currently {free['used']} in tables.\nEach table is locked "
+        "in turn -- API reads of it will block."
     )
 
     prior = conn.autocommit
