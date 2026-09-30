@@ -32,17 +32,36 @@ from safety.db import connect, wait_for_db  # noqa: E402
 
 log = logging.getLogger(__name__)
 
-# Tables 012 deletes from, and therefore the ones holding dead tuples afterwards.
-# A migration cannot VACUUM (it runs in a transaction), so nothing reclaims these
-# until something does it explicitly.
-_RECLAIMED_TABLES = (
-    "gold.cell_activity",
-    "gold.cell_safety",
-    "gold.cell_hour_safety",
-    "gold.cell_hour_profile",
-    "gold.cell_neighbor",
-    "reference.census_block",
-)
+# What `compact` rewrites: the whole gold schema, plus the census blocks.
+#
+# Discovered rather than listed, and the whole schema rather than just the tables
+# the migrations delete from. Every gold table is materialized derived data
+# rebuilt by delete-then-insert on each refresh -- that is what makes a refresh of
+# one layer leave the others alone -- so every one of them accumulates dead tuples
+# as a matter of course, migrations or not. A hand-maintained list got this wrong
+# in exactly the expensive direction: it omitted gold.cell_monthly and
+# gold.cell_offense_mix, 509 MB between them on a two-city deployment, neither
+# touched by any migration and both rewritten on every gold run.
+#
+# Measured: gold.cell_activity compacted from 342 MB to 156 MB with an identical
+# row count. More than half of it was dead space.
+#
+# silver.incident is deliberately excluded. Its partitions are upserted rather
+# than rebuilt, so they bloat far more slowly, and they are large enough that
+# locking one is a different order of decision. `sizes` shows them; compact them
+# by hand if their dead-row counts justify it.
+_RECLAIM_SQL = """
+SELECT c.oid::regclass::text              AS name,
+       pg_total_relation_size(c.oid)      AS bytes,
+       pg_size_pretty(pg_total_relation_size(c.oid)) AS size
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind = 'r'
+  AND (n.nspname = 'gold'
+       OR c.oid = 'reference.census_block'::regclass)
+  AND pg_total_relation_size(c.oid) > 0
+ORDER BY pg_total_relation_size(c.oid) ASC
+"""
 
 _BASELINE = "public.phl_baseline"
 
@@ -203,7 +222,7 @@ def cmd_gate(conn: psycopg.Connection) -> int:
 
 
 def cmd_compact(conn: psycopg.Connection) -> int:
-    """VACUUM FULL the tables the reclaim deleted from.
+    """VACUUM FULL the gold schema and the census blocks. See _RECLAIM_SQL.
 
     Plain VACUUM marks freed pages reusable by the same table, which is where
     most of them want to go -- these are rebuilt by delete-then-insert. This is
@@ -225,17 +244,7 @@ def cmd_compact(conn: psycopg.Connection) -> int:
     worse than it started.
     """
     with conn.cursor() as cur:
-        rows = cur.execute(
-            """
-            SELECT c.oid::regclass::text AS name,
-                   pg_total_relation_size(c.oid) AS bytes,
-                   pg_size_pretty(pg_total_relation_size(c.oid)) AS size
-            FROM pg_class c
-            WHERE c.oid = ANY (%s::regclass[])
-            ORDER BY pg_total_relation_size(c.oid) ASC
-            """,
-            (list(_RECLAIMED_TABLES),),
-        ).fetchall()
+        rows = cur.execute(_RECLAIM_SQL).fetchall()
         free = cur.execute(
             """
             SELECT pg_size_pretty(sum(pg_total_relation_size(relid))) AS used,
@@ -254,6 +263,15 @@ def cmd_compact(conn: psycopg.Connection) -> int:
         f"bloat back. Currently {free['used']} in tables.\nEach table is locked "
         "in turn -- API reads of it will block."
     )
+
+    # End the read transaction the queries above opened before touching
+    # autocommit. psycopg refuses the change while a transaction is in progress
+    # -- "can't change 'autocommit' now: connection in transaction status
+    # INTRANS" -- and it raises before the first VACUUM, so the command reports
+    # what it is about to do and then does none of it. The two other callers of
+    # this pattern (migrate._vacuum, census.release_block_geometry) commit first
+    # for the same reason; this one only read, so rollback is the honest verb.
+    conn.rollback()
 
     prior = conn.autocommit
     conn.autocommit = True
