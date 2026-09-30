@@ -165,7 +165,8 @@ def list_cities(conn: psycopg.Connection) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT s.*, r.location_precision_note, r.enabled
+            SELECT s.*, r.location_precision_note, r.enabled,
+                   r.occurrence_basis_note, r.denominator_examples_note
             FROM gold.city_snapshot s
             JOIN reference.source_registry r USING (source_id)
             ORDER BY s.city_name
@@ -178,7 +179,8 @@ def get_city(conn: psycopg.Connection, source_id: str) -> dict[str, Any] | None:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT s.*, r.location_precision_note, r.enabled
+            SELECT s.*, r.location_precision_note, r.enabled,
+                   r.occurrence_basis_note, r.denominator_examples_note
             FROM gold.city_snapshot s
             JOIN reference.source_registry r USING (source_id)
             WHERE s.source_id = %s
@@ -206,16 +208,28 @@ def severity_scheme(conn: psycopg.Connection, source_id: str) -> dict[str, Any] 
         return cur.fetchone()
 
 
-def serving_version(conn: psycopg.Connection) -> dict[str, Any]:
-    """Cheap poll target so a client can notice an ETL refresh and reload."""
+def serving_version(
+    conn: psycopg.Connection, source_id: str | None = None
+) -> dict[str, Any]:
+    """Cheap poll target so a client can notice an ETL refresh and reload.
+
+    Per city when `source_id` is given, which is what cache invalidation wants:
+    the aggregate form moves whenever *any* city is refreshed, so keying cached
+    layers on it would throw away five cities' work every time the sixth
+    reloaded. The aggregate is still the right answer for /health and /version,
+    where the question really is "has anything changed".
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT max(last_refreshed_at) AS last_refreshed_at,
                    max(data_as_of)        AS data_as_of,
-                   sum(incident_count)    AS incident_count
+                   sum(incident_count)    AS incident_count,
+                   count(*)::int          AS cities
             FROM gold.city_snapshot
-            """
+            WHERE %s::text IS NULL OR source_id = %s
+            """,
+            (source_id, source_id),
         )
         return cur.fetchone() or {}
 
@@ -255,6 +269,49 @@ def categories(conn: psycopg.Connection, source_id: str) -> list[dict[str, Any]]
             (source_id,),
         )
         return cur.fetchall()
+
+
+# What the timestamps on this city's records actually measure. Stored per
+# incident by the adapter, so it is read rather than asserted -- a city whose
+# adapter changed what it captures would show up here rather than in a stale
+# sentence.
+#
+# This reads silver, which the two rules at the top of this module otherwise
+# rule out. The exception is the same one `data_quality` already takes: these
+# are provenance questions asked once per session by a meta endpoint, not the
+# map read path, and there is no rollup that would answer them.
+_BASIS_MIX_SQL = """
+SELECT occurred_basis, count(*)::int AS n
+FROM silver.incident
+WHERE source_id = %s
+GROUP BY 1 ORDER BY n DESC
+"""
+
+# The three values silver.incident.occurred_basis permits (004_silver.sql). A
+# source that publishes both an occurrence and a report time picks one per
+# record, so a mixed city shows up as two rows here rather than as a fourth
+# basis -- which is more informative anyway, since the shares are visible.
+BASIS_LABELS = {
+    "dispatch": "the time police were dispatched",
+    "occurrence": "the time the offence is recorded as having occurred",
+    "report": "the time the offence was reported to police",
+}
+
+
+def occurrence_basis(conn: psycopg.Connection, source_id: str) -> list[dict[str, Any]]:
+    """The mix of timestamp bases behind this city's records, most common first."""
+    with conn.cursor() as cur:
+        cur.execute(_BASIS_MIX_SQL, (source_id,))
+        rows = cur.fetchall()
+    total = sum(row["n"] for row in rows) or 1
+    return [
+        {
+            **row,
+            "share": round(row["n"] / total, 4),
+            "label": BASIS_LABELS.get(row["occurred_basis"], row["occurred_basis"]),
+        }
+        for row in rows
+    ]
 
 
 def data_quality(conn: psycopg.Connection, source_id: str) -> dict[str, Any]:
