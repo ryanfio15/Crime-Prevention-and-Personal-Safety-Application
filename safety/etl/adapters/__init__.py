@@ -14,12 +14,14 @@ from safety.etl.adapters.base import (
     SourceAdapter,
     SourceConfig,
 )
+from safety.etl.adapters.chicago import ChicagoSocrataAdapter
 from safety.etl.adapters.philadelphia import PhiladelphiaCartoAdapter
 
 # The registry maps a source_id to its adapter class. Onboarding a seventh city
 # is: add a reference.source_registry row, write one adapter, add one line here.
 ADAPTERS: dict[str, type[SourceAdapter]] = {
     "phl": PhiladelphiaCartoAdapter,
+    "chi": ChicagoSocrataAdapter,
 }
 
 
