@@ -51,7 +51,7 @@ from safety import PIPELINE_VERSION
 from safety.db import connect, wait_for_db
 from safety.etl import boundary as boundary_loader
 from safety.etl import census, gold, transform, validate
-from safety.etl.adapters import SourceConfig, get_adapter
+from safety.etl.adapters import ADAPTERS, SourceConfig, get_adapter
 from safety.etl.adapters.base import NormalizedIncident, RawChunk, SourceAdapter
 from safety.etl.bronze import LocalBronzeStore, build_manifest
 from safety.etl.windows import backfill_window
@@ -1244,6 +1244,101 @@ def cmd_safety_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _readiness(conn: psycopg.Connection, config: SourceConfig) -> list[str]:
+    """What is still missing before this source can produce a correct map.
+
+    Checked rather than trusted, because the failure mode of enabling too early
+    is not a crash. A city with no crosswalk loads perfectly happily and files
+    every incident as product_category 'other', severity_bucket 'unknown' --
+    a complete, plausible, wrong map. That is the one outcome worth a gate.
+    """
+    problems: list[str] = []
+
+    if config.source_id not in ADAPTERS:
+        problems.append(
+            f"no adapter registered for '{config.source_id}'; implemented: "
+            f"{sorted(ADAPTERS)}"
+        )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*)::int AS n FROM reference.offense_crosswalk
+            WHERE source_id = %s AND crosswalk_version = %s
+            """,
+            (config.source_id, config.crosswalk_version),
+        )
+        mapped = cur.fetchone()["n"]
+    if not mapped:
+        problems.append(
+            f"no crosswalk rows for '{config.source_id}' at version "
+            f"'{config.crosswalk_version}'. Add "
+            f"reference/crosswalk/{config.source_id}_*.csv and re-run "
+            "`python -m safety.migrate`. Without it every incident is "
+            "classified 'other'/'unknown' and the map is quietly wrong"
+        )
+
+    if not config.state_fips:
+        problems.append(
+            f"no state_fips for '{config.source_id}', so neither the coverage "
+            "boundary nor the population denominator can be loaded"
+        )
+
+    return problems
+
+
+def cmd_enable(args: argparse.Namespace) -> int:
+    """Enable or disable a source, so onboarding never needs database access.
+
+    Exists because the alternative was telling an operator to run SQL, and a
+    Railway deployment whose database is a plain Docker image has no query
+    console at all -- the advice was unfollowable on the platform the project
+    documents deploying to.
+    """
+    with connect() as conn:
+        config = SourceConfig.load(conn, args.city)
+        target = not args.off
+
+        if target and not args.force:
+            problems = _readiness(conn, config)
+            if problems:
+                print(
+                    f"'{config.source_id}' ({config.city_name}) is not ready:",
+                    file=sys.stderr,
+                )
+                for problem in problems:
+                    print(f"  - {problem}", file=sys.stderr)
+                print(
+                    "\nFix these, or pass --force to enable anyway.",
+                    file=sys.stderr,
+                )
+                return 1
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE reference.source_registry
+                   SET enabled = %s, updated_at = now()
+                 WHERE source_id = %s
+                """,
+                (target, config.source_id),
+            )
+        conn.commit()
+
+    verb = "enabled" if target else "disabled"
+    print(f"{config.source_id} ({config.city_name}) {verb}.")
+    if target:
+        print(
+            "The scheduled job will pick it up on its next run -- a source that "
+            "has never been pulled is always due -- or start now with:\n"
+            f"  python -m safety.etl.run backfill --city {config.source_id}\n"
+            f"  python -m safety.etl.run census   --city {config.source_id}\n"
+            f"  python -m safety.etl.run gold     --city {config.source_id}\n"
+            f"  python -m safety.etl.run weights  --city {config.source_id}"
+        )
+    return 0
+
+
 def cmd_weights(args: argparse.Namespace) -> int:
     """Report which offenses are riding a derived weight rather than a published one.
 
@@ -1336,8 +1431,11 @@ def _require_enabled(config: SourceConfig) -> None:
             "A city is enabled once its adapter, crosswalk and boundary have all "
             "landed and its first backfill has been read -- see docs/PHASE2.md. "
             f"Enable it with:\n"
-            f"  UPDATE reference.source_registry SET enabled = true "
-            f"WHERE source_id = '{config.source_id}';"
+            f"  python -m safety.etl.run enable --city {config.source_id}\n"
+            "which checks the adapter and crosswalk are actually in place first. "
+            "Deliberately not a SQL statement: a Railway deployment whose "
+            "database is a plain Docker image has no query console, so that "
+            "advice was unfollowable on the platform docs/DEPLOY.md targets."
         )
 
 
@@ -1458,6 +1556,20 @@ def build_parser() -> argparse.ArgumentParser:
     compare_cmd.add_argument("--window", default="last_12m", choices=gold.TIME_WINDOWS)
     compare_cmd.add_argument("--track", default="violent", choices=gold.TRACKS)
     compare_cmd.set_defaults(func=cmd_safety_compare)
+
+    enable_cmd = sub.add_parser(
+        "enable", help="enable a city (or --off to disable), checking it is ready first"
+    )
+    enable_cmd.add_argument("--city", required=True)
+    enable_cmd.add_argument(
+        "--off", action="store_true", help="disable instead of enabling"
+    )
+    enable_cmd.add_argument(
+        "--force",
+        action="store_true",
+        help="enable despite a missing crosswalk or adapter; the map will be wrong",
+    )
+    enable_cmd.set_defaults(func=cmd_enable)
 
     weights_cmd = sub.add_parser(
         "weights", help="which offenses ride a derived severity weight, not a published one"

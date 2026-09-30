@@ -134,6 +134,15 @@ _RULES: tuple[tuple[tuple[str, ...], str, str, str, str, str, str], ...] = (
     (("PUBLIC INDECENCY",), "90Z", "All Other Offenses", "B", "group_b", "quality_of_life", "part_ii"),
     (("INTERFERENCE WITH PUBLIC OFFICER",), "90Z", "All Other Offenses", "B", "group_b", "other", "part_ii"),
     (("OFFENSE INVOLVING CHILDREN",), "90F", "Family Offenses, Nonviolent", "B", "group_b", "other", "part_ii"),
+    # NIBRS added Animal Cruelty as a Group A offense in 2016, so this has a real
+    # target rather than a residual one. Covers IUCR's animal abuse/neglect and
+    # animal fighting codes, which sit under the "OTHER OFFENSE" primary.
+    (("ANIMAL",), "720", "Animal Cruelty", "A", "society", "other", "part_ii"),
+    # IUCR files ritual mutilation under its own primary description, so the
+    # aggravated-assault rules above miss it -- they key on BATTERY or ASSAULT.
+    # An aggravated mutilation is an aggravated assault.
+    (("RITUAL", "AGGRAVATED"), "13A", "Aggravated Assault", "A", "person", "violent", "part_i_violent"),
+    (("RITUAL",), "13B", "Simple Assault", "A", "person", "violent", "part_ii"),
 )
 
 # Fallback for a code no rule claims. Deliberately loud: `ambiguous` plus the
@@ -188,13 +197,21 @@ def fetch_iucr(base: str, dataset: str, token: str | None) -> list[dict[str, Any
     return rows
 
 
-def _classify(primary: str, secondary: str) -> tuple[str, ...]:
-    """First rule whose every keyword appears in the combined description."""
+def _classify(primary: str, secondary: str) -> tuple[tuple[str, ...], bool]:
+    """First rule whose every keyword appears in the combined description.
+
+    Returns the mapping and whether a rule actually claimed it. The flag has to
+    be reported rather than inferred by comparing the result against _UNMAPPED:
+    the INTERFERENCE WITH PUBLIC OFFICER rule maps to exactly the residual
+    values, so twelve codes that matched it perfectly well came out labelled
+    "no rule matched -- NEEDS REVIEW". Any rule whose target happens to equal
+    the fallback would have the same problem.
+    """
     haystack = f"{primary} / {secondary}".upper()
     for keywords, *mapping in _RULES:
         if all(keyword in haystack for keyword in keywords):
-            return tuple(mapping)
-    return _UNMAPPED
+            return tuple(mapping), True
+    return _UNMAPPED, False
 
 
 def build_rows(iucr: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -206,9 +223,8 @@ def build_rows(iucr: list[dict[str, Any]]) -> list[dict[str, str]]:
         if not code or not secondary:
             continue
 
-        nibrs_code, nibrs_name, group, against, product, bucket = _classify(
-            primary, secondary
-        )
+        mapping, claimed = _classify(primary, secondary)
+        nibrs_code, nibrs_name, group, against, product, bucket = mapping
         # IUCR's own index flag is the source's judgement on Part I versus Part
         # II, which is a better signal than inferring one from the description.
         index_flag = (row.get("index_code") or "").strip().upper()
@@ -227,7 +243,7 @@ def build_rows(iucr: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "promoted from part_ii to {bucket}; confirm.".format(bucket=bucket)
             )
 
-        unclaimed = (nibrs_code, nibrs_name, group, against, product, bucket) == _UNMAPPED
+        unclaimed = not claimed
         out.append(
             {
                 "crosswalk_version": CROSSWALK_VERSION,
