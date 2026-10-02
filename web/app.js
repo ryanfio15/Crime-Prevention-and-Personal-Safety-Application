@@ -162,6 +162,151 @@ function valueDomain(prop, isPainted) {
   };
 }
 
+/**
+ * Citywide reported incidents per ambient person, for the layer on screen.
+ *
+ * Summed here rather than served for the same reason `valueDomain` is: the
+ * features are already in the browser, and the alternative is another
+ * precomputed figure existing only to fill one line of one panel. The activity
+ * layer is dense and the client fetches it unfiltered, so this is the whole city
+ * and not a sample of it.
+ *
+ * Numerator and denominator are accumulated over the same cells -- the ones
+ * carrying a population figure. Counting incidents from a cell whose exposure is
+ * unknown would add to the top of the fraction without adding to the bottom, and
+ * make the city look worse than it is.
+ */
+function cityExposureRate() {
+  let incidents = 0;
+  let people = 0;
+  for (const feature of state.features) {
+    const p = feature.properties;
+    if (typeof p.exposure !== "number" || p.exposure <= 0) continue;
+    incidents += p.count ?? 0;
+    people += p.exposure;
+  }
+  return people > 0 ? { incidents, people, rate: incidents / people } : null;
+}
+
+/* Below this many ambient people, a rate per person is two small numbers
+   divided: a cell with nine people and three incidents comes out at twenty-four
+   times the city average, which is arithmetic rather than a finding. */
+const RELATIVE_MIN_EXPOSURE = 100;
+
+/**
+ * One cell's incident rate per person, against the city's own.
+ *
+ * Read out of `state.features` rather than out of the detail payload, because
+ * the feature is what is on screen: it carries the selected offence category,
+ * where the panel's headline count is always category `all`. Both sides of the
+ * ratio then come from one layer and share a denominator definition -- the same
+ * ambient residents-and-jobs figure the safety ranking itself divides by.
+ *
+ * Returns a `reason` instead of a ratio wherever the division would mislead;
+ * `relativeStat` turns each of those into its own sentence.
+ */
+function relativeRate(h3) {
+  const feature = state.features.find((f) => f.properties.h3 === h3);
+  if (!feature) return { reason: "unavailable" };
+
+  // Not one cell in this layer carries a population denominator: either the
+  // active severity scheme ranks by area, in which case cell_safety.exposure is
+  // NULL by construction, or the exposure layer was never built. There is
+  // nothing to be relative to, so the headline falls back to the count -- the
+  // same fallback syncSafetyAvailability makes for the ramp.
+  const city = cityExposureRate();
+  if (!city) return { reason: "no_city_exposure" };
+
+  const p = feature.properties;
+  const count = p.count ?? 0;
+  const exposure = typeof p.exposure === "number" ? p.exposure : null;
+
+  if (exposure === null || exposure <= 0) return { reason: "no_exposure", count };
+  if (count === 0) return { reason: "no_incidents", count, exposure, city };
+  if (exposure < RELATIVE_MIN_EXPOSURE) {
+    return { reason: "thin_exposure", count, exposure, city };
+  }
+  const rate = count / exposure;
+  return { ratio: rate / city.rate, rate, count, exposure, city };
+}
+
+/** The ratio in whichever form reads as a quantity: 1,400% has to be decoded,
+    14.0x does not.
+
+    The bottom end is named rather than rounded, the same way `safetyLabel`
+    names its extremes: a big quiet cell -- one report among twenty thousand
+    people -- rounds to 0%, and 0% is the one thing this figure must not say
+    about a cell where something was reported. */
+function formatRatio(ratio) {
+  if (ratio >= 10) return `${ratio.toFixed(1)}×`;
+  if (ratio < 0.005) return "<1%";
+  return `${Math.round(ratio * 100)}%`;
+}
+
+/* Per 1,000 people, matching every other exposure-denominated figure here. */
+const per1k = (rate) => (rate * 1000).toFixed(1);
+
+/**
+ * The safety view's headline figure, in words.
+ *
+ * A percentage of the city's rate, never a bare one: above 100% is the
+ * concerning direction, which is the opposite of what a number under a heading
+ * reading "safety" would be assumed to mean, so the sense is always spelled out
+ * beside it. The two rates it came from go underneath for the same reason the
+ * hour share prints its counts -- a derived figure is only checkable if the
+ * numbers behind it are visible.
+ */
+function relativeStat(rel, windowLabel) {
+  switch (rel.reason) {
+    case "no_incidents":
+      return {
+        value: "—",
+        label: `nothing reported here · ${windowLabel}`,
+        note:
+          `0 incidents among ${nf.format(rel.exposure)} people. An absence of ` +
+          `reports is not evidence of safety.`,
+      };
+    case "thin_exposure":
+      return {
+        value: "—",
+        label: `too few people here to compare · ${windowLabel}`,
+        note:
+          `${nf.format(rel.count)} incidents among ${nf.format(rel.exposure)} ` +
+          `people — a rate per person on a denominator this small would swing on ` +
+          `a single report.`,
+      };
+    case "no_exposure":
+      return {
+        value: "—",
+        label: "no population figure for this cell",
+        note:
+          `${nf.format(rel.count)} reported incidents. The comparison divides by ` +
+          `ambient population, which this cell has none apportioned to it.`,
+      };
+    case "unavailable":
+      return {
+        value: "—",
+        label: "not comparable in this layer",
+        note: "",
+      };
+  }
+
+  // Same ±5% deadband as the hour share: inside it, the honest reading is "no
+  // different", not a number to two figures.
+  const sense =
+    rel.ratio > 1.05 ? "higher than the city average"
+    : rel.ratio < 0.95 ? "lower than the city average"
+    : "about the city average";
+
+  return {
+    value: formatRatio(rel.ratio),
+    label: `of the city-average incident rate per person — ${sense} · ${windowLabel}`,
+    note:
+      `${nf.format(rel.count)} incidents among ${nf.format(rel.exposure)} people · ` +
+      `${per1k(rel.rate)} vs ${per1k(rel.city.rate)} per 1,000 citywide`,
+  };
+}
+
 const TIER_LABELS = {
   0: "No reported incidents",
   1: "Lowest fifth",
@@ -525,6 +670,10 @@ async function loadLayer({ quiet = false } = {}) {
     map.setPaintProperty("cells-outline", "line-width", outlineWidthExpression());
     renderLegend();
     renderTable();
+    // The city rate the safety headline is a share of has just moved, and so has
+    // the selected cell's own count if the category changed -- that control
+    // reloads the layer without reopening the panel.
+    if (state.detail) renderHeadlineStat(state.detail);
     // Only now is it known whether the hourly layer exists at all.
     syncHourAvailability();
   } catch (error) {
@@ -654,6 +803,37 @@ async function selectCity(sourceId) {
 
 /* --------------------------------------------------------------- cell panel */
 
+/**
+ * The panel's one big number, which measures whatever the map is coloured by.
+ *
+ * Under the count ramp that is the count itself. Under the safety ramp a bare
+ * count is the wrong headline: the ramp is ranking cells per head of ambient
+ * population, and a cell with forty incidents among twelve thousand people is
+ * the quieter of two cells the count alone would order the other way. So the
+ * safety view leads with the comparison the ramp is making -- this cell's
+ * incidents per person as a share of the city's.
+ */
+function renderHeadlineStat(detail) {
+  const value = $("d-count");
+  const label = $("d-count-label");
+  const windowLabel = detail.window_label.toLowerCase();
+
+  const rel = state.scale === "safety" ? relativeRate(state.selected) : null;
+
+  if (rel === null || rel.reason === "no_city_exposure") {
+    const headline = detail.headline ?? { incident_count: 0 };
+    value.textContent = nf.format(headline.incident_count ?? 0);
+    label.textContent = `reported incidents · ${windowLabel}`;
+    return;
+  }
+
+  const stat = relativeStat(rel, windowLabel);
+  value.textContent = stat.value;
+  label.innerHTML = stat.note
+    ? `${stat.label}<span class="kv-note">${stat.note}</span>`
+    : stat.label;
+}
+
 async function selectCell(h3) {
   if (state.selected && state.selected !== h3) {
     map.setFeatureState({ source: "cells", id: state.selected }, { selected: false });
@@ -677,9 +857,7 @@ async function selectCell(h3) {
   $("detail-body").hidden = false;
 
   const headline = detail.headline ?? { incident_count: 0 };
-  $("d-count").textContent = nf.format(headline.incident_count ?? 0);
-  $("d-count-label").textContent =
-    `reported incidents · ${detail.window_label.toLowerCase()}`;
+  renderHeadlineStat(detail);
 
   // The activity tier gave up its row to the time-of-day figure; it still
   // reaches the reader through the tooltip and the table view.
@@ -1510,6 +1688,9 @@ function wireControls() {
     // The track tabs only mean anything while the safety ramp is on screen.
     $("f-track-field").hidden = state.scale !== "safety";
     repaint();
+    // The open cell's headline measures whatever the map is coloured by, so it
+    // changes with this control -- and the detail is already in hand.
+    if (state.detail) renderHeadlineStat(state.detail);
   };
 
   // Any minute within the hour selects that block. The note beside the input
