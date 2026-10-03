@@ -242,8 +242,15 @@ select:focus-visible, .btn:focus-visible {
   min-height: 0;
 }
 
-.map-pane { position: relative; min-height: 0; }
-#map { position: absolute; inset: 0; background: var(--page); }
+.map-pane {
+  position: relative;
+  min-height: 0;
+}
+
+#map {
+  position: absolute;
+  inset: 0;
+}
 
 /* No skeleton flash on refetch: hold the previous render, dimmed. */
 #map.is-refetching { opacity: 0.55; transition: opacity 120ms ease; }
@@ -264,68 +271,157 @@ select:focus-visible, .btn:focus-visible {
 
 /* ---------------------------------------------------------------- legend --- */
 
+/* ---------------------------------------------------------------------------
+   Collapsible map legend
+   --------------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------- legend --- */
+
+/* Map legend */
+
 .legend {
   position: absolute;
   left: 14px;
-  bottom: 20px;
-  z-index: 2;
+  bottom: 14px;
+  z-index: 5;
+
   width: 244px;
-  padding: 12px 13px 11px;
+  padding: 11px 12px;
+
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: rgba(252, 252, 251, 0.94);
-  backdrop-filter: blur(6px);
+  border-radius: 10px;
+
+  background: rgba(252, 252, 251, 0.96);
+  color: var(--text-primary);
+
+  box-shadow: 0 6px 18px rgba(11, 11, 11, 0.10);
+
+  transition:
+    width 120ms ease,
+    padding 120ms ease;
+}
+
+.legend-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
 }
 
 .legend-title {
-  font-size: 12px;
+  min-width: 0;
+  flex: 1;
+
+  font-size: 11px;
   font-weight: 600;
+  line-height: 1.3;
+}
+
+.legend-toggle {
+  flex: 0 0 auto;
+
+  min-height: 28px;
+  padding: 4px 8px;
+
+  border: 1px solid var(--border);
+  border-radius: 6px;
+
+  background: var(--surface-1);
   color: var(--text-primary);
-  margin-bottom: 9px;
+
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+
+  cursor: pointer;
+}
+
+.legend-toggle:hover {
+  border-color: rgba(11, 11, 11, 0.28);
+  background: var(--gridline);
+}
+
+.legend-toggle:focus-visible {
+  outline: 2px solid var(--series-1);
+  outline-offset: 2px;
+}
+
+.legend-content {
+  margin-top: 8px;
 }
 
 .legend-ramp {
-  display: flex;
+  width: 100%;
   height: 10px;
-  border-radius: 3px;
   overflow: hidden;
-  gap: 2px; /* 2px surface gap between fills, not borders */
+  border-radius: 4px;
 }
-.legend-ramp span { flex: 1 1 0; }
 
-/* Continuous measures get a continuous key. Dropping the 2px gaps is the whole
-   difference -- banded swatches would imply steps the percentile does not have. */
-.legend-ramp.is-smooth { gap: 0; }
-.legend-ramp.is-smooth span { flex: 1 1 100%; }
+.legend-ramp span {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
 
 .legend-ticks {
   display: flex;
   justify-content: space-between;
-  margin-top: 5px;
-  font-size: 11px;
+  gap: 8px;
+
+  margin-top: 4px;
+
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
 }
 
 .legend-foot {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--gridline);
-  font-size: 11.5px;
-  color: var(--text-secondary);
+  margin-top: 7px;
+
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 
 .legend-zero {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-}
-.legend-zero i {
-  width: 11px; height: 11px; border-radius: 2px;
-  background: var(--seq-zero);
-  border: 1px solid var(--baseline);
+  gap: 5px;
 }
 
+.legend-zero i {
+  display: inline-block;
+
+  width: 9px;
+  height: 9px;
+
+  flex: 0 0 9px;
+
+  border: 1px solid var(--border);
+  border-radius: 2px;
+
+  background: var(--seq-zero);
+}
+
+.legend.is-collapsed {
+  width: auto;
+  min-width: 0;
+  padding: 7px 9px;
+}
+
+.legend.is-collapsed .legend-content {
+  display: none;
+}
+
+.legend.is-collapsed .legend-header {
+  gap: 8px;
+}
+
+.legend.is-collapsed .legend-title {
+  white-space: nowrap;
+  font-size: 10px;
+}
 /* --------------------------------------------------------------- tooltip --- */
 
 .map-tooltip {
@@ -344,6 +440,10 @@ select:focus-visible, .btn:focus-visible {
 .map-tooltip small { display: block; color: var(--text-muted); font-size: 11px; }
 
 /* ---------------------------------------------------------- detail panel --- */
+
+/* ---------------------------------------------------------
+   History detail panel
+   --------------------------------------------------------- */
 
 .detail {
   border-left: 1px solid var(--border);
@@ -577,10 +677,1116 @@ select:focus-visible, .btn:focus-visible {
 @media (max-width: 900px) {
   .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
   .detail { border-left: 0; border-top: 1px solid var(--border); max-height: 44vh; }
-  .legend { width: 200px; bottom: 14px; }
+.legend {
+  left: 10px;
+  bottom: 12px;
+  width: min(220px, calc(100% - 20px));
+  padding: 10px 11px;
+}
+
+.legend-title {
+  font-size: 11px;
+}
+
+.legend-toggle {
+  min-height: 30px;
+  padding: 5px 8px;
+}
+
+.legend-ticks {
+  font-size: 10px;
+}
+
+.legend.is-collapsed {
+  width: auto;
+}
+
+.legend.is-collapsed .legend-title {
+  font-size: 10px;
+}
+  
   .topbar { flex-direction: column; align-items: flex-start; gap: 10px; }
+
+  .freshness {
+    align-self: stretch;
+  }
+
+  .check-risk-view {
+    padding: 24px 20px 48px;
+  }
+
+  .risk-intro,
+  .risk-form,
+  .risk-location-section,
+  .risk-result {
+    width: min(760px, 100%);
+  }
+
+  .risk-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .risk-form > .risk-location-field {
+    grid-column: 1 / -1;
+  }
+
+  .risk-form > .risk-button {
+    grid-column: 1 / -1;
+  }
+
+  /**History View*/
+
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .detail {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    max-height: 44vh;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
+}
+
+.main-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+
+  padding: 0 20px;
+
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+}
+
+.main-tab,
+.main-tab-active {
+  appearance: none;
+  position: relative;
+  height: 48px;
+  padding: 0 18px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.main-tab:hover,
+.main-tab-active:hover {
+  color: var(--text-primary);
+}
+
+.main-tab-active::after {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: -1px;
+  height: 2px;
+  background: var(--series-1);
+  border-radius: 2px 2px 0 0;
+}
+
+.main-tab:focus-visible,
+.main-tab-active:focus-visible {
+  outline: 2px solid var(--series-1);
+  outline-offset: -2px;
+}
+
+.check-risk {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 28px;
+  overflow-y: auto;
+  background: var(--page);
+}
+
+.check-risk-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 32px 28px 48px;
+}
+
+.risk-intro {
+  width: min(1100px, 100%);
+  margin: 0 auto 20px;
+}
+
+.risk-intro h2 {
+  margin: 0;
+  font-size: 25px;
+  line-height: 1.2;
+  font-weight: 650;
+  letter-spacing: -0.02;
+}
+
+.risk-intro p {
+  margin: 7px 0 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.risk-intro .caution {
+  display: none;
+}
+
+.risk-form {
+  width: 100%;
+  max-width: 1100px !important;
+
+  margin: 0 auto 22px;
+  padding: 22px 24px;
+
+  border: 1px solid var(--border);
+  border-radius: 12px;
+
+  background: var(--surface-1);
+
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 18px;
+  row-gap: 15px;
+  align-items: end;
+}
+
+.risk-form h2 {
+  grid-column: 1 / -1;
+  margin: 0 0 6px;
+  font-size: 10px;
+  line-height: 1.2;
+  font-weight: 650;
+}
+
+.risk-form .risk-location-field {
+  grid-column: 1 / -1;
+}
+
+.risk-form .risk-date-field,
+.risk-form .risk-time-field {
+  grid-column: span 1;
+}
+
+.risk-form .risk-category-field {
+  grid-column: 1 / -1;
+}
+
+
+.risk-form .risk-button {
+  grid-column: 1 / -1;
+  justify-self: end;
+  width: 180px;
+}
+
+.risk-form::before {
+  content: "";
+  grid-column: 1 / -1;
+  margin-bottom: 2px;
+
+  font-size: 17px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.risk-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.risk-field .field-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.optional-label {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 10px;
+  margin-left: 4px;
+  color: var(--text-muted);
+}
+
+.risk-form .field-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.risk-form input[type="text"],
+.risk-form input[type="date"],
+.risk-form input[type="time"],
+.risk-form select {
+  width: 100%;
+  min-height: 40px;
+
+  padding: 8px 11px;
+
+  border: 1px solid var(--border);
+  border-radius: 7px;
+
+  background: var(--page);
+  color: var(--text-primary);
+
+  font-size: 13px;
+}
+
+.risk-form input[type="text"]:focus,
+.risk-form input[type="date"]:focus,
+.risk-form input[type="time"]:focus,
+.risk-form select {
+  outline: 2px solid var(--series-1);
+  outline-offset: 1px;
+}
+
+.risk-location-field {
+  min-width: 0;
+}
+
+.location-input {
+  display: flex;
+  align-items: stretch;
+  gap: 9px;
+}
+
+.location-input input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.location-input .btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.risk-location-field .field-note {
+  margin-top: 1px;
+}
+
+.risk-form .btn {
+  min-height: 40px;
+  padding: 8px 14px;
+
+  border: 1px solid var(--border);
+  border-radius: 7px;
+
+  background: var(--page);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.risk-form .btn:hover {
+  border-color: rgba(11, 11, 11, 0.28);
+}
+
+.risk-form .risk-button {
+  min-height: 40px;
+  
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+
+  color: var(--surface-1);
+
+  font-weight: 600;
+}
+
+.risk-form .risk-button:hover {
+  background: #292929;
+  border-color: #292929;
+}
+
+ .risk-location-section {
+  width: min(1100px, 100%);
+  margin: 0 auto 22px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-1);
+  overflow: hidden;
+ }
+
+ .risk-location-section .section-heading {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--border);
+ }
+
+.risk-location-section .section-heading h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+ }
+
+ .risk-map {
+  width: 100%;
+  height: 360px;
+  min-height: 300px;
+  background: var(--page);
+ }
+
+ .selected-location {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+
+  min-height: 62px;
+
+  padding: 11px 18px;
+  border-top: 1px solid var(--border);
+ }
+
+ .selected-location-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  width: 32px;
+  height: 32px;
+
+  flex: 0 0 32px;
+
+  border-radius: 50%;
+  background: var(--page);
+  border: 1px solid var(--border);
+  font-size: 16px;
+ }
+
+ .selected-location-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+ }
+
+ .selected-location-info strong {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+ }
+
+ .selected-location-info span {
+  margin-top: 1px;
+
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+ }
+
+ .risk-result {
+  width: min(1100px, 100%);
+  margin: 0 auto 30px;
+  padding: 22px 24px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-1);
+ }
+
+ .risk-result-header {
+  text-align: center;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--gridline);
+ }
+
+ .result-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+ }
+
+ .risk-multiplier {
+  margin: 0;
+  font-size: 42px;
+  line-height: 1.05;
+  font-weight: 700;
+  letter-spacing: -0.03rem;
+  font-variant-numeric: tabular-nums;
+ }
+
+ .risk-level {
+  margin-top: 5px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+ }
+
+ .risk-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin: 20px 0;
+ }
+
+ .risk-stat {
+  padding: 0 22px;
+  border-right: 1px solid var(--gridline);
+  text-align: center;
+ }
+
+ .risk-stat:first-child {
+  padding-left: 0;
+ }
+
+ .risk-stat:last-child {
+  padding-right: 0;
+  border-right: 0;
+ }
+
+ .risk-stat-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.risk-stat strong {
+  display: block;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.risk-explanation {
+  padding: 13px 15px;
+  border-radius: 8px;
+  background: var(--page);
+}
+
+.risk-explanation p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.risk-explanation p + p {
+  margin-top: 7px;
+}
+
+.caution {
+  color: var(--text-muted);
+}
+
+/*Explore History View*/
+
+.history-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.history-header {
+  padding: 18px 20px 12px;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.history-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.history-header p {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.history-header .caution {
+  color: var(--text-muted);
+}
+
+
+/* ---------------------------------------------------------------------------
+   MOBILE
+   --------------------------------------------------------------------------- */
+
+@media (max-width: 900px) {
+
+  html,
+  body {
+    font-size: 13px;
+  }
+
+  body {
+    min-height: 100dvh;
+    height: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  /* ---------------------------------------------------------
+     Header
+     --------------------------------------------------------- */
+
+  .topbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 12px 14px 10px;
+  }
+
+  .brand h1 {
+    font-size: 15px;
+    line-height: 1.25;
+  }
+
+  .subtitle {
+    margin-top: 4px;
+    font-size: 11.5px;
+    line-height: 1.4;
+  }
+
+  .freshness {
+    width: 100%;
+    align-self: stretch;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 7px 10px;
+  }
+
+  .freshness-label {
+    font-size: 10px;
+  }
+
+  .freshness-value {
+    font-size: 12px;
+  }
+
+  .freshness-meta {
+    font-size: 10.5px;
+  }
+
+
+  /* ---------------------------------------------------------
+     Main navigation
+     --------------------------------------------------------- */
+
+  .main-nav {
+    width: 100%;
+    gap: 0;
+    padding: 0;
+    min-height: 46px;
+  }
+
+  .main-tab,
+  .main-tab-active {
+    flex: 1 1 50%;
+    width: 50%;
+    height: 46px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .main-tab-active::after {
+    left: 8px;
+    right: 8px;
+  }
+
+
+  /* ---------------------------------------------------------
+     Shared touch targets
+     --------------------------------------------------------- */
+
+  .btn,
+  select,
+  input[type="text"],
+  input[type="date"],
+  input[type="time"],
+  .tab {
+    min-height: 42px;
+  }
+
+  select,
+  input[type="text"],
+  input[type="date"],
+  input[type="time"] {
+    font-size: 16px;
+  }
+
+
+  /* ---------------------------------------------------------
+     Check Risk
+     --------------------------------------------------------- */
+
+  .check-risk-view {
+    width: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 18px 14px 36px;
+  }
+
+  .risk-intro {
+    width: 100%;
+    margin: 0 auto 16px;
+  }
+
+  .risk-intro h2 {
+    font-size: 21px;
+  }
+
+  .risk-intro p {
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .risk-form {
+    width: 100%;
+    max-width: none !important;
+
+    display: flex;
+    flex-direction: column;
+
+    gap: 14px;
+
+    margin: 0 0 16px;
+    padding: 17px;
+
+    border-radius: 12px;
+  }
+
+  .risk-form > .risk-location-field,
+  .risk-form > .risk-button {
+    width: 100%;
+  }
+
+  .risk-form .field {
+    width: 100%;
+  }
+
+  .location-input {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+  }
+
+  .location-input input,
+  .location-input .btn {
+    width: 100%;
+  }
+
+  .risk-form .risk-button {
+    width: 100%;
+    min-height: 44px;
+  }
+
+
+  /* ---------------------------------------------------------
+     Selected location map
+     --------------------------------------------------------- */
+
+  .risk-location-section {
+    width: 100%;
+    margin: 0 0 16px;
+    border-radius: 12px;
+  }
+
+  .risk-location-section .section-heading {
+    min-height: 48px;
+    padding: 0 14px;
+  }
+
+  .risk-location-section .section-heading h2 {
+    font-size: 13px;
+  }
+
+  .risk-map {
+    width: 100%;
+    height: 280px;
+    min-height: 240px;
+  }
+
+  .selected-location {
+    min-height: 64px;
+    padding: 11px 14px;
+  }
+
+  .selected-location-info strong {
+    max-width: calc(100vw - 90px);
+    font-size: 12.5px;
+  }
+
+  .selected-location-info span {
+    font-size: 10.5px;
+  }
+
+
+  /* ---------------------------------------------------------
+     Risk result
+     --------------------------------------------------------- */
+
+  .risk-result {
+    width: 100%;
+    margin: 0 0 30px;
+    padding: 18px 16px;
+    border-radius: 12px;
+  }
+
+  .risk-result-header {
+    padding-bottom: 12px;
+  }
+
+  .result-label {
+    font-size: 10px;
+  }
+
+  .risk-multiplier {
+    font-size: 38px;
+  }
+
+  .risk-level {
+    font-size: 13px;
+  }
+
+  .risk-stats {
+    grid-template-columns: 1fr;
+    gap: 0;
+    margin: 18px 0;
+  }
+
+  .risk-stat,
+  .risk-stat:first-child,
+  .risk-stat:last-child {
+    padding: 13px 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--gridline);
+  }
+
+  .risk-stat:first-child {
+    padding-top: 0;
+  }
+
+  .risk-stat:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .risk-stat-label {
+    font-size: 10.5px;
+  }
+
+  .risk-stat strong {
+    font-size: 15px;
+  }
+
+  .risk-explanation {
+    padding: 12px 13px;
+  }
+
+
+  /* ---------------------------------------------------------
+     Explore History header
+     --------------------------------------------------------- */
+
+  .history-view {
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .history-header {
+    padding: 14px 14px 11px;
+  }
+
+  .history-header h2 {
+    font-size: 16px;
+  }
+
+  .history-header p {
+    font-size: 11.5px;
+    line-height: 1.45;
+  }
+
+
+  /* ---------------------------------------------------------
+     History filters
+     --------------------------------------------------------- */
+
+  .filters {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+
+    padding: 12px 14px;
+
+    overflow-y: auto;
+    max-height: 43vh;
+
+    border-bottom: 1px solid var(--border);
+  }
+
+  .filters .field {
+    min-width: 0;
+  }
+
+  .filters .field:first-child,
+  .filters .field:nth-child(2),
+  .filters .field:nth-child(3),
+  .filters .field:nth-child(4),
+  .filters .field:nth-child(5),
+  .filters .field:nth-child(6) {
+    width: 100%;
+  }
+
+  .filters .field-dev,
+  .filters #f-track-field {
+    grid-column: 1 / -1;
+  }
+
+  .filters-spacer {
+    display: none;
+  }
+
+  .filters > .btn {
+    width: 100%;
+  }
+
+  .filters > #btn-locate {
+    grid-column: 1;
+  }
+
+  .filters > #btn-table {
+    grid-column: 2;
+  }
+
+  .field-label {
+    font-size: 10px;
+  }
+
+  .hour-input {
+    width: 100%;
+  }
+
+  .hour-input input[type="time"] {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .tabs {
+    width: 100%;
+  }
+
+  .tab {
+    flex: 1;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+
+
+/* ---------------------------------------------------------
+   History map
+   --------------------------------------------------------- */
+
+  .history-view > .layout {
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-template-rows: 48dvh auto;
+
+    min-height: 0;
+    height: auto;
+    overflow: visible;
+  }
+
+  .map-pane {
+    position: relative;
+    height: 48dvh;
+    min-height: 260px;
+    overflow: hidden;
+  }
+
+  #map {
+    position: absolute;
+    inset: 0;
+  }
+
+  .legend {
+    left: 10px;
+    bottom: 12px;
+    width: min(200px, calc(100% - 20px));
+    padding: 10px 11px;
+  }
+
+  .legend-title {
+    font-size: 11px;
+  }
+
+  .legend-ticks {
+    font-size: 10px;
+  }
+
+
+  /* ---------------------------------------------------------
+     History detail panel
+     --------------------------------------------------------- */
+
+  .detail {
+    height: auto;
+    min-height: 180px;
+    max-height: none;
+
+    border-left: 0;
+    border-top: 1px solid var(--border);
+
+    padding: 14px;
+
+    overflow: visible;
+  }
+
+  .detail-empty h2 {
+    font-size: 15px;
+  }
+
+  .detail-empty p {
+    font-size: 12px;
+  }
+
+  .stat-value {
+    font-size: 34px;
+  }
+
+  .kv {
+    gap: 8px;
+  }
+
+  .kv > div {
+    gap: 10px;
+  }
+
+  .bars {
+    gap: 10px;
+  }
+
+  .bar-row {
+    grid-template-columns: 78px minmax(0, 1fr) auto;
+    gap: 7px;
+  }
+
+  .bar-name,
+  .bar-value {
+    font-size: 11px;
+  }
+
+  .hours {
+    height: 50px;
+    gap: 1px;
+  }
+
+  .mix {
+    min-width: 500px;
+  }
+
+
+  /* ---------------------------------------------------------
+     Table view
+     --------------------------------------------------------- */
+
+  .tableview {
+    height: 78dvh;
+  }
+
+  .tableview-head {
+    padding: 10px 14px;
+  }
+
+  .tableview-scroll {
+    overflow: auto;
+    padding: 0 14px 14px;
+  }
+
+
+  /* ---------------------------------------------------------
+     Methodology dialog
+     --------------------------------------------------------- */
+
+  .sheet {
+    width: calc(100vw - 20px);
+    max-height: 88dvh;
+    padding: 22px 18px 24px;
+    border-radius: 12px;
+  }
+
+  .sheet p,
+  .sheet li {
+    font-size: 12.5px;
+  }
+}
+
+
+/* ---------------------------------------------------------
+   Smaller phones
+   --------------------------------------------------------- */
+
+@media (max-width: 480px) {
+
+  .topbar {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .brand h1 {
+    font-size: 14px;
+  }
+
+  .main-tab,
+  .main-tab-active {
+    font-size: 11.5px;
+  }
+
+  .check-risk-view {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .risk-form {
+    padding: 15px;
+  }
+
+  .risk-map {
+    height: 250px;
+  }
+
+  .history-header {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .filters {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .risk-multiplier {
+    font-size: 35px;
+  }
+
+  .history-view > .layout {
+    grid-template-rows: 42dvh auto;
+  }
+
+  .map-pane {
+    height: 42dvh;
+    min-height: 230px;
+  }
+
+  .detail {
+    padding: 12px;
+  }
 }

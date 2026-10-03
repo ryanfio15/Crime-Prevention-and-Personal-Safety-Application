@@ -946,6 +946,72 @@ GROUP BY GROUPING SETS (
 """
 
 
+
+def refresh_cell_dow_hour_profile(
+    conn: psycopg.Connection, source_id: str, windows: list[Window]
+) -> int:
+    """Rebuild the sparse weekday + hour profile used by Check Risk.
+
+    PostgreSQL DOW is 0=Sunday through 6=Saturday. The selected calendar date
+    is therefore meaningful without claiming that we can predict incidents on
+    that exact date.
+    """
+    written = 0
+    hourly = [w for w in windows if w.name in HOURLY_WINDOWS]
+    sql = """
+    INSERT INTO gold.cell_dow_hour_profile (
+        source_id, h3_index, h3_res, time_window,
+        day_of_week, hour_block, category, incident_count, refreshed_at
+    )
+    SELECT
+        %(source_id)s,
+        {h3_column},
+        %(h3_res)s,
+        %(time_window)s,
+        EXTRACT(DOW FROM occurred_local_date)::smallint,
+        occurred_local_hour,
+        COALESCE(product_category, 'all'),
+        count(*),
+        now()
+    FROM silver.incident
+    WHERE source_id = %(source_id)s
+      AND occurred_local_date BETWEEN %(window_start)s AND %(window_end)s
+      AND occurred_local_hour IS NOT NULL
+    GROUP BY GROUPING SETS (
+        ({h3_column}, EXTRACT(DOW FROM occurred_local_date), occurred_local_hour, product_category),
+        ({h3_column}, EXTRACT(DOW FROM occurred_local_date), occurred_local_hour)
+    )
+    ON CONFLICT (
+        source_id, h3_index, h3_res, time_window,
+        day_of_week, hour_block, category
+    ) DO UPDATE SET
+        incident_count = EXCLUDED.incident_count,
+        refreshed_at = EXCLUDED.refreshed_at
+    """
+
+    with conn.cursor() as cur:
+        for res in HOURLY_RESOLUTIONS:
+            h3_column = _h3_column(res)
+            cur.execute(
+                "DELETE FROM gold.cell_dow_hour_profile WHERE source_id = %s AND h3_res = %s",
+                (source_id, res),
+            )
+            for window in hourly:
+                cur.execute(
+                    sql.format(h3_column=h3_column),
+                    {
+                        "source_id": source_id,
+                        "h3_res": res,
+                        "time_window": window.name,
+                        "window_start": window.start,
+                        "window_end": window.end,
+                    },
+                )
+                written += cur.rowcount
+
+    log.info("cell_dow_hour_profile -> %s rows", written)
+    return written
+
 def refresh_cell_hour_safety(
     conn: psycopg.Connection,
     source_id: str,
@@ -1480,6 +1546,7 @@ def refresh_all(
     hour_rows, hour_profile_rows, hour_share = refresh_hourly_layer(
         conn, source_id, windows
     )
+    dow_hour_profile_rows = refresh_cell_dow_hour_profile(conn, source_id, windows)
     monthly_rows, mix_rows = refresh_cell_detail(conn, source_id, windows)
     refresh_city_snapshot(conn, source_id, pipeline_version, coverage, hour_share)
     conn.commit()
@@ -1493,6 +1560,7 @@ def refresh_all(
         "cell_safety_rows": safety_rows,
         "cell_hour_safety_rows": hour_rows,
         "cell_hour_profile_rows": hour_profile_rows,
+        "cell_dow_hour_profile_rows": dow_hour_profile_rows,
         "severity_weight_coverage": round(coverage, 4) if coverage is not None else None,
         "cell_monthly_rows": monthly_rows,
         "cell_offense_mix_rows": mix_rows,
