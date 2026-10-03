@@ -7,7 +7,11 @@
    function of (lat, lng, resolution) and needs no server round trip at all.
    --------------------------------------------------------------------------- */
 
-const API = "/api/v1";
+const API =
+  window.location.hostname === "localhost" ||
+  window.location.hostname === "127.0.0.1"
+    ? "http://127.0.0.1:8000/api/v1"
+    : "/api/v1";
 const CITY = "phl";
 
 /* A distinct state, not the bottom of the ramp: nothing was reported here. */
@@ -262,7 +266,19 @@ const state = {
   rampDomain: null,
   refreshStamp: null,
   framed: false,
+  cityBounds: null,
 };
+
+const riskState = {
+  latitude: null,
+  longitude: null,
+  h3: null,
+  detail: null,
+  category: "all",
+};
+
+let riskMap = null;
+let riskMarker = null;
 
 const nf = new Intl.NumberFormat("en-US");
 const $ = (id) => document.getElementById(id);
@@ -367,18 +383,33 @@ const CELL_SPAN_M = { 8: 530, 9: 200, 10: 76 };
  */
 function outlineWidthExpression() {
   const span = CELL_SPAN_M[state.res] ?? CELL_SPAN_M[8];
+
   // Web-mercator ground resolution at Philadelphia's latitude is about
-  // 119,940 / 2^zoom metres per pixel, so this is the zoom at which a cell
-  // spans roughly six pixels.
+  // 119,940 / 2^zoom metres per pixel.
   const legible = Math.log2((6 * 119940) / span);
+
   return [
-    "case",
-    ["boolean", ["feature-state", "selected"], false], 2.2,
-    ["boolean", ["feature-state", "hover"], false], 1.6,
-    ["interpolate", ["linear"], ["zoom"], legible - 1, 0, legible, 1.1],
+    "interpolate",
+    ["linear"],
+    ["zoom"],
+
+    legible - 1,
+    [
+      "case",
+      ["boolean", ["feature-state", "selected"], false], 2.2,
+      ["boolean", ["feature-state", "hover"], false], 1.6,
+      0,
+    ],
+
+    legible,
+    [
+      "case",
+      ["boolean", ["feature-state", "selected"], false], 2.2,
+      ["boolean", ["feature-state", "hover"], false], 1.6,
+      1.1,
+    ],
   ];
 }
-
 /* ------------------------------------------------------------------- legend */
 
 /** Tick label for a domain endpoint: as precise as the magnitude deserves. */
@@ -449,6 +480,21 @@ function renderLegend() {
         : `<br>Counts exclude incidents the source published with no clock time.`);
 }
 
+function toggleLegend() {
+  const legend = $("legend");
+  const button = $("legend-toggle");
+
+  if (!legend || !button) return;
+
+  const collapsed = legend.classList.toggle("is-collapsed");
+
+  button.textContent = collapsed ? "Show" : "Hide";
+  button.setAttribute("aria-expanded", String(!collapsed));
+
+  button.title = collapsed
+    ? "Show safety ranking"
+    : "Hide safety ranking";
+}
 /* --------------------------------------------------------------- data fetch */
 
 async function loadLayer({ quiet = false } = {}) {
@@ -508,18 +554,39 @@ async function loadFreshness() {
   if (!response.ok) return;
   const city = await response.json();
 
+  // Keep Check Risk's calendar inside the actual incident coverage.
+  if (city.coverage_start && city.coverage_end) {
+    const dateInput = $("risk-date");
+    dateInput.min = String(city.coverage_start).slice(0, 10);
+    dateInput.max = String(city.coverage_end).slice(0, 10);
+    const current = dateInput.value;
+    if (!current || current < dateInput.min || current > dateInput.max) {
+      dateInput.value = dateInput.max;
+    }
+  }
+
   // Frame the city from its own stored bounding box rather than a hardcoded
   // centre, so a second city needs no client change (design doc S11).
-  if (!state.framed && Number.isFinite(city.bbox_west)) {
-    map.fitBounds(
-      [
-        [city.bbox_west, city.bbox_south],
-        [city.bbox_east, city.bbox_north],
-      ],
-      { padding: { top: 28, bottom: 28, left: 28, right: 28 }, duration: 0 }
-    );
-    state.framed = true;
-  }
+  if (
+    Number.isFinite(city.bbox_west) &&
+    Number.isFinite(city.bbox_south) &&
+    Number.isFinite(city.bbox_east) &&
+    Number.isFinite(city.bbox_north)
+  ) {
+    state.cityBounds = [
+      [city.bbox_west, city.bbox_south],
+      [city.bbox_east, city.bbox_north],
+    ];
+
+    if (!state.framed && map) {
+      map.fitBounds(state.cityBounds, {
+        padding: { top: 28, bottom: 28, left: 28, right: 28 },
+        duration: 0,
+      });
+
+      state.framed = true;
+    }
+}
 
   // Design doc S12(b): "data as of" is a visible, first-class element.
   const asOf = new Date(city.data_as_of);
@@ -594,6 +661,399 @@ async function selectCell(h3) {
   renderOffenseMix(detail.top_offenses);
 }
 
+async function lookupRiskCell(
+  latitude,
+  longitude,
+  hour = null,
+  category = "all",
+  selectedDate = null
+) {
+  const params = new URLSearchParams({
+    lat: String(latitude),
+    lng: String(longitude),
+    res: "8",
+    window: "last_12m",
+    category,
+  });
+  if (selectedDate) params.set("selected_date", selectedDate);
+
+  try {
+    const lookupResponse = await fetch(
+      `${API}/cells/lookup?${params.toString()}`
+    );
+
+    if (!lookupResponse.ok) {
+      throw new Error(`Location lookup failed (${lookupResponse.status})`);
+    }
+
+    const lookup = await lookupResponse.json();
+
+    if (!lookup.in_coverage) {
+      throw new Error(
+        lookup.message || "This location is outside the Philadelphia coverage area."
+      );
+    }
+
+    riskState.latitude = latitude;
+    riskState.longitude = longitude;
+    riskState.h3 = lookup.h3;
+    riskState.category = category;
+
+    if (hour === null || hour === undefined) {
+      riskState.detail = lookup;
+      updateRiskMap(lookup);
+      return lookup;
+    }
+
+    const detailParams = new URLSearchParams({
+      window: "last_12m",
+      hour: String(hour),
+      category,
+    });
+    if (selectedDate) detailParams.set("selected_date", selectedDate);
+
+    const detailResponse = await fetch(
+      `${API}/cells/${lookup.h3}?${detailParams.toString()}`
+    );
+
+    if (!detailResponse.ok) {
+      throw new Error(
+        `Risk detail request failed: ${detailResponse.status}`
+      );
+    }
+
+    const detail = await detailResponse.json();
+    riskState.detail = detail;
+    updateRiskMap(detail);
+    return detail;
+  } catch (error) {
+    console.error(error);
+    throw error;
+  }
+}
+
+async function initializeRiskMap() {
+  if (riskMap) {
+    requestAnimationFrame(() => riskMap.resize());
+    return;
+  }
+
+  const style = await resolveStyle();
+  riskMap = new maplibregl.Map({
+    container: "risk-map",
+    style,
+    center: [-75.1652, 39.9526],
+    zoom: 10.5,
+    attributionControl: true,
+  });
+
+  riskMap.addControl(new maplibregl.NavigationControl(), "top-right");
+
+  riskMap.on("load", () => {
+    if (riskState.detail) updateRiskMap(riskState.detail);
+  });
+
+  $("risk-map-center").onclick = () => {
+    if (!riskMap || riskState.latitude == null || riskState.longitude == null) return;
+    riskMap.flyTo({
+      center: [riskState.longitude, riskState.latitude],
+      zoom: 15,
+      duration: 700,
+    });
+  };
+}
+
+function updateRiskMap(detail) {
+  if (!riskMap || !detail) return;
+
+  const lng = Number(detail?.cell?.lng ?? detail?.lng ?? riskState.longitude);
+  const lat = Number(detail?.cell?.lat ?? detail?.lat ?? riskState.latitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+  riskState.latitude = lat;
+  riskState.longitude = lng;
+
+  if (!riskMarker) {
+    riskMarker = new maplibregl.Marker({ color: "#b42318" })
+      .setLngLat([lng, lat])
+      .addTo(riskMap);
+  } else {
+    riskMarker.setLngLat([lng, lat]);
+  }
+
+  const geometry = detail?.cell?.geometry;
+  if (geometry && riskMap.isStyleLoaded()) {
+    const feature = {
+      type: "Feature",
+      geometry,
+      properties: {},
+    };
+
+    const source = riskMap.getSource("risk-cell");
+    if (source) {
+      source.setData(feature);
+    } else {
+      riskMap.addSource("risk-cell", {
+        type: "geojson",
+        data: feature,
+      });
+      riskMap.addLayer({
+        id: "risk-cell-fill",
+        type: "fill",
+        source: "risk-cell",
+        paint: {
+          "fill-color": "#b42318",
+          "fill-opacity": 0.14,
+        },
+      });
+      riskMap.addLayer({
+        id: "risk-cell-outline",
+        type: "line",
+        source: "risk-cell",
+        paint: {
+          "line-color": "#b42318",
+          "line-width": 2,
+        },
+      });
+    }
+  }
+
+  riskMap.flyTo({ center: [lng, lat], zoom: 14.5, duration: 500 });
+  $("risk-map-center").textContent = `Center: ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+}
+
+async function searchRiskLocation(query) {
+  const trimmed = query.trim();
+  if (trimmed.length < 3) return;
+
+  const params = new URLSearchParams({
+    format: "jsonv2",
+    limit: "1",
+    countrycodes: "us",
+    q: `${trimmed}, Philadelphia, PA`,
+  });
+
+  const response = await fetch(
+    `https://nominatim.openstreetmap.org/search?${params.toString()}`,
+    { headers: { Accept: "application/json" } }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Location search failed: ${response.status}`);
+  }
+
+  const results = await response.json();
+  if (!results.length) {
+    throw new Error("No matching Philadelphia location was found.");
+  }
+
+  const result = results[0];
+  const latitude = Number(result.lat);
+  const longitude = Number(result.lon);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    throw new Error("The location search returned invalid coordinates.");
+  }
+
+  riskState.latitude = latitude;
+  riskState.longitude = longitude;
+  $("risk-location").value = result.display_name;
+  $("selected-address").textContent = result.display_name;
+  $("selected-location").hidden = false;
+  $("selected-coordinates").textContent =
+    `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+
+  await initializeRiskMap();
+  await lookupRiskCell(
+    latitude,
+    longitude,
+    null,
+    $("risk-category").value,
+    $("risk-date").value || null
+  );
+}
+
+function renderRiskResult(detail, hour, selectedDate) {
+  const title = $("risk-result-title");
+  const level = $("risk-level");
+  const cityComparison = $("risk-city-comparison");
+  const percentile = $("risk-percentile");
+  const locationComparison = $("risk-location-comparison");
+
+  const headline = detail?.headline || {};
+  const hourRelative = detail?.hour_relative || {};
+  const selectedDowHour = detail?.selected_dow_hour || null;
+  const selectedDay = detail?.selected_day_of_week || "selected day";
+  const activityTier =
+    headline.activity_tier !== null && headline.activity_tier !== undefined
+      ? TIER_LABELS[headline.activity_tier]
+      : "Reported activity unavailable";
+
+  const activityPercentile = Number(headline.percentile);
+
+  title.textContent = Number.isFinite(activityPercentile)
+    ? `${Math.round(activityPercentile * 100)}th percentile`
+    : "Relative activity unavailable";
+  level.textContent = activityTier;
+
+  if (Number.isFinite(activityPercentile)) {
+    cityComparison.textContent =
+      `This location is at approximately the ${Math.round(
+        activityPercentile * 100
+      )}th percentile for reported activity in Philadelphia.`;
+    percentile.textContent =
+      `${Math.round(activityPercentile * 100)}th percentile`;
+  } else {
+    cityComparison.textContent =
+      "A city comparison is not available for this location.";
+    percentile.textContent = "Unavailable";
+  }
+
+  if (hour !== null && hourRelative?.enough_evidence) {
+    const percent = Number(hourRelative.percent_of_average);
+    const exactDayCount = Number(selectedDowHour?.incident_count);
+    if (Number.isFinite(percent)) {
+      const multiple = percent / 100;
+      const dateText = selectedDate
+        ? new Date(`${selectedDate}T12:00:00`).toLocaleDateString(undefined, {
+            month: "short", day: "numeric", year: "numeric"
+          })
+        : selectedDay;
+      const dayText = Number.isFinite(exactDayCount)
+        ? ` Historical ${selectedDay} data at this hour has ${nf.format(exactDayCount)} reported incident${exactDayCount === 1 ? "" : "s"} in this cell.`
+        : ` No historical ${selectedDay} pattern is available for this cell at this hour.`;
+      locationComparison.textContent =
+        `For ${dateText}, this uses the historical ${selectedDay} pattern: this cell has about ${percent}% of its average hourly reported activity (${multiple.toFixed(1)}× its usual hourly level).${dayText}`;
+    } else {
+      locationComparison.textContent = `The historical ${selectedDay} hourly comparison is unavailable.`;
+    }
+  } else {
+    locationComparison.textContent =
+      `The historical ${selectedDay} hourly comparison is unavailable for this location.`;
+  }
+
+  $("risk-result").hidden = false;
+}
+
+async function checkRisk() {
+  const locationInput = $("risk-location");
+  const dateInput = $("risk-date");
+  const timeInput = $("risk-time");
+  const categoryInput = $("risk-category");
+  const button = $("btn-check-risk");
+
+  const dateValue = dateInput.value;
+  const timeValue = timeInput.value;
+  const category = categoryInput.value || "all";
+
+  if (!riskState.latitude || !riskState.longitude) {
+    alert("Please search for a location or use your current location first.");
+    return;
+  }
+
+  if (!dateValue) {
+    alert("Please select a date.");
+    return;
+  }
+
+  if (!timeValue) {
+    alert("Please select a time.");
+    return;
+  }
+
+  // The date is meaningful: the serving layer maps it to its historical local
+  // day-of-week + hour profile. Exact-date incidents are not predicted.
+  const hour = Number(timeValue.split(":")[0]);
+
+  button.disabled = true;
+  button.textContent = "Checking...";
+
+  try {
+    const detail = await lookupRiskCell(
+      riskState.latitude,
+      riskState.longitude,
+      hour,
+      category,
+      dateValue
+    );
+
+    renderRiskResult(detail, hour, dateValue);
+
+    $("selected-location").hidden = false;
+    $("selected-coordinates").textContent =
+      `${riskState.latitude.toFixed(5)}, ${riskState.longitude.toFixed(5)}`;
+
+    if (!locationInput.value.trim()) {
+      locationInput.value = "Selected location";
+    }
+  } catch (error) {
+    console.error(error);
+
+    $("risk-result").hidden = false;
+    $("risk-result-title").textContent = "Unable to check this location";
+    $("risk-level").textContent = "No result";
+    $("risk-city-comparison").textContent = error.message;
+    $("risk-percentile").textContent = "";
+    $("risk-location-comparison").textContent = "";
+  } finally {
+    button.disabled = false;
+    button.textContent = "Check Risk";
+  }
+}
+
+function locateRisk() {
+  if (!navigator.geolocation) {
+    alert("This browser does not support location services.");
+    return;
+  }
+
+  const button = $("btn-risk-locate");
+  button.disabled = true;
+  button.textContent = "Locating...";
+
+  navigator.geolocation.getCurrentPosition(
+    async (position) => {
+      const { latitude, longitude } = position.coords;
+
+      riskState.latitude = latitude;
+      riskState.longitude = longitude;
+
+      $("selected-location").hidden = false;
+      $("selected-address").textContent = "Current location";
+      $("selected-coordinates").textContent =
+        `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+      $("risk-location").value = "Current location";
+
+      try {
+        await initializeRiskMap();
+        const detail = await lookupRiskCell(
+          latitude,
+          longitude,
+          null,
+          $("risk-category").value,
+          $("risk-date").value || null
+        );
+
+        riskState.h3 = detail.h3;
+        riskState.detail = detail;
+      } catch (error) {
+        console.error(error);
+        $("risk-map-center").textContent =
+          error.message || "Location is outside available coverage.";
+      } finally {
+        button.disabled = false;
+        button.textContent = "Use my location";
+      }
+    },
+    (error) => {
+      console.error(error);
+      alert(
+        "Unable to get your location. Please allow location access or search for a location manually."
+      );
+      button.disabled = false;
+      button.textContent = "Use my location";
+    }
+  );
+}
 /**
  * Short label for a safety percentile, correct at both ends.
  *
@@ -1300,6 +1760,25 @@ function syncSafetyAvailability() {
   return ok;
 }
 
+function wireRiskControls() {
+  $("btn-risk-locate").onclick = locateRisk;
+  $("btn-check-risk").onclick = checkRisk;
+
+  $("risk-location").addEventListener("keydown", async (event) => {
+    if (event.key !== "Enter") return;
+
+    event.preventDefault();
+
+    try {
+      await initializeRiskMap();
+      await searchRiskLocation(event.currentTarget.value);
+    } catch (error) {
+      console.error(error);
+      $("risk-location-note").textContent = error.message;
+    }
+  });
+}
+
 function wireControls() {
   $("f-window").onchange = (e) => {
     state.window = e.target.value;
@@ -1359,6 +1838,7 @@ function wireControls() {
 
   $("btn-locate").onclick = locateMe;
   $("detail-close").onclick = closeDetail;
+  $("legend-toggle").onclick = toggleLegend; 
 
   const tableButton = $("btn-table");
   const toggleTable = (open) => {
@@ -1381,6 +1861,8 @@ function wireControls() {
       selectCell(state.selected);
     }
   });
+
+  $("detail-close").onclick = closeDetail;  
 }
 
 /* Poll the pipeline's own refresh stamp; reload the layer when the ETL runs.
@@ -1403,16 +1885,147 @@ function watchForRefresh() {
   }, 60_000);
 }
 
-(async function main() {
-  await initMap();
-  wireControls();
-  syncHourAvailability();
-  syncSafetyAvailability();
-  // Expose read-only state for debugging and for the smoke-test driver.
-  window.__safetyState = state;
-  await Promise.all([loadFreshness(), loadLayer()]);
+let historyInitialized = false;
+let historyInitializing = null;
 
-  const version = await fetch(`${API}/version`).then((r) => r.json()).catch(() => null);
-  state.refreshStamp = version ? String(version.last_refreshed_at) : null;
-  watchForRefresh();
-})();
+async function initializeHistory() {
+  if (historyInitialized) {
+    requestAnimationFrame(() => {
+      if (!map) return;
+
+      map.resize();
+
+      if (state.cityBounds) {
+        map.fitBounds(state.cityBounds, {
+          padding: { top: 28, bottom: 28, left: 28, right: 28 },
+          duration: 0,
+        });
+      }
+    });
+
+    return;
+  }
+
+  // Prevent multiple clicks from starting initialization twice.
+  if (historyInitializing) {
+    await historyInitializing;
+    return;
+  }
+
+  historyInitializing = (async () => {
+    await initMap();
+
+    wireControls();
+    syncHourAvailability();
+    syncSafetyAvailability();
+
+    window.__safetyState = state;
+
+    await Promise.all([
+      loadFreshness(),
+      loadLayer(),
+    ]);
+
+    const version = await fetch(`${API}/version`)
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+
+    state.refreshStamp = version
+      ? String(version.last_refreshed_at)
+      : null;
+
+    watchForRefresh();
+
+    historyInitialized = true;
+
+    requestAnimationFrame(() => {
+      if (!map) return;
+
+      map.resize();
+
+      if (state.cityBounds) {
+        map.fitBounds(state.cityBounds, {
+          padding: { top: 28, bottom: 28, left: 28, right: 28 },
+          duration: 0,
+        });
+      }
+    });
+  })();
+
+  try {
+    await historyInitializing;
+  } finally {
+    historyInitializing = null;
+  }
+}
+
+const riskTab = $("nav-risk");
+const historyTab = $("nav-history");
+
+const riskView = $("check-risk-view");
+const historyView = $("history-view");
+
+function updateTabState(activeTab) {
+  const isRisk = activeTab === "risk";
+
+  riskView.hidden = !isRisk;
+  historyView.hidden = isRisk;
+
+  riskTab.classList.toggle("main-tab-active", isRisk);
+  historyTab.classList.toggle("main-tab-active", !isRisk);
+
+  riskTab.setAttribute("aria-selected", String(isRisk));
+  historyTab.setAttribute("aria-selected", String(!isRisk));
+
+  riskTab.setAttribute("tabindex", isRisk ? "0" : "-1");
+  historyTab.setAttribute("tabindex", isRisk ? "-1" : "0");
+}
+
+async function showRiskView() {
+  updateTabState("risk");
+
+  try {
+    await loadFreshness();
+  } catch (error) {
+    console.error("Unable to load freshness:", error);
+  }
+
+  await initializeRiskMap();
+
+  requestAnimationFrame(() => {
+    if (riskMap) riskMap.resize();
+  });
+}
+async function showHistoryView() {
+  updateTabState("history");
+
+  await initializeHistory();
+
+  requestAnimationFrame(() => {
+    if (!map) return;
+
+    map.resize();
+
+    if (state.cityBounds) {
+      map.fitBounds(state.cityBounds, {
+        padding: { top: 28, bottom: 28, left: 28, right: 28 },
+        duration: 0,
+      });
+    }
+  });
+}
+
+wireRiskControls();
+
+riskTab.addEventListener("click", showRiskView);
+historyTab.addEventListener("click", showHistoryView);
+
+// Keep the current local hour as the initial time.
+const initialRiskTime = new Date();
+$("risk-time").value =
+  `${String(initialRiskTime.getHours()).padStart(2, "0")}:00`;
+showRiskView();// Start on Check Risk.
+// The history map is NOT initialized until the user opens Explore History.
+updateTabState("risk");
+
+showRiskView();

@@ -11,6 +11,7 @@ Two rules hold throughout this module:
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import psycopg
@@ -106,7 +107,11 @@ MIN_HOUR_EVIDENCE = 12
 HOUR_BLOCKS = 24
 
 
-def hour_relative(by_hour: list[dict[str, Any]], hour: int | None) -> dict[str, Any] | None:
+def hour_relative(
+    by_hour: list[dict[str, Any]],
+    hour: int | None,
+    category: str = "all",
+) -> dict[str, Any] | None:
     """This cell's incidents at one hour against its own average hour.
 
     A percentage where 100% is an ordinary hour *for this cell*: 250% is two and
@@ -122,7 +127,7 @@ def hour_relative(by_hour: list[dict[str, Any]], hour: int | None) -> dict[str, 
 
     counts = [0] * HOUR_BLOCKS
     for row in by_hour:
-        if row["category"] == "all":
+        if row["category"] == category:
             counts[row["hour_block"]] = row["incident_count"]
     total = sum(counts)
 
@@ -566,7 +571,12 @@ def cell_detail(
     h3_index: str,
     time_window: str,
     hour: int | None = None,
+    category: str = "all",
+    selected_date: date | None = None,
 ) -> dict[str, Any] | None:
+    if category not in VALID_CATEGORIES:
+        raise ValueError(f"invalid category: {category}")
+
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -658,6 +668,24 @@ def cell_detail(
         )
         by_hour = cur.fetchall()
 
+        dow_hour_profile: list[dict[str, Any]] = []
+        if selected_date is not None and hour is not None:
+            # PostgreSQL DOW: 0=Sunday ... 6=Saturday.
+            postgres_dow = (selected_date.weekday() + 1) % 7
+            cur.execute(
+                """
+                SELECT day_of_week, hour_block, category, incident_count
+                FROM gold.cell_dow_hour_profile
+                WHERE h3_index = %s
+                  AND time_window = %s
+                  AND day_of_week = %s
+                  AND hour_block = %s
+                ORDER BY category
+                """,
+                (h3_index, time_window, postgres_dow, hour),
+            )
+            dow_hour_profile = cur.fetchall()
+
         hour_safety: list[dict[str, Any]] = []
         if hour is not None:
             cur.execute(
@@ -676,12 +704,14 @@ def cell_detail(
             )
             hour_safety = cur.fetchall()
 
-    headline = next((row for row in activity if row["category"] == "all"), None)
+    headline = next((row for row in activity if row["category"] == category), None)
     return {
         "cell": cell,
         "exposure": _exposure_payload(exposure),
         "time_window": time_window,
         "window_label": WINDOW_LABELS.get(time_window, time_window),
+        "category": category,
+        "category_label": CATEGORY_LABELS.get(category, category),
         "headline": headline,
         "tier_label": TIER_LABELS.get(headline["activity_tier"]) if headline else None,
         "by_category": [row for row in activity if row["category"] != "all"],
@@ -695,10 +725,16 @@ def cell_detail(
             }
             for row in safety
         ],
+        "selected_date": selected_date.isoformat() if selected_date else None,
+        "selected_day_of_week": selected_date.strftime("%A") if selected_date else None,
         "hour": hour,
         "hour_label": hour_label(hour) if hour is not None else None,
         "by_hour": by_hour,
-        "hour_relative": hour_relative(by_hour, hour),
+        "hour_relative": hour_relative(by_hour, hour, category),
+        "selected_dow_hour": next(
+            (row for row in dow_hour_profile if row["category"] == category),
+            None,
+        ),
         "hour_safety": [
             {
                 **row,

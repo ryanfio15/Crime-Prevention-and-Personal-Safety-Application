@@ -15,10 +15,12 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -67,6 +69,17 @@ app = FastAPI(
     docs_url="/docs" if settings.enable_docs else None,
     redoc_url="/redoc" if settings.enable_docs else None,
     openapi_url="/openapi.json" if settings.enable_docs else None,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5500",
+        "http://localhost:5500",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 API = "/api/v1"
@@ -233,6 +246,29 @@ def _require_safety_res(res: int) -> None:
         )
 
 
+def _validate_selected_date(conn: Conn, selected_date: date | None, source_id: str) -> None:
+    if selected_date is None:
+        return
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT coverage_start, coverage_end
+            FROM gold.city_snapshot
+            WHERE source_id = %s
+            """,
+            (source_id,),
+        )
+        row = cur.fetchone()
+    if row is None or row["coverage_start"] is None or row["coverage_end"] is None:
+        raise HTTPException(503, "Date coverage is not available yet.")
+    if selected_date < row["coverage_start"] or selected_date > row["coverage_end"]:
+        raise HTTPException(
+            400,
+            f"Selected date must be between {row['coverage_start']} and "
+            f"{row['coverage_end']} for the available Philadelphia data.",
+        )
+
+
 def _validate_hour(hour: int | None, res: int, window: str) -> None:
     """Reject an hour the pipeline does not build, with the reason.
 
@@ -369,6 +405,8 @@ def cells_lookup(
     lng: float = Query(..., ge=-180, le=180),
     res: int = 8,
     window: str = "last_12m",
+    category: str = "all",
+    selected_date: date | None = Query(None),
 ) -> dict[str, Any]:
     """Resolve a coordinate to its cell and return that cell's rollup.
 
@@ -376,9 +414,13 @@ def cells_lookup(
     round trip; this endpoint exists for the geocoded-address path, where the
     lookup is already happening server-side.
     """
-    _validate_layer(res, window, "all")
+    _validate_layer(res, window, category)
+    _validate_selected_date(conn, selected_date, "phl")
     cell = cells_for_point(lat, lng)[res]
-    detail = repo.cell_detail(conn, h3_index=cell, time_window=window)
+    detail = repo.cell_detail(
+        conn, h3_index=cell, time_window=window, category=category,
+        selected_date=selected_date,
+    )
     if detail is None:
         return {
             "h3": cell,
@@ -394,15 +436,23 @@ def cell(
     h3_index: str,
     window: str = "last_12m",
     hour: int | None = Query(None, ge=0, le=23),
+    category: str = "all",
+    selected_date: date | None = Query(None),
 ) -> dict[str, Any]:
     if not is_valid_cell(h3_index):
         raise HTTPException(400, f"'{h3_index}' is not a valid H3 index")
+    if category not in repo.VALID_CATEGORIES:
+        raise HTTPException(400, f"category must be one of {list(repo.VALID_CATEGORIES)}")
     if window not in repo.VALID_WINDOWS:
         raise HTTPException(400, f"window must be one of {list(repo.VALID_WINDOWS)}")
     _validate_hour(hour, cell_resolution(h3_index), window)
+    # The cell's source is checked from the geometry row inside the repository;
+    # for Phase 1 the served source is Philadelphia.
+    _validate_selected_date(conn, selected_date, "phl")
 
     detail = repo.cell_detail(
-        conn, h3_index=h3_index, time_window=window, hour=hour
+        conn, h3_index=h3_index, time_window=window, hour=hour, category=category,
+        selected_date=selected_date,
     )
     if detail is None:
         raise HTTPException(404, f"cell '{h3_index}' is not in the covered area")

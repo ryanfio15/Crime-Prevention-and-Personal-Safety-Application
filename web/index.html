@@ -26,219 +26,589 @@
   </div>
 </header>
 
-<!-- One filter row above everything it scopes; every view re-renders off the same slice. -->
-<div class="filters" role="group" aria-label="Map filters">
-  <label class="field">
-    <span class="field-label">Time window</span>
-    <select id="f-window">
-      <option value="last_30d">Last 30 days</option>
-      <option value="last_90d">Last 90 days</option>
-      <option value="last_12m" selected>Last 12 months</option>
-      <option value="last_24m">Last 24 months</option>
-    </select>
-  </label>
 
-  <label class="field">
-    <span class="field-label">Offense category</span>
-    <select id="f-category">
-      <option value="all" selected>All reported incidents</option>
-      <option value="violent">Violent</option>
-      <option value="property">Property</option>
-      <option value="quality_of_life">Quality of life</option>
-      <option value="other">Other</option>
-    </select>
-  </label>
+<!---Main Navigation-->
 
-  <label class="field">
-    <span class="field-label">Cell size</span>
-    <select id="f-res">
-      <option value="8" selected>~500 m (H3 res 8)</option>
-      <option value="9">~175 m (H3 res 9)</option>
-      <option value="10">~75 m (H3 res 10)</option>
-    </select>
-  </label>
+<nav
+  class = "main-nav"
+  aria-label="Main Navigation">
 
-  <!-- Development control. In production the hour comes from the user's own
-       clock; typing one by hand is how the time-of-day layer gets exercised
-       until then, and how any hour other than "now" can be inspected at all. -->
-  <div class="field field-dev" id="f-hour-field">
-    <span class="field-label" id="f-hour-label">Time of day <b class="dev-tag">dev</b></span>
-    <div class="hour-input">
-      <input type="time" id="f-hour" step="3600" aria-labelledby="f-hour-label">
-      <button type="button" class="linkish" id="f-hour-clear">All hours</button>
-    </div>
-    <span class="field-note" id="f-hour-note">All hours</span>
-  </div>
+  <button
+    type = "button"
+    class="main-tab main-tab-active"
+    id="nav-risk"
+    aria-selected="true"
+    aria-controls="check-risk-view"
+  >
+    Check Risk
+  </button>
 
-  <div class="field">
-    <span class="field-label">Colour by</span>
-    <select id="f-scale">
-      <option value="safety" selected>Safety ranking</option>
-      <option value="count">Incident count</option>
-    </select>
-    <!-- Filled by syncSafetyAvailability when the ranking is not built at the
-         selected cell size, so the disabled option explains itself. -->
-    <span class="field-note" id="f-scale-note"></span>
-  </div>
+  <button
+    type="button"
+    class="main-tab"
+    id="nav-history"
+    aria-selected="false"
+    aria-controls="history-view"
+  >
+    Explore History
+  </button>
+</nav>
 
-  <!-- Only meaningful while the safety ranking is on screen. That is the
-       opening view, so it starts visible and hides if the scale changes. -->
-  <div class="field" id="f-track-field">
-    <span class="field-label" id="f-track-label">Offences ranked</span>
-    <div class="tabs" role="tablist" aria-labelledby="f-track-label" id="f-track">
-      <button type="button" class="tab" role="tab" data-track="violent"
-              aria-selected="true">Violent</button>
-      <button type="button" class="tab" role="tab" data-track="non_violent"
-              aria-selected="false">Non-violent</button>
-    </div>
-  </div>
 
-  <div class="filters-spacer"></div>
+<!--Check Risk View-->
 
-  <button type="button" id="btn-locate" class="btn">Use my location</button>
-  <button type="button" id="btn-table" class="btn" aria-pressed="false">Table view</button>
-</div>
+<main
+  id="check-risk-view"
+  class="check-risk-view">
 
-<main class="layout">
-  <section class="map-pane">
-    <div id="map" role="application" aria-label="Map of Philadelphia with hexagonal cells shaded by reported incident count"></div>
+  <section class="risk-intro">
+    <h2>Check Risk</h2>
 
-    <div class="legend" id="legend" aria-hidden="true">
-      <div class="legend-title" id="legend-title">Reported incidents per cell</div>
-      <div class="legend-ramp" id="legend-ramp"></div>
-      <div class="legend-ticks" id="legend-ticks"></div>
-      <div class="legend-foot" id="legend-foot"></div>
-    </div>
-
-    <div class="map-tooltip" id="tooltip" hidden></div>
-
-    <div class="loading" id="loading" hidden>Loading&hellip;</div>
+    <p>
+      Check relative reported crime activity for a location, 
+      date, and time.
+    </p>
   </section>
 
-  <!-- Detail panel: opens on cell click. -->
-  <aside class="detail" id="detail" aria-live="polite">
-    <div class="detail-empty" id="detail-empty">
-      <h2>Select a cell</h2>
-      <p>
-        Click any hexagon to see what was reported inside it &mdash; the count,
-        where it sits relative to the rest of the city, the month-by-month
-        trend, and the offence types behind the number.
-      </p>
-      <p class="caution">
-        These are <strong>reported</strong> incidents, not a measure of how safe a
-        place is, and not a prediction.
-      </p>
-    </div>
+  <!--Risk Search-->
+  <section
+    class="risk-form"
+    aria-labelledby="risk-form-title">
 
-    <div class="detail-body" id="detail-body" hidden>
-      <button type="button" class="detail-close" id="detail-close" aria-label="Close cell detail">&times;</button>
+    <h2 
+      id="risk-form-title"
+      class="visually-hidden">
+      Crime Risk Search
+    </h2>
 
-      <div class="stat">
-        <div class="stat-value" id="d-count">&mdash;</div>
-        <div class="stat-label" id="d-count-label">reported incidents</div>
+
+    <!--Location-->
+    <div class="field risk-location-field">
+      <label 
+        class="field-label" 
+        for="risk-location">
+        Where are you going?
+      </label>
+      
+      <div class="location-input">
+        <input 
+          type="text"
+          id="risk-location"
+          name="risk-location"
+          placeholder="Search for a location..."
+          autocomplete="street-address"
+          >
+
+          <button
+            type="button"
+            id="btn-risk-locate"
+            class="btn"
+          >
+            Use my location
+          </button>
       </div>
 
-      <dl class="kv">
-        <div><dt id="d-hourshare-label">At this hour</dt><dd id="d-hourshare">&mdash;</dd></div>
-        <div><dt>City rank</dt><dd id="d-rank">&mdash;</dd></div>
-        <div><dt>Density</dt><dd id="d-density">&mdash;</dd></div>
-        <!-- The denominator the safety ranking divided by, stated rather than
-             left implicit: a cell's standing depends on it as much as on the
-             incidents. -->
-        <div><dt>People here</dt><dd id="d-exposure">&mdash;</dd></div>
-        <div><dt>This cell + neighbours</dt><dd id="d-neighbours">&mdash;</dd></div>
-        <div><dt>H3 cell</dt><dd id="d-h3" class="mono">&mdash;</dd></div>
-      </dl>
+      <span
+        class="field-note"
+        id="risk-location-note">
+        Search for a place you plan to visit or 
+        use your current location.
+      </span>
 
-      <section class="chart-block">
-        <h3>Safety ranking</h3>
-        <dl class="kv" id="d-safety">
-          <div><dt>Violent</dt><dd id="d-safety-violent">&mdash;</dd></div>
-          <div><dt>Non-violent</dt><dd id="d-safety-nonviolent">&mdash;</dd></div>
-        </dl>
-        <p class="bar-empty" id="d-safety-note">
-          Percentile against every other cell in the city, weighted by offence
-          severity. Higher is safer.
-        </p>
-      </section>
-
-      <section class="chart-block" id="d-hour-block" hidden>
-        <h3 id="d-hour-title">Time of day</h3>
-        <dl class="kv">
-          <div><dt>Safety at this hour</dt><dd id="d-hour-safety">&mdash;</dd></div>
-          <div><dt>Change from usual</dt><dd id="d-hour-delta">&mdash;</dd></div>
-        </dl>
-        <!-- The whole day, so the selected block is read against the rest of it
-             rather than as a bare number. -->
-        <div class="hours" id="d-hours" role="img" aria-labelledby="d-hour-title"></div>
-        <div class="hours-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
-        <p class="bar-empty" id="d-hour-note"></p>
-      </section>
-
-      <section class="chart-block">
-        <h3 id="d-cat-title">Reported incidents by category</h3>
-        <div class="bars" id="d-categories"></div>
-      </section>
-
-      <section class="chart-block">
-        <h3 id="d-trend-title">Monthly trend</h3>
-        <div class="spark-wrap">
-          <svg id="d-spark" class="spark" role="img" aria-labelledby="d-trend-title"></svg>
-          <div class="spark-axis"><span id="d-spark-from"></span><span id="d-spark-to"></span></div>
-          <div class="spark-readout" id="d-spark-readout"></div>
-        </div>
-      </section>
-
-      <section class="chart-block">
-        <h3>Most reported offence types</h3>
-        <table class="mix" id="d-offenses">
-          <thead>
-            <tr><th scope="col">Offence, as reported by PPD</th><th scope="col">NIBRS</th><th scope="col" class="num">Count</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </section>
     </div>
-  </aside>
+
+    <!--Date-->
+    <div class="field">
+      <label 
+        class="field-label"
+        for="risk-date">
+          Date
+      </label>
+
+      <input 
+        type="date"
+        id="risk-date"
+        name="risk-date"
+        >
+    </div>
+
+    <!--Time-->
+    <div class="field">
+      <label 
+        class="field-label"
+        for="risk-time">
+          Time
+      </label>
+
+      <input 
+        type="time"
+        id="risk-time"
+        name="risk-time"
+        step="900"
+        >
+    </div>
+
+    <!--Crime Category-->
+    <div class="field">
+      <label 
+        class="field-label"
+        for="risk-category">
+        Crime category
+        <span
+          class="optional-label">
+          Optional        
+        </span>
+      </label>
+
+      <select 
+        name="risk-category" 
+        id="risk-category">
+
+        <option 
+          value="all" selected>
+          All reported incidents
+        </option>
+
+        <option value="violent">
+          Violent
+        </option>
+
+        <option value="property">
+          Property
+        </option>
+
+        <option value="quality_of_life">
+          Quality of Life
+        </option>
+
+        <option value="other">
+          Other
+        </option>
+      </select>
+    </div>
+
+    <!--Check Risk Button-->
+    <button
+      type="button"
+      id="btn-check-risk"
+      class="btn primary risk-button"
+    >
+      Check risk
+    </button>
+  </section>
+
+  <!-----------------
+    Location Map
+
+    This map intentionally simplier than the historcial H3 map.
+    It is for selecting/understanding the requested location.
+  ------------------->
+
+
+  <section
+    class="risk-location-section"
+    aria-labelledby="risk-location-title">
+    <div class="section-heading">
+      <h2 id="risk-location-title">
+        Selected Location
+      </h2>
+
+      <button
+        type="button"
+        class="linkish"
+        id="risk-map-center"
+      >
+        Center Map
+      </button>
+    </div>
+
+    <div 
+      id="risk-map"
+      class="risk-map"
+      role="application"
+      aria-label="Map showing the selected location">    
+    </div>
+
+    <div 
+      class="selected-location"
+      id="selected-location"
+    >
+      <div class="selected-location-icon">
+        📍
+      </div>
+
+      <div class="selected-location-info">
+        <strong id="selected-address">
+          No location selected
+        </strong>
+
+        <span id="selected-coordinates">
+          Search for a location or use your current location.
+        </span>
+      </div>
+
+    </div>
+  </section>
+
+  <!--
+    Risk Result
+  -->
+
+  <section 
+    class="risk-result"
+    id="risk-result"
+    aria-labelledby="risk-result-header">
+
+    <div class="risk-result-header">
+
+      <span class="result-label">
+          Estimated Relative Crime Risk
+      </span>
+
+      <h2
+        id="risk-result-title"
+        class="risk-multiplier">
+        &mdash;
+      </h2>
+
+      <div 
+        class="risk-level"
+        id="risk-level">
+
+        No result yet
+      </div>
+    </div>
+
+    <!--Comparison Info-->
+    <div class="risk-stats">
+      <div class="risk-stat">
+        <span class="risk-stat-label">
+          Compared with Philadelphia average
+        </span>
+
+        <strong id="risk-city-comparison">
+         &mdash;
+        </strong>
+      </div>
+
+      <div class="risk-stat">
+        <span class="risk-stat-label">
+          Percentile
+        </span>
+
+        <strong id="risk-percentile">
+          &mdash;
+        </strong>        
+      </div>
+
+      <div class="risk-stat">
+        <span class="risk-stat-label">
+          Compared with this location's usual level
+        </span>
+
+        <strong id="risk-location-comparison">
+          &mdash;
+        </strong>        
+      </div>
+    </div>
+
+    <!--Important Disclaimer-->
+    <div class="risk-explanation">
+      <p>
+        Select a location, date, and time to see a
+        relative reported-activity result.
+      </p>
+
+      <p class="caution">
+        Reported activity is based on historical reported 
+        crime patterns. It does not predict that a crime will 
+        occur and does not describe the safety of
+        an individual person.
+      </p>
+    </div>
+  </section>
 </main>
 
-<!-- Table view: the WCAG-clean twin of the map. Colour is never the only channel. -->
-<section class="tableview" id="tableview" hidden>
-  <div class="tableview-head">
-    <h2 id="table-caption">Cells by reported incident count</h2>
-    <button type="button" class="btn" id="table-close">Close</button>
-  </div>
-  <div class="tableview-scroll">
-    <table class="data" id="table-data">
-      <thead>
-        <tr>
-          <th scope="col" class="num">#</th>
-          <th scope="col">H3 cell</th>
-          <th scope="col" class="num">Incidents</th>
-          <th scope="col" class="num">Per km&sup2;</th>
-          <th scope="col" class="num">Percentile</th>
-          <th scope="col">Relative activity</th>
-          <!-- The deepest step of the safety ramp sits under 3:1 against the
-               map surface, so these two columns are its required relief: the
-               value is always readable without relying on colour. -->
-          <th scope="col" class="num">Safety (violent)</th>
-          <th scope="col" class="num">Safety (non-violent)</th>
-          <!-- Both time-of-day ratings in text, for the same reason the two
-               columns above exist: the ramp must never be the only channel. -->
-          <th scope="col" class="num" id="th-hour-safety">At hour</th>
-          <th scope="col" class="num" id="th-hour-delta">Change</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </div>
-</section>
 
-<!-- Methodology & attribution: design doc S12 makes these first-class, not a footnote. -->
-<dialog id="methodology" class="sheet">
-  <button type="button" class="sheet-close" data-close-methodology aria-label="Close">&times;</button>
-  <div id="methodology-body">Loading&hellip;</div>
-</dialog>
+<!--Explore History View-->
+
+<section
+  id="history-view"
+  class="history-view"
+  hidden>
+
+  <!--History Header-->
+
+  <div class="history-header">
+    <h2>Explore Reported Crime History</h2>
+
+    <p>
+      Explore historical crime incidents reported to
+      Philadelphia police using the map, filters, and
+      cell details below.
+    </p>
+
+    <p class="caution">
+      Historical reported incidents are different
+      from estimated future crime risk.
+
+    </p>
+  </div>
+
+  <!-- One filter row above everything it scopes; every view re-renders off the same slice. -->
+  <div 
+    class="filters" 
+    role="group" 
+    aria-label="Map filters">
+    
+    <label class="field">
+      <span class="field-label">
+        Time window
+      </span>
+      
+      <select id="f-window">
+        <option value="last_30d">Last 30 days</option>
+        <option value="last_90d">Last 90 days</option>
+        <option value="last_12m" selected>Last 12 months</option>
+        <option value="last_24m">Last 24 months</option>
+      </select>
+    </label>
+
+    <label class="field">
+      <span 
+        class="field-label">
+        Offense category
+      </span>
+      
+      <select id="f-category">
+        <option value="all" selected>All reported incidents</option>
+        <option value="violent">Violent</option>
+        <option value="property">Property</option>
+        <option value="quality_of_life">Quality of life</option>
+        <option value="other">Other</option>
+      </select>
+    </label>
+
+
+    <!---Cell Size--->
+
+    <label class="field">
+      <span 
+        class="field-label">
+          Cell size
+        </span>
+      
+        <select id="f-res">
+        <option value="8" selected>~500 m (H3 res 8)</option>
+        <option value="9">~175 m (H3 res 9)</option>
+        <option value="10">~75 m (H3 res 10)</option>
+      </select>
+    </label>
+
+
+    <!-- Development control. In production the hour comes from the user's own
+        clock; typing one by hand is how the time-of-day layer gets exercised
+        until then, and how any hour other than "now" can be inspected at all. -->
+    <div class="field field-dev" id="f-hour-field">
+      <span 
+        class="field-label" 
+        id="f-hour-label">
+        Time of day <b class="dev-tag">dev</b>
+      </span>
+      
+      <div class="hour-input">
+        <input type="time" id="f-hour" step="3600" aria-labelledby="f-hour-label">
+        <button type="button" class="linkish" id="f-hour-clear">All hours</button>
+      </div>
+      <span class="field-note" id="f-hour-note">All hours</span>
+    </div>
+
+    <div class="field">
+      <span class="field-label">Colour by</span>
+      <select id="f-scale">
+        <option value="safety" selected>Safety ranking</option>
+        <option value="count">Incident count</option>
+      </select>
+      <!-- Filled by syncSafetyAvailability when the ranking is not built at the
+          selected cell size, so the disabled option explains itself. -->
+      <span class="field-note" id="f-scale-note"></span>
+    </div>
+
+    <!-- Only meaningful while the safety ranking is on screen. That is the
+        opening view, so it starts visible and hides if the scale changes. -->
+    <div class="field" id="f-track-field">
+      <span class="field-label" id="f-track-label">Offences ranked</span>
+      <div class="tabs" role="tablist" aria-labelledby="f-track-label" id="f-track">
+        <button type="button" class="tab" role="tab" data-track="violent"
+                aria-selected="true">Violent</button>
+        <button type="button" class="tab" role="tab" data-track="non_violent"
+                aria-selected="false">Non-violent</button>
+      </div>
+    </div>
+
+    <div class="filters-spacer"></div>
+
+    <button type="button" id="btn-locate" class="btn">Use my location</button>
+    <button type="button" id="btn-table" class="btn" aria-pressed="false">Table view</button>
+  </div>
+
+  <main class="layout">
+    <section class="map-pane">
+      <div id="map" role="application" aria-label="Map of Philadelphia with hexagonal cells shaded by reported incident count"></div>
+ 
+      <div class="legend" id="legend" aria-hidden="true">
+        <div class="legend-header">
+          <div class="legend-title" id="legend-title">Reported incidents per cell</div>
+
+          <button
+            type="button"
+            class="legend-toggle"
+            id="legend-toggle"
+            aria-expanded="true"
+            aria-controls="legend-content"
+            title="Hide safety ranking"
+          >
+            Hide
+          </button>
+        </div>
+
+        <div class="legend-content" id="legend-content">
+          <div class="legend-ramp" id="legend-ramp"></div>
+          <div class="legend-ticks" id="legend-ticks"></div>
+          <div class="legend-foot" id="legend-foot"></div>
+        </div>
+      </div>
+   
+      <div class="map-tooltip" id="tooltip" hidden></div>
+
+      <div class="loading" id="loading" hidden>Loading&hellip;</div>
+    </section>
+
+    <!-- Detail panel: opens on cell click. -->
+    <aside class="detail" id="detail" aria-live="polite">
+      <div class="detail-empty" id="detail-empty">
+        <h2>Select a cell</h2>
+        <p>
+          Click any hexagon to see what was reported inside it &mdash; the count,
+          where it sits relative to the rest of the city, the month-by-month
+          trend, and the offence types behind the number.
+        </p>
+        <p class="caution">
+          These are <strong>reported</strong> incidents, not a measure of how safe a
+          place is, and not a prediction.
+        </p>
+      </div>
+
+      <div class="detail-body" id="detail-body" hidden>
+        <button type="button" class="detail-close" id="detail-close" aria-label="Close cell detail">&times;</button>
+
+        <div class="stat">
+          <div class="stat-value" id="d-count">&mdash;</div>
+          <div class="stat-label" id="d-count-label">reported incidents</div>
+        </div>
+
+        <dl class="kv">
+          <div><dt id="d-hourshare-label">At this hour</dt><dd id="d-hourshare">&mdash;</dd></div>
+          <div><dt>City rank</dt><dd id="d-rank">&mdash;</dd></div>
+          <div><dt>Density</dt><dd id="d-density">&mdash;</dd></div>
+          <!-- The denominator the safety ranking divided by, stated rather than
+              left implicit: a cell's standing depends on it as much as on the
+              incidents. -->
+          <div><dt>People here</dt><dd id="d-exposure">&mdash;</dd></div>
+          <div><dt>This cell + neighbours</dt><dd id="d-neighbours">&mdash;</dd></div>
+          <div><dt>H3 cell</dt><dd id="d-h3" class="mono">&mdash;</dd></div>
+        </dl>
+
+        <section class="chart-block">
+          <h3>Safety ranking</h3>
+          <dl class="kv" id="d-safety">
+            <div><dt>Violent</dt><dd id="d-safety-violent">&mdash;</dd></div>
+            <div><dt>Non-violent</dt><dd id="d-safety-nonviolent">&mdash;</dd></div>
+          </dl>
+          <p class="bar-empty" id="d-safety-note">
+            Percentile against every other cell in the city, weighted by offence
+            severity. Higher is safer.
+          </p>
+        </section>
+
+        <section class="chart-block" id="d-hour-block" hidden>
+          <h3 id="d-hour-title">Time of day</h3>
+          <dl class="kv">
+            <div><dt>Safety at this hour</dt><dd id="d-hour-safety">&mdash;</dd></div>
+            <div><dt>Change from usual</dt><dd id="d-hour-delta">&mdash;</dd></div>
+          </dl>
+          <!-- The whole day, so the selected block is read against the rest of it
+              rather than as a bare number. -->
+          <div class="hours" id="d-hours" role="img" aria-labelledby="d-hour-title"></div>
+          <div class="hours-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
+          <p class="bar-empty" id="d-hour-note"></p>
+        </section>
+
+        <section class="chart-block">
+          <h3 id="d-cat-title">Reported incidents by category</h3>
+          <div class="bars" id="d-categories"></div>
+        </section>
+
+        <section class="chart-block">
+          <h3 id="d-trend-title">Monthly trend</h3>
+          <div class="spark-wrap">
+            <svg id="d-spark" class="spark" role="img" aria-labelledby="d-trend-title"></svg>
+            <div class="spark-axis"><span id="d-spark-from"></span><span id="d-spark-to"></span></div>
+            <div class="spark-readout" id="d-spark-readout"></div>
+          </div>
+        </section>
+
+        <section class="chart-block">
+          <h3>Most reported offence types</h3>
+          <table class="mix" id="d-offenses">
+            <thead>
+              <tr><th scope="col">Offence, as reported by PPD</th><th scope="col">NIBRS</th><th scope="col" class="num">Count</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </section>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Table view: the WCAG-clean twin of the map. Colour is never the only channel. -->
+  <section class="tableview" id="tableview" hidden>
+    <div class="tableview-head">
+      <h2 id="table-caption">Cells by reported incident count</h2>
+      <button type="button" class="btn" id="table-close">Close</button>
+    </div>
+    <div class="tableview-scroll">
+      <table class="data" id="table-data">
+        <thead>
+          <tr>
+            <th scope="col" class="num">#</th>
+            <th scope="col">H3 cell</th>
+            <th scope="col" class="num">Incidents</th>
+            <th scope="col" class="num">Per km&sup2;</th>
+            <th scope="col" class="num">Percentile</th>
+            <th scope="col">Relative activity</th>
+            <!-- The deepest step of the safety ramp sits under 3:1 against the
+                map surface, so these two columns are its required relief: the
+                value is always readable without relying on colour. -->
+            <th scope="col" class="num">Safety (violent)</th>
+            <th scope="col" class="num">Safety (non-violent)</th>
+            <!-- Both time-of-day ratings in text, for the same reason the two
+                columns above exist: the ramp must never be the only channel. -->
+            <th scope="col" class="num" id="th-hour-safety">At hour</th>
+            <th scope="col" class="num" id="th-hour-delta">Change</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Methodology & attribution: design doc S12 makes these first-class, not a footnote. -->
+  <dialog id="methodology" class="sheet">
+    <button type="button" class="sheet-close" data-close-methodology aria-label="Close">&times;</button>
+    <div id="methodology-body">Loading&hellip;</div>
+  </dialog>  
+</section>
 
 <script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/h3-js@4.2.1/dist/h3-js.umd.js"></script>
