@@ -54,9 +54,29 @@ class Settings(BaseSettings):
     # reachable it is the control doing the real work.
     enable_rate_limit: bool = True
 
+    # Serving-layer cache bounds (safety/api/main.py), the Redis stand-in from
+    # S9.5. Settings rather than constants because the right size depends on how
+    # many cities are enabled and how large the largest one is, which is
+    # deployment configuration, not a property of the code.
+    #
+    # A count alone is not a bound on memory: one whole-city layer at resolution
+    # 10 is ~14 MB for Philadelphia and several times that for Los Angeles. The
+    # byte budget is what actually protects the container; the entry count just
+    # stops a long tail of small layers accumulating.
+    cache_max_entries: int = 192
+    cache_max_bytes: int = 256 * 1024 * 1024
+
     # HTTP behaviour for source adapters.
     http_timeout_seconds: float = 120.0
     http_max_retries: int = 4
+
+    # Optional Socrata application token, shared by the four Socrata sources
+    # (Chicago, Seattle, Los Angeles, Austin). Not credentials -- it identifies
+    # the caller so requests are counted against a per-token quota rather than a
+    # shared anonymous per-IP one. Everything works without it; a 24-month
+    # backfill across four cities is where the anonymous throttle starts to bite.
+    # Register one at https://evergreen.data.socrata.com/signup
+    socrata_app_token: str = ""
 
     # Bound on a single connection attempt. Without it libpq waits out the OS
     # TCP timeout, which only matters when a host accepts the packets and never

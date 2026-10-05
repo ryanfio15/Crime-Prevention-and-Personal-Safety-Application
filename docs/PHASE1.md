@@ -52,15 +52,20 @@ jobs — rather than by cell area. Loading it is a one-off:
 ```bash
 python -m safety.etl.run census --city phl            # TIGER blocks + LODES jobs
 python -m safety.etl.run gold   --city phl            # apportion, then re-rank
-python -m safety.migrate --activate nscs_v2_percapita # promote it to the live scheme
-python -m safety.etl.run safety --city phl
 ```
 
-`--activate` is deliberately separate from the loader: promoting a scheme
-changes what every safety number in the product means, so it is a decision made
-after looking at `safety-compare`, not a side effect of re-running `migrate`.
+`nscs_v2_percapita` is the only enabled scheme, so `safety.migrate` points the
+city at it on its first run and no promotion step is needed. Changing that later
+is `python -m safety.migrate --activate <scheme>`, deliberately separate from the
+loader: promoting a scheme changes what every safety number in the product means,
+so it is a decision made after looking at `safety-compare`, not a side effect of
+re-running `migrate`.
+
 Add `--replay` to `census` to re-read the stored bronze snapshot instead of
-re-downloading the ~100 MB shapefile.
+re-downloading the ~100 MB shapefile. Once the exposure layer is built, the block
+polygons behind it can be released with `python -m safety.etl.run
+release-geometry --city phl` — they are a build-time input only, and on six cities
+they are the largest reference data in the database.
 
 ---
 

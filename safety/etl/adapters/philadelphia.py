@@ -31,7 +31,7 @@ import json
 import logging
 import time
 from collections.abc import Iterator
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Any, ClassVar
 
 import httpx
@@ -39,6 +39,7 @@ import pyproj
 
 from safety.config import settings
 from safety.etl.adapters.base import NormalizedIncident, RawChunk, SourceAdapter
+from safety.etl.windows import backfill_window
 
 log = logging.getLogger(__name__)
 
@@ -357,20 +358,7 @@ class PhiladelphiaCartoAdapter(SourceAdapter):
             return text
 
 
-def default_backfill_window(months: int) -> tuple[datetime, datetime]:
-    """Trailing-window bounds, padded a day each side.
-
-    Chunk boundaries are UTC while Philadelphia reports local dates, so the
-    fetch range is widened slightly. Loading a few extra days is harmless:
-    gold time windows are computed from occurred_local_date, not from what the
-    fetch happened to cover.
-    """
-    now = datetime.now(timezone.utc)
-    until = now + timedelta(days=1)
-    start_year = now.year - (months // 12)
-    start_month = now.month - (months % 12)
-    if start_month <= 0:
-        start_month += 12
-        start_year -= 1
-    since = datetime(start_year, start_month, 1, tzinfo=timezone.utc) - timedelta(days=1)
-    return since, until
+# Moved to safety/etl/windows.py, which is where it always belonged: the
+# arithmetic is identical for every source. Re-exported here because this is
+# where callers have been importing it from.
+default_backfill_window = backfill_window

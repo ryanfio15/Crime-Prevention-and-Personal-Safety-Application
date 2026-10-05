@@ -8,7 +8,11 @@
    --------------------------------------------------------------------------- */
 
 const API = "/api/v1";
-const CITY = "phl";
+
+/* The city to open on, when the URL does not say. Not "the only city": the
+   picker is populated from /api/v1/cities, and this is only the fallback if that
+   city is among them. Otherwise the first one served wins. */
+const DEFAULT_CITY = "phl";
 
 /* A distinct state, not the bottom of the ramp: nothing was reported here. */
 const ZERO_FILL = "#e1e0d9";
@@ -158,6 +162,151 @@ function valueDomain(prop, isPainted) {
   };
 }
 
+/**
+ * Citywide reported incidents per ambient person, for the layer on screen.
+ *
+ * Summed here rather than served for the same reason `valueDomain` is: the
+ * features are already in the browser, and the alternative is another
+ * precomputed figure existing only to fill one line of one panel. The activity
+ * layer is dense and the client fetches it unfiltered, so this is the whole city
+ * and not a sample of it.
+ *
+ * Numerator and denominator are accumulated over the same cells -- the ones
+ * carrying a population figure. Counting incidents from a cell whose exposure is
+ * unknown would add to the top of the fraction without adding to the bottom, and
+ * make the city look worse than it is.
+ */
+function cityExposureRate() {
+  let incidents = 0;
+  let people = 0;
+  for (const feature of state.features) {
+    const p = feature.properties;
+    if (typeof p.exposure !== "number" || p.exposure <= 0) continue;
+    incidents += p.count ?? 0;
+    people += p.exposure;
+  }
+  return people > 0 ? { incidents, people, rate: incidents / people } : null;
+}
+
+/* Below this many ambient people, a rate per person is two small numbers
+   divided: a cell with nine people and three incidents comes out at twenty-four
+   times the city average, which is arithmetic rather than a finding. */
+const RELATIVE_MIN_EXPOSURE = 100;
+
+/**
+ * One cell's incident rate per person, against the city's own.
+ *
+ * Read out of `state.features` rather than out of the detail payload, because
+ * the feature is what is on screen: it carries the selected offence category,
+ * where the panel's headline count is always category `all`. Both sides of the
+ * ratio then come from one layer and share a denominator definition -- the same
+ * ambient residents-and-jobs figure the safety ranking itself divides by.
+ *
+ * Returns a `reason` instead of a ratio wherever the division would mislead;
+ * `relativeStat` turns each of those into its own sentence.
+ */
+function relativeRate(h3) {
+  const feature = state.features.find((f) => f.properties.h3 === h3);
+  if (!feature) return { reason: "unavailable" };
+
+  // Not one cell in this layer carries a population denominator: either the
+  // active severity scheme ranks by area, in which case cell_safety.exposure is
+  // NULL by construction, or the exposure layer was never built. There is
+  // nothing to be relative to, so the headline falls back to the count -- the
+  // same fallback syncSafetyAvailability makes for the ramp.
+  const city = cityExposureRate();
+  if (!city) return { reason: "no_city_exposure" };
+
+  const p = feature.properties;
+  const count = p.count ?? 0;
+  const exposure = typeof p.exposure === "number" ? p.exposure : null;
+
+  if (exposure === null || exposure <= 0) return { reason: "no_exposure", count };
+  if (count === 0) return { reason: "no_incidents", count, exposure, city };
+  if (exposure < RELATIVE_MIN_EXPOSURE) {
+    return { reason: "thin_exposure", count, exposure, city };
+  }
+  const rate = count / exposure;
+  return { ratio: rate / city.rate, rate, count, exposure, city };
+}
+
+/** The ratio in whichever form reads as a quantity: 1,400% has to be decoded,
+    14.0x does not.
+
+    The bottom end is named rather than rounded, the same way `safetyLabel`
+    names its extremes: a big quiet cell -- one report among twenty thousand
+    people -- rounds to 0%, and 0% is the one thing this figure must not say
+    about a cell where something was reported. */
+function formatRatio(ratio) {
+  if (ratio >= 10) return `${ratio.toFixed(1)}×`;
+  if (ratio < 0.005) return "<1%";
+  return `${Math.round(ratio * 100)}%`;
+}
+
+/* Per 1,000 people, matching every other exposure-denominated figure here. */
+const per1k = (rate) => (rate * 1000).toFixed(1);
+
+/**
+ * The safety view's headline figure, in words.
+ *
+ * A percentage of the city's rate, never a bare one: above 100% is the
+ * concerning direction, which is the opposite of what a number under a heading
+ * reading "safety" would be assumed to mean, so the sense is always spelled out
+ * beside it. The two rates it came from go underneath for the same reason the
+ * hour share prints its counts -- a derived figure is only checkable if the
+ * numbers behind it are visible.
+ */
+function relativeStat(rel, windowLabel) {
+  switch (rel.reason) {
+    case "no_incidents":
+      return {
+        value: "—",
+        label: `nothing reported here · ${windowLabel}`,
+        note:
+          `0 incidents among ${nf.format(rel.exposure)} people. An absence of ` +
+          `reports is not evidence of safety.`,
+      };
+    case "thin_exposure":
+      return {
+        value: "—",
+        label: `too few people here to compare · ${windowLabel}`,
+        note:
+          `${nf.format(rel.count)} incidents among ${nf.format(rel.exposure)} ` +
+          `people — a rate per person on a denominator this small would swing on ` +
+          `a single report.`,
+      };
+    case "no_exposure":
+      return {
+        value: "—",
+        label: "no population figure for this cell",
+        note:
+          `${nf.format(rel.count)} reported incidents. The comparison divides by ` +
+          `ambient population, which this cell has none apportioned to it.`,
+      };
+    case "unavailable":
+      return {
+        value: "—",
+        label: "not comparable in this layer",
+        note: "",
+      };
+  }
+
+  // Same ±5% deadband as the hour share: inside it, the honest reading is "no
+  // different", not a number to two figures.
+  const sense =
+    rel.ratio > 1.05 ? "higher than the city average"
+    : rel.ratio < 0.95 ? "lower than the city average"
+    : "about the city average";
+
+  return {
+    value: formatRatio(rel.ratio),
+    label: `of the city-average incident rate per person — ${sense} · ${windowLabel}`,
+    note:
+      `${nf.format(rel.count)} incidents among ${nf.format(rel.exposure)} people · ` +
+      `${per1k(rel.rate)} vs ${per1k(rel.city.rate)} per 1,000 citywide`,
+  };
+}
+
 const TIER_LABELS = {
   0: "No reported incidents",
   1: "Lowest fifth",
@@ -204,14 +353,28 @@ const TRACK_PROPS = {
    anything outside this with a reason; the client knows the same bounds so it
    can disable the control up front rather than let a request fail. */
 const HOURLY_RESOLUTIONS = [8, 9];
-const HOURLY_WINDOWS = ["last_12m", "last_24m"];
+const HOURLY_WINDOWS = ["last_12m"];
 
-/* Mirrors safety.etl.gold.PERCAPITA_RESOLUTIONS. The safety ranking divides by
+/* Mirrors safety.etl.gold.SAFETY_RESOLUTIONS. The safety ranking divides by
    ambient population apportioned from census blocks, and a res-10 cell is
    smaller than a census block -- there is no population figure at that size
    that is not interpolation. Counts are still served there, so the map falls
    back to the count ramp rather than going blank. */
 const SAFETY_RESOLUTIONS = [8, 9];
+
+/* Mirrors safety.etl.gold.ACTIVITY_WINDOWS / ACTIVITY_CATEGORIES. The activity
+   layer is dense -- one row per cell per window per category, since a cell with
+   no reported incidents is still part of the distribution it is ranked against
+   -- so resolution 10 is built for the two widest windows and the combined
+   category only. At ~0.015 km² a single category over 30 days leaves nearly
+   every cell on zero, tied with every other, and a percentile over a field of
+   ties is not a reading. Same bounds on the server, which answers the rest with
+   the reason; the client knows them so the controls can say so first. */
+const ACTIVITY_WINDOWS = { 10: ["last_12m", "last_24m"] };
+const ACTIVITY_CATEGORIES = { 10: ["all"] };
+
+const activityWindows = (res) => ACTIVITY_WINDOWS[res] ?? null;
+const activityCategories = (res) => ACTIVITY_CATEGORIES[res] ?? null;
 
 /** "20:00–21:00". The last block reads 23:00–24:00, not 23:00–00:00. */
 const hourLabel = (hour) =>
@@ -244,6 +407,11 @@ const CATEGORY_LABELS = {
 };
 
 const state = {
+  /* Set during boot from ?city= or the served list; never assumed. */
+  city: null,
+  /* The selected city's snapshot row, so the header, the frame and the
+     methodology sheet all read from one place. */
+  cityRecord: null,
   window: "last_12m",
   category: "all",
   res: 8,
@@ -365,12 +533,24 @@ const CELL_SPAN_M = { 8: 530, 9: 200, 10: 76 };
  * Selection and hover keep a fixed width at every zoom: those are pointer
  * feedback on one cell, not a boundary between thousands.
  */
+/** Web-mercator metres per pixel at zoom 0, for the current city's latitude.
+ *
+ * 156,543 m/px at the equator, narrowing by cos(latitude). Taken from the city
+ * being viewed rather than pinned to one: across the six cities this runs from
+ * ~105,000 in Seattle to ~135,000 in Austin, which moves the zoom at which a
+ * hexagon becomes wide enough to outline by about a third of a zoom level.
+ * Falls back to the equator figure before the first city record arrives, which
+ * only matters for the first frame. */
+function groundResolution() {
+  const lat = state.cityRecord?.center_lat;
+  if (!Number.isFinite(lat)) return 156543;
+  return 156543 * Math.cos((lat * Math.PI) / 180);
+}
+
 function outlineWidthExpression() {
   const span = CELL_SPAN_M[state.res] ?? CELL_SPAN_M[8];
-  // Web-mercator ground resolution at Philadelphia's latitude is about
-  // 119,940 / 2^zoom metres per pixel, so this is the zoom at which a cell
-  // spans roughly six pixels.
-  const legible = Math.log2((6 * 119940) / span);
+  // The zoom at which a cell spans roughly six pixels.
+  const legible = Math.log2((6 * groundResolution()) / span);
   return [
     "case",
     ["boolean", ["feature-state", "selected"], false], 2.2,
@@ -466,7 +646,7 @@ async function loadLayer({ quiet = false } = {}) {
   }
 
   const params = new URLSearchParams({
-    city: CITY,
+    city: state.city,
     res: String(state.res),
     window: state.window,
     category: state.category,
@@ -490,6 +670,10 @@ async function loadLayer({ quiet = false } = {}) {
     map.setPaintProperty("cells-outline", "line-width", outlineWidthExpression());
     renderLegend();
     renderTable();
+    // The city rate the safety headline is a share of has just moved, and so has
+    // the selected cell's own count if the category changed -- that control
+    // reloads the layer without reopening the panel.
+    if (state.detail) renderHeadlineStat(state.detail);
     // Only now is it known whether the hourly layer exists at all.
     syncHourAvailability();
   } catch (error) {
@@ -503,23 +687,38 @@ async function loadLayer({ quiet = false } = {}) {
   }
 }
 
-async function loadFreshness() {
-  const response = await fetch(`${API}/cities/${CITY}`);
+async function loadFreshness({ refit = false } = {}) {
+  const response = await fetch(`${API}/cities/${state.city}`);
   if (!response.ok) return;
   const city = await response.json();
+  state.cityRecord = city;
 
   // Frame the city from its own stored bounding box rather than a hardcoded
-  // centre, so a second city needs no client change (design doc S11).
-  if (!state.framed && Number.isFinite(city.bbox_west)) {
+  // centre, so a second city needs no client change (design doc S11). `refit`
+  // is what makes that true on a *switch* and not just on first load: without
+  // it the map would stay over whichever city opened first.
+  if ((refit || !state.framed) && Number.isFinite(city.bbox_west)) {
     map.fitBounds(
       [
         [city.bbox_west, city.bbox_south],
         [city.bbox_east, city.bbox_north],
       ],
-      { padding: { top: 28, bottom: 28, left: 28, right: 28 }, duration: 0 }
+      {
+        padding: { top: 28, bottom: 28, left: 28, right: 28 },
+        // Animate a deliberate switch, so it reads as travel rather than a cut;
+        // the first frame should just be there.
+        duration: state.framed && refit ? 700 : 0,
+      }
     );
     state.framed = true;
   }
+
+  document.title = `${city.city_name} reported-incident activity`;
+  $("city-heading").textContent = `${city.city_name} — reported incident activity`;
+  $("map").setAttribute(
+    "aria-label",
+    `Map of ${city.city_name} with hexagonal cells shaded by reported incident count`
+  );
 
   // Design doc S12(b): "data as of" is a visible, first-class element.
   const asOf = new Date(city.data_as_of);
@@ -532,7 +731,108 @@ async function loadFreshness() {
     `· ${nf.format(city.incident_count)} incidents · updated ${city.expected_cadence}`;
 }
 
+/**
+ * Populate the city picker from what the API actually serves.
+ *
+ * Only cities with a gold.city_snapshot row come back, which is the right set:
+ * a city whose adapter exists but whose pipeline has not run has nothing to
+ * show, and offering it would produce an empty map with no explanation.
+ *
+ * Returns the chosen source_id. `?city=` wins if it is served, then
+ * DEFAULT_CITY, then whatever is first.
+ */
+async function loadCities() {
+  const response = await fetch(`${API}/cities`);
+  if (!response.ok) throw new Error(`cities request failed: ${response.status}`);
+  const { cities } = await response.json();
+  if (!cities.length) throw new Error("no city has serving data yet");
+
+  const select = $("f-city");
+  select.replaceChildren(
+    ...cities.map((city) => {
+      const option = document.createElement("option");
+      option.value = city.source_id;
+      option.textContent = city.city_name;
+      return option;
+    })
+  );
+  // One city is not a choice; hiding the control is more honest than offering a
+  // dropdown that cannot do anything.
+  $("f-city-field").hidden = cities.length < 2;
+
+  const requested = new URLSearchParams(location.search).get("city");
+  const served = new Set(cities.map((c) => c.source_id));
+  const chosen =
+    (requested && served.has(requested) && requested) ||
+    (served.has(DEFAULT_CITY) && DEFAULT_CITY) ||
+    cities[0].source_id;
+  select.value = chosen;
+  return chosen;
+}
+
+/**
+ * Switch cities.
+ *
+ * Everything keyed to a place is dropped rather than carried across: an H3 index
+ * belongs to exactly one city, so a selected cell, a hovered cell and a cached
+ * ramp domain are all meaningless the moment the city changes. The filters --
+ * window, category, cell size, hour -- are not place-specific and do carry over,
+ * which is what someone comparing two cities on the same terms would want.
+ *
+ * What deliberately does *not* happen is any comparison between the two. Every
+ * percentile is computed against its own city's distribution (design doc S3.3),
+ * so a figure from one city and a figure from another are not on the same scale
+ * and the UI never places them side by side.
+ */
+async function selectCity(sourceId) {
+  if (sourceId === state.city) return;
+  state.city = sourceId;
+  closeDetail();
+  // The stamp is per city now, so carrying the old one across would read as "the
+  // pipeline just ran" on the next poll and trigger a pointless reload. Null
+  // makes the next tick record rather than compare.
+  state.refreshStamp = null;
+
+  const url = new URL(location.href);
+  url.searchParams.set("city", sourceId);
+  history.replaceState(null, "", url);
+
+  await loadFreshness({ refit: true });
+  await loadLayer();
+}
+
 /* --------------------------------------------------------------- cell panel */
+
+/**
+ * The panel's one big number, which measures whatever the map is coloured by.
+ *
+ * Under the count ramp that is the count itself. Under the safety ramp a bare
+ * count is the wrong headline: the ramp is ranking cells per head of ambient
+ * population, and a cell with forty incidents among twelve thousand people is
+ * the quieter of two cells the count alone would order the other way. So the
+ * safety view leads with the comparison the ramp is making -- this cell's
+ * incidents per person as a share of the city's.
+ */
+function renderHeadlineStat(detail) {
+  const value = $("d-count");
+  const label = $("d-count-label");
+  const windowLabel = detail.window_label.toLowerCase();
+
+  const rel = state.scale === "safety" ? relativeRate(state.selected) : null;
+
+  if (rel === null || rel.reason === "no_city_exposure") {
+    const headline = detail.headline ?? { incident_count: 0 };
+    value.textContent = nf.format(headline.incident_count ?? 0);
+    label.textContent = `reported incidents · ${windowLabel}`;
+    return;
+  }
+
+  const stat = relativeStat(rel, windowLabel);
+  value.textContent = stat.value;
+  label.innerHTML = stat.note
+    ? `${stat.label}<span class="kv-note">${stat.note}</span>`
+    : stat.label;
+}
 
 async function selectCell(h3) {
   if (state.selected && state.selected !== h3) {
@@ -557,9 +857,7 @@ async function selectCell(h3) {
   $("detail-body").hidden = false;
 
   const headline = detail.headline ?? { incident_count: 0 };
-  $("d-count").textContent = nf.format(headline.incident_count ?? 0);
-  $("d-count-label").textContent =
-    `reported incidents · ${detail.window_label.toLowerCase()}`;
+  renderHeadlineStat(detail);
 
   // The activity tier gave up its row to the time-of-day figure; it still
   // reaches the reader through the tooltip and the table view.
@@ -589,7 +887,7 @@ async function selectCell(h3) {
 
   renderSafety(detail.safety);
   renderHours(detail);
-  renderCategoryBars(detail.by_category);
+  renderCategoryBars(detail.by_category, detail.by_category_available);
   renderSparkline(detail.monthly, headline.window_end);
   renderOffenseMix(detail.top_offenses);
 }
@@ -597,10 +895,10 @@ async function selectCell(h3) {
 /**
  * Short label for a safety percentile, correct at both ends.
  *
- * The extremes need naming rather than rounding: the worst cell in Philadelphia
- * scores 0.0009, and "0th percentile" reads as a missing value rather than as
- * the bottom of the city. Kept terse because it sits in a narrow panel column
- * beside the tier label.
+ * The extremes need naming rather than rounding: the worst cell in a city scores
+ * something like 0.0009 -- one over twice the cell count -- and "0th percentile"
+ * reads as a missing value rather than as the bottom of the city. Kept terse
+ * because it sits in a narrow panel column beside the tier label.
  */
 function safetyLabel(percentile) {
   const value = percentile * 100;
@@ -746,8 +1044,21 @@ function renderHours(detail) {
     "offence occurred.";
 }
 
-function renderCategoryBars(rows) {
+/**
+ * `available === false` means the split is not built at this cell size, which is
+ * a different statement from an empty cell and must not borrow its wording. The
+ * per-offence list below the chart is built at every resolution, so there is a
+ * finer answer to send the reader to rather than a dead end.
+ */
+function renderCategoryBars(rows, available = true) {
   const container = $("d-categories");
+  if (available === false) {
+    container.innerHTML =
+      `<p class="bar-empty">Not split by category at this cell size — a cell this ` +
+      `small is empty in most single categories, so the split would be mostly ` +
+      `zeroes. The reported offences listed below cover this cell.</p>`;
+    return;
+  }
   if (!rows?.length) {
     container.innerHTML = `<p class="bar-empty">No incidents reported in this cell.</p>`;
     return;
@@ -960,7 +1271,7 @@ function renderTable() {
 async function openMethodology() {
   const dialog = $("methodology");
   dialog.showModal();
-  const response = await fetch(`${API}/methodology?city=${CITY}`);
+  const response = await fetch(`${API}/methodology?city=${state.city}`);
   if (!response.ok) return;
   const m = await response.json();
 
@@ -1078,7 +1389,11 @@ function locateMe() {
 
       const known = state.features.some((f) => f.properties.h3 === cell);
       if (!known) {
-        alert("That location is outside the Philadelphia coverage area.");
+        alert(
+          `That location is outside the ${
+            state.cityRecord?.city_name ?? "selected city"
+          } coverage area.`
+        );
         return;
       }
       const [lat, lng] = h3.cellToLatLng(cell);
@@ -1101,9 +1416,13 @@ async function initMap() {
   map = new maplibregl.Map({
     container: "map",
     style,
-    center: [-75.1435, 39.9855],
-    zoom: 10.9,
-    minZoom: 9,
+    // Placeholder only: loadFreshness fits the real bounds from the city's own
+    // snapshot before the first paint, at duration 0, so this is never seen.
+    center: [-98.5, 39.5],
+    zoom: 3,
+    // No minZoom. With six cities spread across the country, a floor tight
+    // enough for one city is a floor that cannot show another -- and fitBounds
+    // on Los Angeles needs to go wider than a Philadelphia-shaped limit allows.
     maxZoom: 17,
     attributionControl: { compact: true },
   });
@@ -1300,7 +1619,49 @@ function syncSafetyAvailability() {
   return ok;
 }
 
+/**
+ * Gate the window and category controls on what is built at this cell size.
+ *
+ * Same principle as syncHourAvailability and syncSafetyAvailability, applied to
+ * the two controls that have always been free: at resolution 10 the layer only
+ * exists for the widest windows and the combined category. Coerces the current
+ * selection rather than leaving one that is about to 400 -- the narrowing keeps
+ * the default view (last 12 months, all incidents) at every resolution, so there
+ * is always something to fall back to.
+ *
+ * Every caller reloads the layer straight afterwards, so a coerced selection is
+ * picked up by that fetch rather than needing one of its own.
+ */
+function syncActivityScope() {
+  const windows = activityWindows(state.res);
+  const categories = activityCategories(state.res);
+
+  for (const option of $("f-window").options) {
+    option.disabled = windows !== null && !windows.includes(option.value);
+  }
+  for (const option of $("f-category").options) {
+    option.disabled = categories !== null && !categories.includes(option.value);
+  }
+
+  if (windows && !windows.includes(state.window)) {
+    state.window = "last_12m";
+    $("f-window").value = state.window;
+  }
+  if (categories && !categories.includes(state.category)) {
+    state.category = "all";
+    $("f-category").value = state.category;
+  }
+
+  $("f-window-note").textContent = windows
+    ? "Shorter windows leave a cell this small empty — not enough to rank."
+    : "";
+  $("f-category-note").textContent = categories
+    ? "A cell this small is empty in most single categories."
+    : "";
+}
+
 function wireControls() {
+  $("f-city").onchange = (e) => selectCity(e.target.value);
   $("f-window").onchange = (e) => {
     state.window = e.target.value;
     syncHourAvailability();
@@ -1313,6 +1674,9 @@ function wireControls() {
   };
   $("f-res").onchange = (e) => {
     state.res = Number(e.target.value);
+    // Before syncHourAvailability, which reads state.window: the new resolution
+    // may have just moved it.
+    syncActivityScope();
     syncHourAvailability();
     syncSafetyAvailability();
     // A res-8 index is meaningless on the res-9 layer, so drop the selection.
@@ -1324,6 +1688,9 @@ function wireControls() {
     // The track tabs only mean anything while the safety ramp is on screen.
     $("f-track-field").hidden = state.scale !== "safety";
     repaint();
+    // The open cell's headline measures whatever the map is coloured by, so it
+    // changes with this control -- and the detail is already in hand.
+    if (state.detail) renderHeadlineStat(state.detail);
   };
 
   // Any minute within the hour selects that block. The note beside the input
@@ -1388,7 +1755,9 @@ function wireControls() {
 function watchForRefresh() {
   setInterval(async () => {
     try {
-      const response = await fetch(`${API}/version`);
+      // Scoped to the displayed city: a bi-weekly Los Angeles refresh is not a
+      // reason to reload a Philadelphia layer that has not moved.
+      const response = await fetch(`${API}/version?city=${state.city}`);
       if (!response.ok) return;
       const version = await response.json();
       const stamp = String(version.last_refreshed_at);
@@ -1405,14 +1774,32 @@ function watchForRefresh() {
 
 (async function main() {
   await initMap();
+
+  // The city has to be known before anything is fetched for it, so this is the
+  // one load that is not parallel with the others.
+  try {
+    state.city = await loadCities();
+  } catch (error) {
+    console.error(error);
+    $("loading").textContent =
+      "No city has serving data yet. Run the pipeline for one city, then reload.";
+    return;
+  }
+
   wireControls();
+  syncActivityScope();
   syncHourAvailability();
   syncSafetyAvailability();
   // Expose read-only state for debugging and for the smoke-test driver.
   window.__safetyState = state;
-  await Promise.all([loadFreshness(), loadLayer()]);
+  // Sequential, not parallel: the outline width and the frame both read the
+  // city record, so the layer should paint after it exists.
+  await loadFreshness();
+  await loadLayer();
 
-  const version = await fetch(`${API}/version`).then((r) => r.json()).catch(() => null);
+  const version = await fetch(`${API}/version?city=${state.city}`)
+    .then((r) => r.json())
+    .catch(() => null);
   state.refreshStamp = version ? String(version.last_refreshed_at) : null;
   watchForRefresh();
 })();

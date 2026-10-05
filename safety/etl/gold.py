@@ -45,30 +45,75 @@ OFFENSE_MIX_DEPTH = 8
 TRACKS = ("violent", "non_violent")
 SAFETY_TIERS = 4
 
-# Resolutions the safety ranking builds at when the scheme divides by ambient
-# population rather than by area. Mirrors safety.etl.census.EXPOSURE_RESOLUTIONS
-# -- a resolution-10 cell is smaller than a census block, so its population is
-# an apportionment assumption rather than a measurement, and a ranking computed
-# on one would be reporting this pipeline's own interpolation back to the user.
+# Resolutions the safety ranking builds at, for every scheme.
 #
-# An area-denominated scheme still builds at every resolution; area is exact at
-# any size.
-PERCAPITA_RESOLUTIONS = (8, 9)
+# The original reason is the per-capita denominator: this mirrors
+# safety.etl.census.EXPOSURE_RESOLUTIONS, and a resolution-10 cell is smaller
+# than a census block, so its population is an apportionment assumption rather
+# than a measurement. A ranking computed on one would be reporting this
+# pipeline's own interpolation back to the user.
+#
+# It applies to area-denominated schemes too, which it did not used to. Area is
+# exact at any cell size, so those built at resolution 10 as well -- but
+# safety/api/repository.py::SAFETY_RESOLUTIONS is (8, 9) and the serving layer
+# refuses a resolution-10 ranking whatever built it. Those rows were ~1.9M per
+# city that nothing could read. The scheme parameter cannot widen what the API
+# serves, so it no longer widens what the pipeline stores.
+SAFETY_RESOLUTIONS = (8, 9)
+
+# What the activity layer builds per resolution, where that is narrower than
+# TIME_WINDOWS x CATEGORIES.
+#
+# cell_activity is dense by construction -- every cell in the universe gets a
+# row per window per category, because a cell with no reported incidents is part
+# of the distribution (S3.3) and has to be ranked. That is 20 rows per cell, and
+# at resolution 10 it is the largest table in the database: six cities are on the
+# order of 230,000 resolution-10 cells, so 4.6M rows, nearly all of them
+# n = 0 / tier = 0.
+#
+# The narrowing is a data-volume judgement and is written here rather than in
+# DDL for the same reason HOURLY_RESOLUTIONS is. It is also close to free
+# statistically: a resolution-10 cell is ~0.015 km2, and splitting 30 days
+# across cells that size leaves a median of zero, so the short windows were
+# ranking a field of ties. The drill-down keeps the two windows and the one
+# category the map opens on.
+ACTIVITY_WINDOWS: dict[int, tuple[str, ...]] = {10: ("last_12m", "last_24m")}
+ACTIVITY_CATEGORIES: dict[int, tuple[str, ...]] = {10: ("all",)}
+
+
+def activity_scope(res: int) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The windows and categories the activity layer builds at a resolution."""
+    return (
+        ACTIVITY_WINDOWS.get(res, TIME_WINDOWS),
+        ACTIVITY_CATEGORIES.get(res, CATEGORIES),
+    )
 
 # Time of day. Block h covers [h:00, h+1:00) local; 23 is 23:00-24:00.
 HOUR_BLOCKS = 24
 
-# The hourly layer is built narrower than the all-hours one, and the reason is
-# statistical before it is about disk. Splitting a window across 24 buckets
+# The hourly layer is built narrower than the all-hours one. The resolution cap
+# is statistical before it is about disk: splitting a window across 24 buckets
 # leaves each one with a twenty-fourth of the evidence, and 30 days at
 # resolution 10 puts the median cell-hour at zero reported incidents -- there is
-# no distribution there to rank. The two widest windows at the two coarser
-# resolutions are where the counts still support the statistic.
+# no distribution there to rank.
 #
-# Widening this is a one-line change; the tables accept every window and
-# resolution the all-hours layer does.
+# The window cap is the other way round, and worth being honest about: it is a
+# disk decision. gold.cell_hour_safety is the largest table in the database by a
+# wide margin -- 1,042 MB at two cities, 31% of the total, against a 5 GB volume
+# that has to hold six -- because it is the only layer multiplied by 24. Dropping
+# last_24m halves it, and halves gold.cell_hour_profile with it.
+#
+# last_12m is the one kept because last_24m is the more redundant of the pair: at
+# a year wide the hourly distribution is already stable, and the second year
+# mostly reasserts it. Both were within the range where the counts support the
+# statistic, so this gives up a real view rather than a marginal one -- see
+# docs/PHASE2.md.
+#
+# Widening either is a one-line change and needs no migration: both hourly
+# refreshes delete across every window before skipping the ones out of scope, so
+# the rows come back on the next build.
 HOURLY_RESOLUTIONS = (8, 9)
-HOURLY_WINDOWS = ("last_12m", "last_24m")
+HOURLY_WINDOWS = ("last_12m",)
 
 # Below this many incidents across the whole window, a cell's hour-to-hour
 # ratio is noise dressed as a measurement, and hour_index is left NULL rather
@@ -165,43 +210,92 @@ def build_cell_universe(conn: psycopg.Connection, source_id: str) -> dict[int, i
             )
         cells |= occupied
 
-        payload = [
-            (
-                cell,
-                source_id,
-                res,
-                cell_area_km2(cell),
-                *cell_centroid(cell),
-                json.dumps(cell_polygon_geojson(cell)),
-            )
-            for cell in sorted(cells)
-        ]
+        # COPY into a temp table, then one INSERT ... SELECT, rather than a
+        # statement per cell. The cell universe scales with city area: ~25,000
+        # resolution-10 cells for Philadelphia's 350 km2, roughly four times that
+        # for Los Angeles. An executemany of 100,000 rows, each parsing its own
+        # GeoJSON literal, is minutes of round trips for work the server can do
+        # in one pass.
+        ordered = sorted(cells)
         with conn.cursor() as cur:
-            cur.executemany(
+            cur.execute(
+                "CREATE TEMP TABLE _cell_fill ("
+                "  h3_index text, source_id text, h3_res smallint,"
+                "  area_km2 double precision, lng double precision,"
+                "  lat double precision, boundary text"
+                ") ON COMMIT DROP"
+            )
+            with cur.copy(
+                "COPY _cell_fill (h3_index, source_id, h3_res, area_km2, lng, lat, boundary) "
+                "FROM STDIN"
+            ) as copy:
+                for cell in ordered:
+                    lng, lat = cell_centroid(cell)
+                    copy.write_row(
+                        (
+                            cell,
+                            source_id,
+                            res,
+                            cell_area_km2(cell),
+                            lng,
+                            lat,
+                            json.dumps(cell_polygon_geojson(cell)),
+                        )
+                    )
+            cur.execute(
                 """
                 INSERT INTO gold.cell_geometry
                     (h3_index, source_id, h3_res, area_km2, centroid, boundary, built_at)
-                VALUES (
-                    %s, %s, %s, %s,
-                    ST_SetSRID(ST_MakePoint(%s, %s), 4326),
-                    ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326),
-                    now()
-                )
+                SELECT h3_index, source_id, h3_res, area_km2,
+                       ST_SetSRID(ST_MakePoint(lng, lat), 4326),
+                       ST_SetSRID(ST_GeomFromGeoJSON(boundary), 4326),
+                       now()
+                FROM _cell_fill
                 ON CONFLICT (h3_index) DO UPDATE SET
                     area_km2 = EXCLUDED.area_km2,
                     centroid = EXCLUDED.centroid,
                     boundary = EXCLUDED.boundary,
                     built_at = EXCLUDED.built_at
-                """,
-                payload,
+                """
             )
-        counts[res] = len(payload)
-        log.info("cell universe res %s: %s cells", res, len(payload))
+            cur.execute("DROP TABLE _cell_fill")
+        counts[res] = len(ordered)
+        log.info("cell universe res %s: %s cells", res, len(ordered))
 
-        _build_cell_neighbors(conn, source_id, res, cells)
+        # Only where the ranking that reads it is built. gold.cell_neighbor has
+        # exactly two readers, _SAFETY_SQL and _HOUR_SAFETY_SQL, and both are
+        # capped at SAFETY_RESOLUTIONS -- so resolution-10 adjacency was six
+        # pairs per cell, rewritten on every refresh, that nothing ever joined
+        # against. The DELETE inside the helper still runs for every resolution,
+        # so widening SAFETY_RESOLUTIONS later refills this with no migration.
+        if res in SAFETY_RESOLUTIONS:
+            _build_cell_neighbors(conn, source_id, res, cells)
+        else:
+            _clear_cell_neighbors(conn, source_id, res)
 
     conn.commit()
     return counts
+
+
+def _clear_cell_neighbors(conn: psycopg.Connection, source_id: str, res: int) -> None:
+    """Drop adjacency for a resolution the ranking is no longer built at.
+
+    Runs on every refresh rather than once in a migration, so the table cannot
+    hold pairs for a resolution outside SAFETY_RESOLUTIONS however that constant
+    moves -- including back the other way.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM gold.cell_neighbor WHERE source_id = %s AND h3_res = %s",
+            (source_id, res),
+        )
+        if cur.rowcount:
+            log.info(
+                "cell adjacency res %s: dropped %s pair(s); the ranking is not "
+                "built at this resolution, so nothing reads them",
+                res,
+                cur.rowcount,
+            )
 
 
 def _build_cell_neighbors(
@@ -219,19 +313,21 @@ def _build_cell_neighbors(
         for neighbor in grid_disk(cell, 1)
         if neighbor != cell and neighbor in cells
     ]
+    # Six pairs per cell, so this is the larger of the two writes by a wide
+    # margin -- around 150,000 rows for Philadelphia at resolution 10 and roughly
+    # four times that for Los Angeles. COPY straight in; the DELETE above already
+    # cleared the partition being rebuilt, so there is no conflict to resolve and
+    # no temp table needed.
     with conn.cursor() as cur:
         cur.execute(
             "DELETE FROM gold.cell_neighbor WHERE source_id = %s AND h3_res = %s",
             (source_id, res),
         )
-        cur.executemany(
-            """
-            INSERT INTO gold.cell_neighbor (source_id, h3_res, h3_index, neighbor_h3)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
-            """,
-            payload,
-        )
+        with cur.copy(
+            "COPY gold.cell_neighbor (source_id, h3_res, h3_index, neighbor_h3) FROM STDIN"
+        ) as copy:
+            for row in payload:
+                copy.write_row(row)
     log.info("cell adjacency res %s: %s pairs", res, len(payload))
     return len(payload)
 
@@ -290,6 +386,11 @@ unpivoted AS (
         ('quality_of_life', c_quality_of_life),
         ('other',           c_other)
     ) AS v(category, n)
+    -- Narrowed at resolution 10; see ACTIVITY_CATEGORIES. Filtered here, ahead
+    -- of the window functions below, which is both cheaper and safe: every
+    -- percentile partitions by category, so dropping whole categories cannot
+    -- move the ranking of the ones that remain.
+    WHERE category = ANY(%(categories)s)
 ),
 ranked AS (
     SELECT
@@ -332,15 +433,29 @@ FROM ranked
 def refresh_cell_activity(
     conn: psycopg.Connection, source_id: str, windows: list[Window]
 ) -> int:
-    """Rebuild gold.cell_activity for every resolution/window/category."""
+    """Rebuild gold.cell_activity for every resolution/window/category in scope."""
     written = 0
     with conn.cursor() as cur:
         for res in RESOLUTIONS:
             h3_column = _h3_column(res)
+            scope_windows, scope_categories = activity_scope(res)
+            if (scope_windows, scope_categories) != (TIME_WINDOWS, CATEGORIES):
+                log.info(
+                    "cell_activity res=%s is narrowed to windows %s, categories %s",
+                    res,
+                    ", ".join(scope_windows),
+                    ", ".join(scope_categories),
+                )
             for window in windows:
                 # Delete-then-insert inside the caller's transaction: readers
                 # keep seeing the previous rollup until commit, so the map
                 # never renders a half-built layer.
+                #
+                # The DELETE covers every window and every category at this
+                # resolution, including the ones about to be skipped. That is
+                # what makes narrowing the scope reclaim disk rather than strand
+                # rows nothing will overwrite again -- and it is why the scope
+                # can be widened back without a migration.
                 cur.execute(
                     """
                     DELETE FROM gold.cell_activity
@@ -348,6 +463,8 @@ def refresh_cell_activity(
                     """,
                     (source_id, res, window.name),
                 )
+                if window.name not in scope_windows:
+                    continue
                 cur.execute(
                     _ACTIVITY_SQL.format(h3_column=h3_column),
                     {
@@ -356,6 +473,7 @@ def refresh_cell_activity(
                         "time_window": window.name,
                         "window_start": window.start,
                         "window_end": window.end,
+                        "categories": list(scope_categories),
                     },
                 )
                 written += cur.rowcount
@@ -403,7 +521,10 @@ class Scheme:
 
     @property
     def resolutions(self) -> tuple[int, ...]:
-        return PERCAPITA_RESOLUTIONS if self.per_capita else RESOLUTIONS
+        # Not a function of the scheme any more. See SAFETY_RESOLUTIONS: an
+        # area-denominated scheme *could* be ranked at resolution 10, but the
+        # serving layer will not return it, so building it only cost disk.
+        return SAFETY_RESOLUTIONS
 
 
 _SCHEME_SELECT = """
@@ -566,24 +687,30 @@ adjusted AS (
     FROM unpivoted u
     JOIN city c USING (track)
 ),
+neighbor_mean AS (
+    -- Grouped join rather than a correlated LATERAL, for the same reason the
+    -- hourly build uses one: the LATERAL form re-scans `adjusted` once per row.
+    -- At resolution 8 that is 1,102 rows and costs about two seconds; at
+    -- resolution 10 it is 49,540 and cost two minutes per window, which was
+    -- most of a Philadelphia gold refresh and would have been most of six.
+    -- Computing every cell's neighbour mean in one pass is the same arithmetic.
+    SELECT nbr.h3_index, x.track, avg(x.adj) AS mean_adj
+    FROM gold.cell_neighbor nbr
+    JOIN adjusted x ON x.h3_index = nbr.neighbor_h3
+    WHERE nbr.source_id = %(source_id)s AND nbr.h3_res = %(h3_res)s
+    GROUP BY 1, 2
+),
 blended AS (
     SELECT
         a.h3_index, a.area_km2, a.exposure, a.track, a.n, a.w, a.adj,
         -- Risk does not stop at a hexagon edge. A cell with no in-universe
         -- neighbours keeps its own value rather than being pulled toward zero.
-        CASE WHEN nb.mean_adj IS NULL THEN a.adj
-             ELSE %(self_weight)s * a.adj + (1 - %(self_weight)s) * nb.mean_adj
+        CASE WHEN nm.mean_adj IS NULL THEN a.adj
+             ELSE %(self_weight)s * a.adj + (1 - %(self_weight)s) * nm.mean_adj
         END AS smoothed
     FROM adjusted a
-    LEFT JOIN LATERAL (
-        SELECT avg(x.adj) AS mean_adj
-        FROM gold.cell_neighbor nbr
-        JOIN adjusted x
-          ON x.h3_index = nbr.neighbor_h3 AND x.track = a.track
-        WHERE nbr.source_id = %(source_id)s
-          AND nbr.h3_res   = %(h3_res)s
-          AND nbr.h3_index = a.h3_index
-    ) nb ON true
+    LEFT JOIN neighbor_mean nm
+           ON nm.h3_index = a.h3_index AND nm.track = a.track
 ),
 ranked AS (
     SELECT
@@ -652,6 +779,45 @@ def weight_coverage(conn: psycopg.Connection, source_id: str, scheme: str) -> fl
     if not row or not row["total"]:
         return 0.0
     return row["sourced"] / row["total"]
+
+
+# Which offenses fell all the way through to the coarse UCR bucket, and how
+# many incidents each accounts for. `weight_coverage` gives the share; this says
+# what to do about it.
+#
+# The gap is expected to be non-empty for a while, and that is the honest state:
+# the severity scale is a 1977 survey of 204 criminal events, and NIBRS has more
+# offense codes than that. A code with no vignette behind it cannot be given a
+# published weight -- inventing one and marking it `sourced = true` would be
+# worse than the documented fallback. So the fallbacks stay, and this makes them
+# reviewable rather than silent (S8.5's rule, applied to weights).
+_UNWEIGHTED_SQL = f"""
+SELECT
+    i.nibrs_code,
+    i.raw_offense_code,
+    i.raw_offense_text,
+    i.severity_bucket,
+    CASE WHEN i.product_category = 'violent' THEN 'violent' ELSE 'non_violent' END
+        AS track,
+    count(*)::int AS incidents
+FROM silver.incident i
+{_WEIGHT_LOOKUP}
+WHERE i.source_id = %(source_id)s
+  -- Matched nothing more specific than the bucket, or matched nothing at all.
+  AND (w.sourced IS NOT TRUE)
+GROUP BY 1, 2, 3, 4, 5
+ORDER BY incidents DESC
+"""
+
+
+def unweighted_offenses(
+    conn: psycopg.Connection, source_id: str, scheme: str, limit: int = 40
+) -> list[dict[str, Any]]:
+    """Offenses whose severity weight is a derived fallback, busiest first."""
+    with conn.cursor() as cur:
+        cur.execute(_UNWEIGHTED_SQL, {"source_id": source_id, "scheme": scheme})
+        rows = cur.fetchall()
+    return rows[:limit]
 
 
 def _require_exposure(conn: psycopg.Connection, source_id: str, scheme: Scheme) -> None:
@@ -959,13 +1125,16 @@ def refresh_cell_hour_safety(
     reads rather than recomputes.
     """
     written = 0
-    hourly = [w for w in windows if w.name in HOURLY_WINDOWS]
     with conn.cursor() as cur:
         for res in HOURLY_RESOLUTIONS:
             sql = _HOUR_SAFETY_SQL.format(
                 h3_column=_h3_column(res), weight_lookup=_WEIGHT_LOOKUP
             )
-            for window in hourly:
+            # Every window, not just the in-scope ones: the DELETE is what makes
+            # narrowing HOURLY_WINDOWS reclaim disk instead of stranding rows no
+            # later refresh will revisit, and what lets it be widened again with
+            # no migration. Same shape as refresh_cell_activity.
+            for window in windows:
                 cur.execute(
                     """
                     DELETE FROM gold.cell_hour_safety
@@ -974,6 +1143,8 @@ def refresh_cell_hour_safety(
                     """,
                     (source_id, res, window.name, scheme.version),
                 )
+                if window.name not in HOURLY_WINDOWS:
+                    continue
                 cur.execute(
                     sql,
                     {
@@ -1007,11 +1178,11 @@ def refresh_cell_hour_profile(
 ) -> int:
     """Rebuild the sparse per-cell hourly breakdown behind the detail panel."""
     written = 0
-    hourly = [w for w in windows if w.name in HOURLY_WINDOWS]
     with conn.cursor() as cur:
         for res in HOURLY_RESOLUTIONS:
             sql = _HOUR_PROFILE_SQL.format(h3_column=_h3_column(res))
-            for window in hourly:
+            # Delete across every window, then skip; see refresh_cell_hour_safety.
+            for window in windows:
                 cur.execute(
                     """
                     DELETE FROM gold.cell_hour_profile
@@ -1019,6 +1190,8 @@ def refresh_cell_hour_profile(
                     """,
                     (source_id, res, window.name),
                 )
+                if window.name not in HOURLY_WINDOWS:
+                    continue
                 cur.execute(
                     sql,
                     {
@@ -1402,7 +1575,33 @@ def refresh_safety_layer(
     rows = 0
     coverage: float | None = None
     for scheme in schemes:
-        rows += refresh_cell_safety(conn, source_id, windows, scheme)
+        try:
+            rows += refresh_cell_safety(conn, source_id, windows, scheme)
+        except LookupError as exc:
+            # A scheme that cannot be built is skipped, not fatal. _require_exposure
+            # raises rather than producing a uniform map, which is right -- but the
+            # granularity was wrong: raising here aborted the whole gold refresh,
+            # so a per-capita scheme with no census loaded rolled back cell_activity
+            # and the area-based ranking too, and left the map empty. Nothing about
+            # those depends on this scheme.
+            #
+            # Still loud, and still not silently uniform: the scheme's rows are
+            # simply absent, so the serving layer's LEFT JOIN finds nothing and the
+            # map falls back to counts.
+            log.error(
+                "cannot build severity scheme '%s' for %s, skipping it: %s",
+                scheme.version,
+                source_id,
+                exc,
+            )
+            if scheme.version == active:
+                log.error(
+                    "'%s' is the scheme %s actually serves, so its safety ranking "
+                    "will be empty until this is resolved",
+                    scheme.version,
+                    source_id,
+                )
+            continue
         share = weight_coverage(conn, source_id, scheme.version)
         log.info(
             "severity weights for scheme %s: %.1f%% of incidents carry a published figure",
@@ -1423,8 +1622,10 @@ def refresh_safety_layer(
     return rows, coverage
 
 
-def refresh_cell_exposure(conn: psycopg.Connection, source_id: str) -> dict[int, int]:
-    """Rebuild the population denominator, if this city has one loaded.
+def refresh_cell_exposure(
+    conn: psycopg.Connection, source_id: str, rebuild: bool = False
+) -> dict[int, int]:
+    """Top up the population denominator, if this city has one loaded.
 
     Imported here rather than at module scope: safety.etl.census pulls in pyshp
     and httpx, and a plain `gold` refresh on a city with no census data should
@@ -1447,13 +1648,46 @@ def refresh_cell_exposure(conn: psycopg.Connection, source_id: str) -> dict[int,
             source_id,
         )
         return {}
-    return census.build_cell_exposure(conn, source_id)
+
+    try:
+        return census.build_cell_exposure(conn, source_id, rebuild=rebuild)
+    except LookupError as exc:
+        # Same granularity argument as refresh_safety_layer: a denominator that
+        # cannot be extended is not a reason to roll back the rest of the gold
+        # refresh. It happens when the block polygons have been released and the
+        # cell universe has since grown -- an incident landing in a cell no
+        # previous pull reached.
+        #
+        # Those cells end up with no exposure row, which the ranking SQL already
+        # handles: the LEFT JOIN yields zero exposure and the scheme's
+        # credibility prior bounds it, so the cell is ranked near the citywide
+        # rate rather than dividing by zero. That is a worse figure than a real
+        # apportionment, for a handful of edge cells, and it is why this is an
+        # error and not a warning.
+        log.error("cannot extend the exposure layer for %s: %s", source_id, exc)
+        return {}
 
 
 def refresh_all(
-    conn: psycopg.Connection, source_id: str, pipeline_version: str
+    conn: psycopg.Connection,
+    source_id: str,
+    pipeline_version: str,
+    include_hourly: bool = True,
 ) -> dict[str, Any]:
-    """Full gold refresh for one city. Runs as a single transaction."""
+    """Full gold refresh for one city. Runs as a single transaction.
+
+    `include_hourly=False` leaves the time-of-day layers alone. They are by far
+    the most expensive thing here -- the same ranking recomputed 24 times, at two
+    resolutions and two windows, per scheme -- and also the slowest-moving, since
+    both their windows are 12 months or wider. A day of new incidents moves an
+    hourly percentile computed over two years almost not at all.
+
+    Skipping them is therefore the right trade for a frequent incremental, with
+    `safety.etl.run hourly` on its own slower schedule. It is a real trade, not a
+    free one: until that runs, the hourly view reflects the previous build. The
+    all-hours percentile it is compared against does get rebuilt here, so the two
+    are briefly derived from different windows of data.
+    """
     anchor = data_anchor(conn, source_id)
     if anchor is None:
         raise LookupError(f"no silver rows for '{source_id}'; nothing to roll up")
@@ -1475,11 +1709,27 @@ def refresh_all(
 
     activity_rows = refresh_cell_activity(conn, source_id, windows)
     safety_rows, coverage = refresh_safety_layer(conn, source_id, windows)
-    # After the all-hours ranking, never before: the hourly layer's second
-    # rating is a comparison against the percentile that one produces.
-    hour_rows, hour_profile_rows, hour_share = refresh_hourly_layer(
-        conn, source_id, windows
-    )
+
+    hour_rows: int | None = None
+    hour_profile_rows: int | None = None
+    hour_share: float | None = None
+    if include_hourly:
+        # After the all-hours ranking, never before: the hourly layer's second
+        # rating is a comparison against the percentile that one produces.
+        hour_rows, hour_profile_rows, hour_share = refresh_hourly_layer(
+            conn, source_id, windows
+        )
+    else:
+        # Said out loud. A silently stale layer is the failure mode this whole
+        # module is written against, and hour_known_share passing as None below
+        # keeps the snapshot's previous figure rather than blanking it.
+        log.info(
+            "skipping the time-of-day layers for %s; run "
+            "`safety.etl.run hourly --city %s` to rebuild them",
+            source_id,
+            source_id,
+        )
+
     monthly_rows, mix_rows = refresh_cell_detail(conn, source_id, windows)
     refresh_city_snapshot(conn, source_id, pipeline_version, coverage, hour_share)
     conn.commit()
@@ -1491,8 +1741,11 @@ def refresh_all(
         "cell_exposure_rows": sum(exposure_cells.values()),
         "cell_activity_rows": activity_rows,
         "cell_safety_rows": safety_rows,
+        # None, not 0: "not rebuilt this run" and "rebuilt and produced nothing"
+        # are different outcomes and the caller prints this.
         "cell_hour_safety_rows": hour_rows,
         "cell_hour_profile_rows": hour_profile_rows,
+        "hourly_skipped": not include_hourly,
         "severity_weight_coverage": round(coverage, 4) if coverage is not None else None,
         "cell_monthly_rows": monthly_rows,
         "cell_offense_mix_rows": mix_rows,

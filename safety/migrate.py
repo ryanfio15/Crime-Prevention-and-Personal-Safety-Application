@@ -78,7 +78,15 @@ _CROSSWALK_COLUMNS = (
 
 
 def load_crosswalks(conn: psycopg.Connection) -> int:
-    """Upsert every reference/crosswalk/*.csv into reference.offense_crosswalk."""
+    """Upsert every reference/crosswalk/*.csv into reference.offense_crosswalk.
+
+    A row whose `raw_offense_text` is the single character `*` is a code-only
+    fallback: it matches any description published under that offense code, and
+    is consulted only when no exact code/text row matches (see the two-tier
+    lookup in safety/etl/transform.py). Nothing special happens here -- `*`
+    uppercases to itself -- but it is worth naming, because a file full of them
+    means a crosswalk that has given up on the source's text entirely.
+    """
     total = 0
     for path in sorted(CROSSWALK_DIR.glob("*.csv")):
         with path.open(newline="", encoding="utf-8") as fh:
@@ -373,6 +381,109 @@ def point_sources_at_scheme(conn: psycopg.Connection) -> int:
     return updated
 
 
+# Gold tables keyed by scheme_version, widest first so the hourly layer goes
+# before the all-hours ranking its baseline came from.
+_SCHEME_KEYED_TABLES = ("gold.cell_hour_safety", "gold.cell_safety")
+
+
+def prune_disabled_schemes(conn: psycopg.Connection) -> int:
+    """Reclaim the gold rows of a scheme that has been switched off.
+
+    scheme_version is part of the primary key of both tables above, so an extra
+    enabled scheme is an extra complete copy of the safety ranking -- and of the
+    hourly layer, which is that same ranking recomputed 24 times per window.
+    Setting `enabled` to false in schemes.csv stops the pipeline building one,
+    but the rows it has already written are not touched by any later refresh:
+    every rebuild is scoped to the scheme being rebuilt, which is what makes a
+    refresh of one scheme leave the others alone. So they would sit there
+    indefinitely, unreadable and unrefreshed.
+
+    A scheme still named by reference.source_registry is never pruned, even when
+    disabled. Those rows are what that city's map is drawn from, and deleting
+    them would blank it. Disabled-but-serving is a misconfiguration worth
+    reporting rather than acting on -- the fix is `--activate`, not a DELETE.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT scheme_version FROM reference.severity_scheme WHERE NOT enabled"
+        )
+        disabled = {r["scheme_version"] for r in cur.fetchall()}
+        if not disabled:
+            return 0
+
+        cur.execute(
+            """
+            SELECT DISTINCT severity_scheme_version AS v
+            FROM reference.source_registry
+            WHERE severity_scheme_version IS NOT NULL
+            """
+        )
+        in_use = {r["v"] for r in cur.fetchall()}
+
+    serving = sorted(disabled & in_use)
+    for version in serving:
+        log.warning(
+            "severity scheme '%s' is disabled but is still the scheme one or more "
+            "cities serve; keeping its rows. Point them at an enabled scheme with "
+            "`python -m safety.migrate --activate <scheme>`",
+            version,
+        )
+
+    prunable = sorted(disabled - in_use)
+    if not prunable:
+        return 0
+
+    removed = 0
+    with conn.cursor() as cur:
+        for table in _SCHEME_KEYED_TABLES:
+            cur.execute(
+                f"DELETE FROM {table} WHERE scheme_version = ANY(%s)", (prunable,)
+            )
+            if cur.rowcount:
+                log.info("pruned %s row(s) from %s", cur.rowcount, table)
+            removed += cur.rowcount
+    conn.commit()
+
+    if removed:
+        log.info(
+            "reclaimed %s gold row(s) for disabled scheme(s) %s",
+            removed,
+            ", ".join(prunable),
+        )
+        _vacuum(conn, _SCHEME_KEYED_TABLES)
+    return removed
+
+
+def _vacuum(conn: psycopg.Connection, tables: tuple[str, ...]) -> None:
+    """Plain VACUUM over tables a large DELETE has just been run against.
+
+    Plain and not FULL, deliberately. FULL would hand the space back to the
+    filesystem, but it takes an ACCESS EXCLUSIVE lock and needs free disk for a
+    whole rewritten copy -- the wrong thing to do unprompted on the small volume
+    that motivates pruning in the first place. Plain VACUUM marks the space
+    reusable by the same table, which is exactly where it goes: both of these are
+    rebuilt by delete-then-insert on every refresh, so they reuse it immediately
+    instead of growing the file again.
+
+    If the space is needed by something else -- a new city's partitions -- the
+    operator wants VACUUM FULL, and the log says so rather than guessing.
+    """
+    prior = conn.autocommit
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            for table in tables:
+                cur.execute(f"VACUUM (ANALYZE) {table}")
+    finally:
+        conn.autocommit = prior
+    log.info(
+        "vacuumed %s; the freed pages are reusable by those tables. To hand them "
+        "back to the filesystem instead, run VACUUM FULL on them during a quiet "
+        "window (it locks the table and needs room for a second copy).",
+        ", ".join(tables),
+    )
+
+
 def activate_scheme(conn: psycopg.Connection, scheme_version: str, source_id: str | None) -> int:
     """Promote a scheme to the one a city actually serves.
 
@@ -525,6 +636,13 @@ def backfill_h3_cells(conn: psycopg.Connection) -> int:
 # `dispatch_time` produced an empty hourly layer and no explanation for it.
 # The precision flag is the wrong question anyway: what matters is whether the
 # stored timestamp carries a time of day, and that can be measured directly.
+#
+# Scoped to one source. Every statement below is, and that is not cosmetic: the
+# decision rests on a *share* of rows, and each source has its own timestamp
+# semantics. Measured across a pooled six-city table, one source whose
+# occurred_at is a genuine UTC instant would drag `date_aligned` below the floor
+# and refuse the backfill for every city -- logging a diagnosis that is true of
+# none of them.
 _HOUR_AUDIT_SQL = """
 SELECT
     count(*)                                                     AS total,
@@ -539,6 +657,7 @@ SELECT
     count(DISTINCT EXTRACT(hour FROM occurred_at AT TIME ZONE 'UTC'))
                                                                  AS distinct_hours
 FROM silver.incident
+WHERE source_id = %(source_id)s
 """
 
 # If the stored timestamp really were UTC, every incident from 19:00 local
@@ -560,7 +679,8 @@ UPDATE silver.incident i
  WHERE (i.source_id, i.occurred_year, i.incident_key) IN (
         SELECT source_id, occurred_year, incident_key
         FROM silver.incident
-        WHERE occurred_local_hour IS NULL
+        WHERE source_id = %(source_id)s
+          AND occurred_local_hour IS NULL
           AND (
                 NOT %(skip_midnight)s::boolean
                 OR (occurred_at AT TIME ZONE 'UTC')::time <> '00:00:00'
@@ -572,7 +692,7 @@ UPDATE silver.incident i
 _HOUR_HISTOGRAM_SQL = """
 SELECT occurred_local_hour AS hour, count(*) AS n
 FROM silver.incident
-WHERE occurred_local_hour IS NOT NULL
+WHERE source_id = %(source_id)s AND occurred_local_hour IS NOT NULL
 GROUP BY 1 ORDER BY 1
 """
 
@@ -580,17 +700,38 @@ GROUP BY 1 ORDER BY 1
 def backfill_incident_hour(conn: psycopg.Connection) -> int:
     """Fill occurred_local_hour on rows loaded before the column existed.
 
+    One source at a time. The audit's verdict is a share of that source's own
+    rows, and the sources do not share timestamp semantics -- so a pooled
+    measurement would let one city's data decide another city's outcome.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT source_id FROM silver.incident ORDER BY source_id
+            """
+        )
+        sources = [r["source_id"] for r in cur.fetchall()]
+
+    if not sources:
+        log.info("no silver rows yet; nothing to backfill a clock hour onto")
+        return 0
+
+    return sum(_backfill_hour_for_source(conn, source_id) for source_id in sources)
+
+
+def _backfill_hour_for_source(conn: psycopg.Connection, source_id: str) -> int:
+    """Audit, then backfill, one source's clock hours.
+
     Reports what it measured and what it decided in every branch. A backfill
     that declines to run is a legitimate outcome here, but a silent one leaves
     the hourly layer empty with nothing to explain it.
     """
     with conn.cursor() as cur:
-        cur.execute(_HOUR_AUDIT_SQL)
+        cur.execute(_HOUR_AUDIT_SQL, {"source_id": source_id})
         audit = cur.fetchone() or {}
 
     total = audit.get("total") or 0
     if not total:
-        log.info("no silver rows yet; nothing to backfill a clock hour onto")
         return 0
     if audit["already_filled"] == total:
         return 0
@@ -599,9 +740,10 @@ def backfill_incident_hour(conn: psycopg.Connection) -> int:
         return (n or 0) / total * 100
 
     log.info(
-        "clock-hour audit over %s rows: %s already filled, %.1f%% flagged "
+        "%s clock-hour audit over %s rows: %s already filled, %.1f%% flagged "
         "occurred_precision='exact', %.1f%% whose UTC date matches the local "
         "date, %.1f%% stamped exactly midnight, %s distinct hours present",
+        source_id,
         total,
         audit["already_filled"],
         pct(audit["precision_exact"]),
@@ -612,10 +754,12 @@ def backfill_incident_hour(conn: psycopg.Connection) -> int:
 
     if (audit["distinct_hours"] or 0) <= 1:
         log.error(
-            "occurred_at carries no time of day at all -- every row sits on the "
-            "same hour -- so the clock hour cannot be recovered from it. Replay "
-            "the stored snapshots (python -m safety.etl.run reprocess --city "
-            "<city> --pull-id <id>) to read the hour from the source instead."
+            "%s: occurred_at carries no time of day at all -- every row sits on "
+            "the same hour -- so the clock hour cannot be recovered from it. "
+            "Replay the stored snapshots (python -m safety.etl.run reprocess "
+            "--city %s --pull-id <id>) to read the hour from the source instead.",
+            source_id,
+            source_id,
         )
         return 0
 
@@ -625,21 +769,25 @@ def backfill_incident_hour(conn: psycopg.Connection) -> int:
         # one: the hourly layer would render confidently and be shifted whole
         # hours, and nothing downstream could detect it.
         log.error(
-            "occurred_at does not look like local wall-clock for %.1f%% of "
+            "%s: occurred_at does not look like local wall-clock for %.1f%% of "
             "incidents, so the clock hour cannot be recovered from it. Leaving "
             "occurred_local_hour NULL; replay the bronze snapshots "
-            "(python -m safety.etl.run reprocess) to read the hour from the source.",
+            "(python -m safety.etl.run reprocess --city %s) to read the hour "
+            "from the source.",
+            source_id,
             (1 - aligned) * 100,
+            source_id,
         )
         return 0
 
     skip_midnight = (audit["at_midnight"] or 0) / total > _MIDNIGHT_SHARE_CEILING
     if skip_midnight:
         log.warning(
-            "%.1f%% of incidents are stamped exactly midnight, far above the "
+            "%s: %.1f%% of incidents are stamped exactly midnight, far above the "
             "~4%% a real clock produces: that value is standing in for a time "
             "the source did not publish. Those rows stay NULL and are absent "
             "from the hourly layers rather than counted at 00:00.",
+            source_id,
             pct(audit["at_midnight"]),
         )
 
@@ -648,17 +796,24 @@ def backfill_incident_hour(conn: psycopg.Connection) -> int:
         with conn.cursor() as cur:
             cur.execute(
                 _HOUR_BACKFILL_SQL,
-                {"skip_midnight": skip_midnight, "batch": _BACKFILL_BATCH},
+                {
+                    "source_id": source_id,
+                    "skip_midnight": skip_midnight,
+                    "batch": _BACKFILL_BATCH,
+                },
             )
             written = cur.rowcount
         conn.commit()
         if not written:
             break
         filled += written
-        log.info("backfilled occurred_local_hour for %s row(s)", written)
+        log.info("%s: backfilled occurred_local_hour for %s row(s)", source_id, written)
 
     if not filled:
-        log.warning("clock-hour backfill matched no rows; the hourly layers stay empty")
+        log.warning(
+            "%s: clock-hour backfill matched no rows; the hourly layers stay empty",
+            source_id,
+        )
         return 0
 
     # Print the day the backfill produced. A plausible one dips through the
@@ -666,16 +821,19 @@ def backfill_incident_hour(conn: psycopg.Connection) -> int:
     # everything, means the hour is not what it claims to be -- and this is the
     # only place that shape can be checked before it reaches a user.
     with conn.cursor() as cur:
-        cur.execute(_HOUR_HISTOGRAM_SQL)
+        cur.execute(_HOUR_HISTOGRAM_SQL, {"source_id": source_id})
         rows = cur.fetchall()
     log.info(
-        "hour distribution: %s",
+        "%s hour distribution: %s",
+        source_id,
         " ".join(f"{r['hour']:02d}:{r['n']}" for r in rows),
     )
     log.info(
-        "clock-hour backfill filled %s row(s); re-run the gold rollups "
-        "(python -m safety.etl.run hourly --city <city>) to build the hourly layers",
+        "%s: clock-hour backfill filled %s row(s); re-run the gold rollups "
+        "(python -m safety.etl.run hourly --city %s) to build the hourly layers",
+        source_id,
         filled,
+        source_id,
     )
     return filled
 
@@ -719,6 +877,9 @@ def main(argv: list[str] | None = None) -> int:
         point_sources_at_scheme(conn)
         if args.activate:
             activate_scheme(conn, args.activate, args.city)
+        # After --activate, so a scheme being promoted in this same run is never
+        # a candidate, and after the loader, so `enabled` reflects the CSV.
+        pruned = prune_disabled_schemes(conn)
         backfilled = backfill_h3_cells(conn)
         hours_filled = backfill_incident_hour(conn)
 
@@ -728,6 +889,8 @@ def main(argv: list[str] | None = None) -> int:
         print("Schema already up to date.")
     print(f"Crosswalk rows loaded/refreshed: {crosswalk_rows}")
     print(f"Severity schemes: {scheme_rows}, severity weights: {weight_rows}")
+    if pruned:
+        print(f"Gold rows reclaimed from disabled scheme(s): {pruned}")
     if backfilled:
         print(f"H3 cells backfilled: {backfilled} (re-run the gold rollups)")
     if hours_filled:

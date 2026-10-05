@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
-import time
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
@@ -59,9 +59,10 @@ app = FastAPI(
     title="Crime Prevention & Personal Safety API",
     version=PIPELINE_VERSION,
     description=(
-        "Phase 1 serving layer over precomputed H3 cell rollups for Philadelphia. "
+        "Serving layer over precomputed H3 cell rollups, one city at a time. "
         "Values are reported-incident density relative to other cells in the same "
-        "city -- not a risk score, and not a prediction."
+        "city -- not a risk score, not a prediction, and never comparable between "
+        "cities: every percentile is computed against that city's own distribution."
     ),
     lifespan=lifespan,
     docs_url="/docs" if settings.enable_docs else None,
@@ -103,41 +104,62 @@ Conn = Annotated[Any, Depends(get_conn)]
 
 # Values are serialized payloads, not objects, so a hit costs no re-encoding and
 # the size of an entry is something this module can actually measure.
-_cache: dict[tuple, tuple[float, str, str]] = {}
-_CACHE_MAX_ENTRIES = 64
-# A count alone stopped being a bound on memory when resolution 10 arrived: one
-# whole-city layer at that size is ~14 MB, so 256 of them is several gigabytes
-# in a container that has nothing like that. The budget holds every res-8 and
-# res-9 layer the map cycles through, plus a couple of res-10 ones.
-_CACHE_MAX_BYTES = 96 * 1024 * 1024
+#
+# An OrderedDict, used least-recently-used: the entry that has gone longest
+# without a read is the one evicted. With one city, clearing the whole cache on
+# overflow was the cheaper choice -- the map re-requested the same few layers
+# constantly and refilled within a handful of requests. Six cities break that.
+# The working set is now six times larger, and one pass over Los Angeles at
+# resolution 10, which is several times the size of Philadelphia's ~14 MB layer,
+# would evict every other city's layers on its way through. Evicting one entry
+# at a time is what stops a large city from repeatedly wiping the small ones.
+_cache: OrderedDict[tuple, tuple[str, str]] = OrderedDict()
 _cache_stats = {"hits": 0, "misses": 0, "bytes": 0, "evictions": 0}
 
 
-def _refresh_stamp(conn) -> str:
-    version = repo.serving_version(conn)
+def _refresh_stamp(conn, source_id: str | None = None) -> str:
+    """The stamp a cached entry is validated against.
+
+    Per city (S8.2: refresh cadence differs per city). Keying on the aggregate
+    would invalidate Philadelphia's cached layers every time Los Angeles
+    refreshed, which with a bi-weekly source against a daily one is most days.
+    """
+    version = repo.serving_version(conn, source_id)
     return str(version.get("last_refreshed_at"))
 
 
-def cached(conn, key: tuple, producer) -> str:
-    stamp = _refresh_stamp(conn)
+def cached(conn, key: tuple, producer, source_id: str | None = None) -> str:
+    stamp = _refresh_stamp(conn, source_id)
     hit = _cache.get(key)
-    if hit is not None and hit[1] == stamp:
+    if hit is not None and hit[0] == stamp:
+        _cache.move_to_end(key)
         _cache_stats["hits"] += 1
-        return hit[2]
+        return hit[1]
 
     _cache_stats["misses"] += 1
     value = producer()
-    # Drop everything rather than tracking an eviction order: the map re-requests
-    # the same few layers constantly, so the cache refills within a handful of
-    # requests and an LRU would buy little for the bookkeeping it costs.
-    if (
-        len(_cache) >= _CACHE_MAX_ENTRIES
-        or _cache_stats["bytes"] + len(value) > _CACHE_MAX_BYTES
+
+    if hit is not None:
+        # A stale entry for this key: drop it before accounting for the new one,
+        # or `bytes` drifts upward by the size of every layer ever refreshed.
+        _cache_stats["bytes"] -= len(hit[1])
+        del _cache[key]
+
+    # One entry alone can exceed the budget (a whole-city res-10 layer on a large
+    # city). Serve it, but do not try to store it -- admitting it would evict
+    # everything else and still not fit.
+    if len(value) > settings.cache_max_bytes:
+        return value
+
+    while _cache and (
+        len(_cache) >= settings.cache_max_entries
+        or _cache_stats["bytes"] + len(value) > settings.cache_max_bytes
     ):
-        _cache.clear()
-        _cache_stats["bytes"] = 0
+        _, evicted = _cache.popitem(last=False)
+        _cache_stats["bytes"] -= len(evicted[1])
         _cache_stats["evictions"] += 1
-    _cache[key] = (time.time(), stamp, value)
+
+    _cache[key] = (stamp, value)
     _cache_stats["bytes"] += len(value)
     return value
 
@@ -161,9 +183,14 @@ def health(conn: Conn) -> dict[str, Any]:
 
 
 @app.get(f"{API}/version", tags=["meta"])
-def version(conn: Conn) -> dict[str, Any]:
-    """Small poll target: the client reloads its layer when this changes."""
-    return repo.serving_version(conn)
+def version(conn: Conn, city: str | None = None) -> dict[str, Any]:
+    """Small poll target: the client reloads its layer when this changes.
+
+    Pass `city` to poll one city. The client does, because it displays one city
+    at a time: without it, a bi-weekly Los Angeles refresh would make every
+    Philadelphia viewer reload a layer that had not changed.
+    """
+    return repo.serving_version(conn, city)
 
 
 @app.get(f"{API}/cities", tags=["cities"])
@@ -208,6 +235,28 @@ def _validate_layer(res: int, window: str, category: str) -> None:
         raise HTTPException(400, f"window must be one of {list(repo.VALID_WINDOWS)}")
     if category not in repo.VALID_CATEGORIES:
         raise HTTPException(400, f"category must be one of {list(repo.VALID_CATEGORIES)}")
+
+    # Same principle as _validate_hour: an unbuilt combination would otherwise
+    # come back as a layer of zeroes, which is indistinguishable from a city
+    # where nothing was reported. Told, with the reason.
+    windows, categories = repo.activity_scope(res)
+    if window not in windows:
+        raise HTTPException(
+            400,
+            f"res {res} is built for window {list(windows)} only -- a cell that "
+            "size holds too little over a shorter window for a percentile to "
+            f"separate anything ({', '.join(w for w in repo.VALID_WINDOWS if w not in windows)} "
+            "leave nearly every cell on zero, tied with every other). Use a "
+            "coarser resolution for the shorter windows.",
+        )
+    if category not in categories:
+        raise HTTPException(
+            400,
+            f"res {res} is built for category {list(categories)} only -- splitting "
+            "a cell that size by offense category leaves almost every cell empty "
+            "in every category, so the ranking would be a field of ties. Use a "
+            "coarser resolution to break the layer down by category.",
+        )
 
 
 def _safety_available(res: int) -> bool:
@@ -324,6 +373,7 @@ def cells(
             ),
             default=str,
         ),
+        source_id=city,
     )
     return Response(
         content=payload,
@@ -543,7 +593,7 @@ def _denominator(record: dict[str, Any], scheme: dict[str, Any] | None) -> dict[
     by population is the obvious fix to "the map is really a population map",
     and dividing by *residents* is the obvious way to do it -- and it is wrong
     in a way that is worth stating rather than leaving for a user to discover
-    when the airport shows up as the most dangerous place in Philadelphia.
+    when the airport shows up as the most dangerous place in the city.
     """
     ambient = record.get("ambient_population")
     return {
@@ -554,11 +604,15 @@ def _denominator(record: dict[str, Any], scheme: dict[str, Any] | None) -> dict[
             "actually there."
         ),
         "why_not_residents_alone": (
-            "Because the places with almost no residents are not empty. The "
-            "airport, the Navy Yard, the stadium complex and the central business "
-            "district all have real reported incidents and very few people living "
-            "in them. Dividing those by residents alone would rank them the least "
-            "safe places in the city on arithmetic rather than on evidence -- worse "
+            "Because the places with almost no residents are not empty. "
+            + (
+                record.get("denominator_examples_note")
+                or "Airports, industrial land, parks and central business districts "
+                "all have real reported incidents and very few people living in "
+                "them."
+            )
+            + " Dividing those by residents alone would rank them the least safe "
+            "places in the city on arithmetic rather than on evidence -- worse "
             "than the area denominator it replaced, not better. Counting workplaces "
             "is what stops a place being scored as deserted when it is only "
             "deserted at night."
@@ -589,10 +643,10 @@ def _denominator(record: dict[str, Any], scheme: dict[str, Any] | None) -> dict[
         ),
         "resolution_limit": (
             "This is why the ranking is not offered at the finest cell size. A "
-            "resolution-10 hexagon is smaller than a typical city block, and "
-            "Philadelphia has more of them than it has census blocks -- any "
-            "population figure there would be the apportionment assumption handed "
-            "back as though it were a measurement."
+            "resolution-10 hexagon is smaller than a typical city block -- a city "
+            "has more of them than it has census blocks -- so any population "
+            "figure there would be the apportionment assumption handed back as "
+            "though it were a measurement."
         ),
         "not_a_demographic_overlay": (
             "Only head counts are used: total residents, total jobs. No race, "
@@ -601,12 +655,85 @@ def _denominator(record: dict[str, Any], scheme: dict[str, Any] | None) -> dict[
     }
 
 
-def _time_of_day(record: dict[str, Any]) -> dict[str, Any]:
+def _basis_limitation(basis: list[dict[str, Any]]) -> str:
+    """One line naming what this source's timestamps measure.
+
+    The short form, for the product-wide limitations list. `_timestamp_caveat`
+    is the long form, where it is the dominant source of error rather than one
+    item among several.
+    """
+    if len(basis) == 1:
+        return (
+            f"This source's timestamps record {basis[0]['label']}."
+            if basis[0]["occurred_basis"] == "occurrence"
+            else f"This source's timestamps record {basis[0]['label']}, not "
+            "observed occurrence times."
+        )
+    parts = ", ".join(
+        f"{row['label']} ({row['share'] * 100:.0f}%)" for row in basis[:3]
+    )
+    return f"Timestamps here are a mix: {parts}."
+
+
+def _timestamp_caveat(
+    record: dict[str, Any], basis: list[dict[str, Any]]
+) -> str:
+    """The hourly view's largest limitation, in this city's own terms.
+
+    Three parts: that it is the largest limitation, what this source's timestamps
+    measure, and — only where the timestamps are not an occurrence time — why
+    that skews the shape of the day rather than merely offsetting it.
+    """
+    opening = (
+        "This is the most important limitation of the hourly view, and it is "
+        "larger here than anywhere else in the product. "
+    )
+
+    note = record.get("occurrence_basis_note")
+    if note:
+        body = note
+    elif basis:
+        dominant = basis[0]
+        share = f"{dominant['share'] * 100:.0f}% of records" if len(basis) > 1 else "Records"
+        body = (
+            f"{share} here are timestamped with {dominant['label']}, which is not "
+            "necessarily the time an offence occurred."
+        )
+    else:
+        body = (
+            "The source's timestamps have not been characterised for this city "
+            "yet; treat the hour as approximate."
+        )
+
+    # The skew argument only holds for a timestamp driven by someone making a
+    # call. An actual recorded occurrence time does not cluster toward waking
+    # hours in the same way, and claiming it does would be its own error.
+    if any(row["occurred_basis"] in ("dispatch", "report") for row in basis):
+        body += (
+            " For an assault the two are minutes apart; for a burglary discovered "
+            "when someone gets home, or a car break-in noticed the next morning, "
+            "they are not. Reported times therefore cluster toward when people are "
+            "awake and calling, so the hourly view is closer to when incidents are "
+            "reported than to when crime happens."
+        )
+    return opening + body
+
+
+def _time_of_day(
+    record: dict[str, Any], basis: list[dict[str, Any]]
+) -> dict[str, Any]:
     """Explain the hourly view, and above all what its timestamps really are.
 
     The dispatch-versus-occurrence gap is disclosed for the whole product
     already, but it is a footnote at day resolution and the dominant source of
     error at hour resolution. It gets said again, here, in those terms.
+
+    Which terms those are is per city, and this is the passage where getting it
+    wrong would matter most. Philadelphia publishes a police dispatch time;
+    Seattle publishes a recorded offence start time. Stating the first over the
+    second would be a plain factual error about the data on screen, so the
+    caveat is assembled from what the records actually carry plus the source's
+    own note, rather than written once.
     """
     share = record.get("hour_known_share")
     return {
@@ -636,16 +763,8 @@ def _time_of_day(record: dict[str, Any]) -> dict[str, Any]:
             "at 2pm is 800% of an average hour, which is arithmetic rather than "
             "evidence."
         ),
-        "timestamp_caveat": (
-            "This is the most important limitation of the hourly view, and it is "
-            "larger here than anywhere else in the product. Philadelphia publishes "
-            "the time police were dispatched, not the time an offence occurred. "
-            "For an assault those are minutes apart; for a burglary discovered "
-            "when someone gets home, or a car break-in noticed the next morning, "
-            "they are not. Reported times therefore cluster toward when people are "
-            "awake and calling, and the hourly view is closer to when incidents "
-            "are reported than to when crime happens."
-        ),
+        "timestamp_caveat": _timestamp_caveat(record, basis),
+        "timestamp_basis": basis,
         "coverage": {
             "hour_known_share": round(share, 4) if share is not None else None,
             "note": (
@@ -658,10 +777,14 @@ def _time_of_day(record: dict[str, Any]) -> dict[str, Any]:
             "resolutions": list(repo.HOURLY_RESOLUTIONS),
             "windows": list(repo.HOURLY_WINDOWS),
             "note": (
-                "Built only for the two widest windows at the two coarser cell "
-                "sizes. Splitting a window 24 ways divides the evidence by 24, and "
-                "at the finest cell size over 30 days the median cell-hour has no "
-                "reported incidents at all -- there is no distribution left to rank."
+                "Built for the last 12 months at the two coarser cell sizes. "
+                "Splitting a window 24 ways divides the evidence by 24, and at the "
+                "finest cell size over 30 days the median cell-hour has no reported "
+                "incidents at all -- there is no distribution left to rank. The "
+                "24-month window is not built: recomputing a ranking inside every "
+                "hour of the day is the most storage-intensive thing this pipeline "
+                "produces, and at a year wide the hourly pattern is already stable "
+                "enough that a second year mostly restates it."
             ),
         },
         "known_limitations": [
@@ -689,6 +812,7 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
     record = repo.get_city(conn, city)
     if record is None:
         raise HTTPException(404, f"no serving data for city '{city}'")
+    basis = repo.occurrence_basis(conn, city)
     return {
         "what_this_shows": (
             "Counts of crime incidents reported to and recorded by police, aggregated "
@@ -709,17 +833,24 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
             "place where crime goes unreported, which is why those cells are shown "
             "in a neutral colour rather than at the safe end of the scale.",
         ],
+        # The per-city entries come from the registry and from what the records
+        # themselves carry, because these are facts about one agency's publishing
+        # practice rather than about the product. Stating Philadelphia's dispatch
+        # times over Seattle's recorded occurrence times would be a plain error.
         "known_limitations": [
             "Reported crime is shaped by how willing people are to report and by where "
             "police are deployed. Historically under-reported offence types and "
             "historically over-enforced ones do not appear here in proportion to how "
             "often they actually occur.",
-            "Coordinates are published at block level by the source agency, so no "
+            record["location_precision_note"]
+            or "Coordinates are published at block level by the source agency, so no "
             "reading below roughly a city block is meaningful.",
-            "Philadelphia publishes police dispatch times, not observed occurrence "
-            "times.",
-            "Recent records are preliminary and are revised and reclassified by the "
-            "department after first publication.",
+        ]
+        + ([_basis_limitation(basis)] if basis else [])
+        + [
+            record["freshness_note"]
+            or "Recent records are preliminary and are revised and reclassified by "
+            "the department after first publication.",
         ],
         "no_demographic_overlays": (
             "Crime data is never joined to race, income, or other demographic layers "
@@ -738,9 +869,15 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
                 "rounded to the block, so a smaller cell would show that rounding "
                 "rather than where crime happened. Incident counts are shown at "
                 "this size; the safety ranking is not, because a cell this small "
-                "has no population figure behind it that is not guesswork."
+                "has no population figure behind it that is not guesswork. Counts "
+                "here cover the last 12 and 24 months, and all offense types "
+                "together: a cell this small is empty in most single categories "
+                "over most shorter windows, so those breakdowns would rank a set "
+                "of cells that all hold zero against each other."
             ),
             "safety_resolutions": list(repo.SAFETY_RESOLUTIONS),
+            "fine_resolution_windows": list(repo.ACTIVITY_WINDOWS[10]),
+            "fine_resolution_categories": list(repo.ACTIVITY_CATEGORIES[10]),
             "relative_measure": (
                 "Each cell's percentile is the fraction of cells in the same city with "
                 "strictly lower reported-incident density for the same window and "
@@ -749,7 +886,7 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
             ),
         },
         "safety_measure": _safety_measure(conn, record),
-        "time_of_day": _time_of_day(record),
+        "time_of_day": _time_of_day(record, basis),
         "classification": {
             "standard": "FBI NIBRS offense codes, with the coarser UCR Part I / Part II "
             "split retained as a fallback where a precise NIBRS mapping is ambiguous.",
