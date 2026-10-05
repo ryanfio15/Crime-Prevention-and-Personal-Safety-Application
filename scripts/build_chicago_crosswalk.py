@@ -145,6 +145,56 @@ _RULES: tuple[tuple[tuple[str, ...], str, str, str, str, str, str], ...] = (
     (("RITUAL",), "13B", "Simple Assault", "A", "person", "violent", "part_ii"),
 )
 
+# Per-code corrections from the review pass, applied after the rules. Keyword
+# rules get most of IUCR right, but a handful of codes are misread by them
+# whatever the ordering: "AGG." does not contain "AGGRAVATED", a ritual
+# mutilation with a weapon matches WEAPON before RITUAL, and SEX OFFENSE is a
+# catch-all primary that files bigamy and adultery beside fondling. Keyed by
+# IUCR code so a fix cannot spill onto a neighbouring description.
+#
+# (nibrs_code, nibrs_name, group, crime_against, product_category,
+#  severity_bucket, reason)
+_AGG_ASSAULT = ("13A", "Aggravated Assault", "A", "person", "violent", "part_i_violent")
+_SIMPLE_ASSAULT = ("13B", "Simple Assault", "A", "person", "violent", "part_ii")
+_INTIMIDATION = ("13C", "Intimidation", "A", "person", "violent", "part_ii")
+_ALL_OTHER = ("90Z", "All Other Offenses", "B", "group_b", "other", "part_ii")
+_PROSTITUTION = ("40A", "Prostitution", "A", "society", "quality_of_life", "part_ii")
+_OVERRIDES: dict[str, tuple[tuple[str, ...], str]] = {
+    "0493": (_AGG_ASSAULT, "Aggravated ritual mutilation is an aggravated assault; the WEAPON rule fired first."),
+    "0510": (_AGG_ASSAULT, "'AGG.' abbreviation missed by the AGGRAVATED rule."),
+    "3970": (("210", "Extortion/Blackmail", "A", "property", "property", "part_ii"),
+             "Filed under INTIMIDATION by IUCR, but the offense is extortion."),
+    "3200": (_AGG_ASSAULT, "Illinois armed violence: a felony committed while armed. Not disorderly conduct."),
+    "3400": (("23H", "All Other Larceny", "A", "property", "property", "part_i_property"),
+             "Looting is a theft, not a public-peace offense."),
+    "1750": (_SIMPLE_ASSAULT, "Child abuse is a crime against the person; NIBRS files it as assault."),
+    "2820": (_INTIMIDATION, "A threat by telephone is NIBRS intimidation."),
+    "1504": (_PROSTITUTION, "Solicitation of a sexual act (720 ILCS 5/11-14.1) is a prostitution offense, not fondling."),
+    "1570": (("90Z", "All Other Offenses", "B", "group_b", "quality_of_life", "part_ii"),
+             "Public indecency, not fondling; same bucket as IUCR's own PUBLIC INDECENCY primary."),
+    "1572": (_ALL_OTHER, "Adultery is a status offense with no victim of force."),
+    "1574": (_ALL_OTHER, "Fornication is a status offense with no victim of force."),
+    "1576": (_ALL_OTHER, "Bigamy is not a sex offense against a person."),
+    "1578": (_ALL_OTHER, "Marrying a bigamist is not a sex offense against a person."),
+    "1564": (_ALL_OTHER, "Criminal transmission of HIV is not fondling."),
+    "1581": (_ALL_OTHER, "Non-consensual image dissemination has no NIBRS Group A target."),
+    "4255": (("90F", "Family Offenses, Nonviolent", "B", "group_b", "other", "part_ii"),
+             "Unlawful visitation interference is a custody dispute, not a kidnapping."),
+}
+
+# Codes no rule claims whose residual 90Z mapping was read and confirmed: court
+# order, registration, licensing and administrative violations with no Group A
+# equivalent. Listed so the review is recorded rather than re-flagged.
+_CONFIRMED_RESIDUAL = frozenset({
+    "1147", "2825", "2826", "2830", "3610", "4386", "4387", "4388", "4389",
+    "4410", "4420", "4510", "4625", "4650", "4651", "4652", "4740", "4750",
+    "4800", "4810", "5000", "5001", "5002", "5008", "5009", "500E", "500N",
+    "5011", "5013", "501H", "502P", "502R", "502T", "5110", "5111", "5112",
+    "5130", "5131", "5132", "9901",
+})
+
+REVIEW_NOTE = "Reviewed 2026-10-05."
+
 # Fallback for a code no rule claims. Deliberately loud: `ambiguous` plus the
 # residual NIBRS code, so `safety.etl.run weights` and the review pass both
 # surface it. It is never dropped -- S8.5 is explicit that an unmapped code is
@@ -224,6 +274,13 @@ def build_rows(iucr: list[dict[str, Any]]) -> list[dict[str, str]]:
             continue
 
         mapping, claimed = _classify(primary, secondary)
+        override_reason = ""
+        if code in _OVERRIDES:
+            mapping, override_reason = _OVERRIDES[code]
+            claimed = True
+        elif code in _CONFIRMED_RESIDUAL:
+            claimed = True
+            override_reason = "No Group A equivalent; residual 90Z confirmed."
         nibrs_code, nibrs_name, group, against, product, bucket = mapping
         # IUCR's own index flag is the source's judgement on Part I versus Part
         # II, which is a better signal than inferring one from the description.
@@ -269,9 +326,10 @@ def build_rows(iucr: list[dict[str, Any]]) -> list[dict[str, str]]:
                     "so it carries the residual NIBRS code. Map it or confirm the "
                     "residual is right."
                     if unclaimed
-                    else "Generated from the published IUCR list by "
-                    "scripts/build_chicago_crosswalk.py. Rule-based first pass; "
-                    "confirm the NIBRS target and the product category." + conflict
+                    else f"{REVIEW_NOTE} {override_reason}" + conflict
+                    if override_reason
+                    else f"{REVIEW_NOTE} Rule-based mapping from the published IUCR "
+                    "list, read and kept." + conflict
                 ),
             }
         )
