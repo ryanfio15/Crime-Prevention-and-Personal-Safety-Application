@@ -1375,11 +1375,13 @@ def cmd_enable(args: argparse.Namespace) -> int:
     if target:
         print(
             "The scheduled job will pick it up on its next run -- a source that "
-            "has never been pulled is always due -- or start now with:\n"
-            f"  python -m safety.etl.run backfill --city {config.source_id}\n"
-            f"  python -m safety.etl.run census   --city {config.source_id}\n"
-            f"  python -m safety.etl.run gold     --city {config.source_id}\n"
-            f"  python -m safety.etl.run weights  --city {config.source_id}"
+            "has never been pulled is always due -- or load it now with:\n"
+            "  python -m safety.ops\n"
+            "\n"
+            "which works out what this city is missing (backfill, then the "
+            "population denominator, then the gold rollups) and runs it in "
+            "dependency order. Then check it with:\n"
+            f"  python -m safety.etl.run weights --city {config.source_id}"
         )
     return 0
 

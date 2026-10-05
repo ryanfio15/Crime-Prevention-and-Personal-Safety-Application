@@ -20,11 +20,17 @@ Four pieces, called **services** in Railway:
 | `db` | The database (PostgreSQL with PostGIS) | No — internal only |
 | `api` | The website and its API | **Yes** — this is the address people visit |
 | `etl` | A scheduled job that downloads fresh crime data | No |
-| `ops` | A hand-run job for one-off tasks (adding a city, loading population data) | No |
+| `ops` | A hand-run job that brings the data up to date (adding a city, loading population data) | No |
 
 All four live in one Railway **project**. The `ops` service has no schedule and
-costs nothing when idle; it exists so that running a one-off command never means
+costs nothing when idle; it exists so that running a one-off task never means
 editing the `etl` service and breaking its schedule.
+
+**You set `ops`'s start command once and never touch it again.** It runs
+`python -m safety.ops`, which looks at what each enabled city is actually
+missing and does only that — so "load the population data", "finish the first
+load" and "onboard Chicago" are all the same single deploy, and re-running it is
+always safe. Step 3c covers it.
 
 ### Why one `etl` service and not one per city
 
@@ -418,20 +424,21 @@ delete this service.
 
 ---
 
-## Step 3c — Add the `ops` service for one-off tasks
+## Step 3c — Add the `ops` service
 
 Adding a city, loading its population denominator, and the first backfill are all
-one-off commands. Running them by editing the `etl` service's start command works
-but leaves that service pointed at the wrong command until you remember to change
-it back — and if the cron fires meanwhile, it runs the wrong thing.
+jobs that have to be run by hand once. Running them by editing the `etl`
+service's start command works but leaves that service pointed at the wrong
+command until you remember to change it back — and if the cron fires meanwhile,
+it runs the wrong thing.
 
 1. **+ New** → **GitHub Repo**, same repository. Rename it `ops`.
 2. **Settings → Deploy**: set **Restart Policy** to **Never**, leave **Cron
    Schedule** empty, leave **Healthcheck Path** empty.
-3. **Custom Start Command** — whatever you need right now, for example:
+3. **Custom Start Command** — set this once, and never edit it again:
 
    ```
-   python -m safety.etl.run status
+   python -m safety.ops
    ```
 
 4. Attach a volume at `/data/bronze` if you will run backfills or census loads
@@ -441,8 +448,85 @@ it back — and if the cron fires meanwhile, it runs the wrong thing.
    lands in the database; if you want one coherent archive, run backfills by
    temporarily pointing the `etl` service at them instead.
 5. **Variables** — the same block as `etl`.
-6. To run a task: edit the start command, click **Deploy**, read the **Logs**.
-   The service sits idle and costs nothing between runs.
+6. To run it: click **Deploy** and read the **Logs**. The service sits idle and
+   costs nothing between runs.
+
+### What it does
+
+`python -m safety.ops` is a convergence loop, not a script. Each run asks the
+database what every enabled city is actually missing, then does only that:
+
+| What it finds | What it runs |
+|---|---|
+| No completed incident pull | `backfill` |
+| No census blocks | `census` |
+| No gold snapshot, or one built before the last pull, or one stamped with an older pipeline version | `gold` |
+| No time-of-day rows at all | `hourly` — folded into the step above when one is already running |
+
+So the same single deploy covers every one-off workflow in this guide. A city
+enabled ten minutes ago gets the full `backfill` → `census` → `gold` sequence in
+dependency order; a healthy deployment gets a handful of `EXISTS` queries and an
+exit. Nothing has to be sequenced by hand, and the order can no longer be got
+wrong — which mattered, because getting it wrong failed quietly rather than
+loudly (see step 4).
+
+Before it does anything, it prints the plan and why:
+
+```
+2 enabled cities: chi, phl
+  chi   backfill  <- no completed incident pull on record
+  chi   census    <- no census blocks loaded, so the safety ranking has no population denominator
+  chi   gold      <- the population denominator is being loaded in this run
+  phl   up to date
+```
+
+Four variables change its behaviour, and none of them is normally needed:
+
+| Variable | Effect |
+|---|---|
+| `OPS_DRY_RUN=1` | Print the plan and the commands it would run, then exit. Worth doing once before a first big backfill. |
+| `OPS_CITY=chi` | Converge one city instead of every enabled one. |
+| `OPS_FORCE=1` | Run every planned step regardless of recent failures (see below). |
+| `OPS_RETRY_COOLDOWN_HOURS=6` | How long a failed step is left alone before being retried. |
+
+**Re-running is safe, including by accident.** A push to `main` redeploys `ops`
+along with everything else, and this is the reason its start command no longer
+needs to be parked on something harmless: a converge run against an up-to-date
+deployment does nothing. It also keeps a ledger in `etl.ops_run`, so a step that
+failed is not retried for six hours — without that, a city whose portal is down
+would get a fresh 24-month backfill attempt on every unrelated code change. Set
+`OPS_FORCE=1` to override once the portal is back.
+
+**One ordering rule on a brand-new project:** deploy `api` before `ops`. Only
+`api` runs migrations (see the developer notes at the end), so until it has
+deployed once there is no schema for `ops` to read. It says so clearly rather
+than failing obscurely.
+
+**What it deliberately does not do** is enable cities, or run migrations. Both
+are covered in step 6 and the developer notes respectively.
+
+### Running something else from `ops`
+
+Convergence covers the routine workflows. The deliberate one-offs — comparing two
+severity schemes, releasing census geometry to reclaim disk, activating a
+different severity scheme — are still a start-command edit on this service, and
+still one command per deploy:
+
+```
+python -m safety.etl.run status
+```
+
+```
+python -m safety.etl.run weights --city chi
+```
+
+```
+python scripts/storage.py sizes
+```
+
+Set the start command back to `python -m safety.ops` when you are done. Nothing
+breaks if you forget — the next push just re-runs whichever one you left it on —
+but a converge run is the better thing to have pointed at.
 
 ---
 
@@ -463,27 +547,21 @@ records loaded.
 Only Philadelphia loads at this point. The other five cities are seeded in the
 registry but `enabled = false`, so nothing touches them — see step 6.
 
-Because step 3 passes `--skip-hourly`, the time-of-day view stays empty until
-`etl-hourly` runs. To see it immediately, use the `ops` service with:
-
-```
-python -m safety.etl.run hourly --all
-```
-
-### The first load does not finish on its own — two more commands
+### The first load does not finish on its own — deploy `ops` once
 
 This catches everyone once, and the failure modes are quiet rather than obvious.
 The safety ranking divides by ambient population, and on a fresh database there
-is none loaded yet to divide by.
+is none loaded yet to divide by. The time-of-day view is also empty, because
+step 3 passes `--skip-hourly` and `etl-hourly` has not had a Sunday yet.
 
-Run these on the `ops` service, one per deploy, in this order:
+Both are fixed by one deploy of the `ops` service. Open it and click **Deploy**.
+It will find Philadelphia missing its population denominator and its time-of-day
+layers, and run what is needed:
 
 ```
-python -m safety.etl.run census --city phl
-```
-
-```
-python -m safety.etl.run gold --city phl
+1 enabled city: phl
+  phl   census    <- no census blocks loaded, so the safety ranking has no population denominator
+  phl   gold      <- the population denominator is being loaded in this run
 ```
 
 **Why each one.** `census` downloads the TIGER block shapefile and LODES job
@@ -491,17 +569,25 @@ counts and apportions them into cells; without it the log says `no census blocks
 loaded for 'phl'; skipping the exposure layer` and the per-capita scheme cannot
 be built. It needs the coverage boundary, which the backfill has already fetched.
 
-`gold` then rebuilds the rankings against the new denominator.
+`gold` then rebuilds the rankings against the new denominator, and builds the
+time-of-day layers in the same pass rather than waiting for Sunday.
 
-**This used to be three commands.** A `python -m safety.migrate --activate
-nscs_v2_percapita` was needed in between, and it was the step everyone missed.
-`safety.migrate` only auto-selects a serving scheme when exactly one is enabled,
-and two used to ship enabled — so it left `severity_scheme_version` NULL, the map
-layer's join on that value matched nothing, and **the safety ramp was simply
-absent** while counts still rendered, which looks like a working page. Only
-`nscs_v2_percapita` ships enabled now (see `PHASE2.md`, "Fitting six cities on one
-volume", for why the second copy was costing more than it was worth), so the
-pointer is filled automatically and this resolves itself.
+**This used to be three commands and three deploys,** and both of the things that
+made it error-prone are now gone.
+
+The order was not optional: run `gold` before `census` and the exposure layer is
+skipped with a log line, leaving a map with counts and no safety ramp — a page
+that looks like it is working. Working the order out is exactly what
+`safety.ops` is for.
+
+In between the two, a `python -m safety.migrate --activate nscs_v2_percapita` was
+also needed, and it was the step everyone missed. `safety.migrate` only
+auto-selects a serving scheme when exactly one is enabled, and two used to ship
+enabled — so it left `severity_scheme_version` NULL, the map layer's join on that
+value matched nothing, and **the safety ramp was simply absent** while counts
+still rendered. Only `nscs_v2_percapita` ships enabled now (see `PHASE2.md`,
+"Fitting six cities on one volume", for why the second copy was costing more than
+it was worth), so the pointer is filled automatically and this resolves itself.
 
 `--activate` still exists and is still the only way to *change* a serving scheme,
 because promoting one changes what every safety number in the product means. It is
@@ -543,35 +629,44 @@ A city is ready to enable when all four of these exist: an adapter, a reviewed
 crosswalk, a coverage boundary, and a first backfill you have actually read. See
 [`PHASE2.md`](PHASE2.md) for the per-city checks and which cities are ready.
 
-**1. Enable it.** Open the `db` service's **Data** tab (or connect any SQL client
-to the public proxy URL Railway shows there) and run one statement:
-
-```sql
-UPDATE reference.source_registry SET enabled = true WHERE source_id = 'chi';
-```
-
-**2. Load it.** On the `ops` service, set the start command and click **Deploy**.
-One command per deploy, in this order — the second needs the first, because the
-population figures are trimmed to the city boundary the backfill fetches:
+**1. Enable it.** On the `ops` service, set the start command to this one, click
+**Deploy**, and read the log:
 
 ```
-python -m safety.etl.run backfill --city chi
+python -m safety.etl.run enable --city chi
 ```
 
-```
-python -m safety.etl.run census --city chi
-```
+This is a deliberate, separate act rather than something `safety.ops` decides,
+and it checks the city is ready before agreeing — an enabled city with no
+crosswalk loads perfectly happily and files every incident as `other` /
+`unknown`, which is a complete, plausible, wrong map. It refuses and says what is
+missing.
+
+(A `UPDATE reference.source_registry SET enabled = true WHERE source_id = 'chi';`
+in the `db` service's **Data** tab does the same thing without the checks.)
+
+**2. Load it.** Set the start command back to `python -m safety.ops` and click
+**Deploy**. One deploy, and it works out the rest:
 
 ```
-python -m safety.etl.run gold --city chi
+2 enabled cities: chi, phl
+  chi   backfill  <- no completed incident pull on record
+  chi   census    <- no census blocks loaded, so the safety ranking has no population denominator
+  chi   gold      <- the population denominator is being loaded in this run
+  phl   up to date
 ```
 
-Or skip all three and just wait: the six-hourly `etl` job sees a city with no
+The order is not arbitrary and is not negotiable: `census` trims the population
+figures to the city boundary that `backfill` fetches, and `gold` ranks against the
+denominator `census` loads.
+
+Or skip this entirely and just wait: the six-hourly `etl` job sees a city with no
 watermark and does the full backfill itself. It will not load the population
 denominator, though, so the safety ranking stays area-based for that city until
-`census` runs.
+`ops` next runs.
 
-**3. Read the checks before trusting it.**
+**3. Read the checks before trusting it.** These are reports rather than work, so
+they are not part of convergence — one command per deploy on `ops`:
 
 ```
 python -m safety.etl.run status
@@ -595,10 +690,11 @@ control that cannot do anything.
 > comparison view, and why switching cities replaces the map rather than adding to
 > it.
 
-**Turning a city back off** is the same `UPDATE` with `false`. Its data stays in
-the database and stays visible on the site — `enabled` controls whether the ETL
-pulls it, not whether the API serves it. To take it off the site, delete its
-`gold.city_snapshot` row.
+**Turning a city back off** is `python -m safety.etl.run enable --city chi --off`
+(or the same `UPDATE` with `false`). Its data stays in the database and stays
+visible on the site — `enabled` controls whether the ETL pulls it, not whether the
+API serves it, and `safety.ops` likewise stops converging it. To take it off the
+site, delete its `gold.city_snapshot` row.
 
 ---
 
@@ -606,17 +702,28 @@ pulls it, not whether the API serves it. To take it off the site, delete its
 
 **Updating the code.** Push to the `main` branch on GitHub. Railway rebuilds and
 redeploys every service that deploys from the repo — `api`, `etl`, `etl-hourly`
-and `ops`. Nothing else to do. Note `ops` will re-run whatever start command it
-was last left pointing at, so leave it on something harmless like
-`python -m safety.etl.run status`.
+and `ops`. Nothing else to do.
+
+`ops` re-runs on that push like everything else, which is harmless as long as its
+start command is the `python -m safety.ops` it was set to in step 3c: against an
+up-to-date deployment a converge run does nothing, and a step that failed
+recently is left alone for six hours rather than retried on every push. If you
+left it pointing at some other command after a one-off, that is what will re-run.
+
+A push that bumps `PIPELINE_VERSION` is the one case where the `ops` redeploy
+does substantial work on purpose: every city's gold snapshot is then stamped with
+the old version, and convergence rebuilds them. That is the intended behaviour —
+the stamp changes when the meaning of the output changes — but it is worth
+knowing before wondering why a one-line change took twenty minutes.
 
 **Fresh data.** Handled by the `etl` schedule every six hours, and `etl-hourly`
 weekly. No action needed.
 
 **Annual maintenance.** One real item: the jobs half of the population
 denominator comes from LODES, which publishes yearly. Bump `LODES_YEAR` in
-`safety/etl/census.py` and re-run `census` per city from `ops`. The population
-half is decennial and will not move until the 2030 Census.
+`safety/etl/census.py`, then run `census` per city from `ops` — a version bump
+alone is not something convergence can detect, since the blocks are loaded either
+way. The population half is decennial and will not move until the 2030 Census.
 
 **Backups.** Railway does not back up volumes on every plan. If this data
 matters, check your plan's backup options for the `db` service volume. The data
@@ -706,6 +813,28 @@ cause is a per-capita scheme with no census data loaded.
 instance's memory (step 2). The default is sized for six cities and will use what
 it is given; on a small instance it needs lowering.
 
+**`ops` says `etl.ops_run does not exist`.** The schema has not been migrated yet.
+Only `api` runs migrations, so on a new project it has to deploy once before
+`ops` has anything to read. Deploy `api`, wait for its Pre-Deploy Command, then
+redeploy `ops`.
+
+**`ops` reports a step `skipped` rather than running it.** It is reading the
+`etl.ops_run` ledger: the step failed within the retry cooldown, and the message
+quotes the original error and how long ago. This is deliberate — it stops a
+down city portal being hammered on every push to `main`. Set `OPS_FORCE=1` to
+retry immediately, and unset it afterwards.
+
+**`ops` reports a step `blocked`.** Something earlier in that city's chain failed
+or was skipped, so the rest was abandoned rather than run against incomplete
+inputs — there is no point refreshing `gold` after `census` failed, because it
+would succeed and write a snapshot with no exposure layer, which looks done.
+Read the `failed` entry in the same summary.
+
+**`ops` says a city is up to date but the time-of-day view is empty.** Look for
+the `note` line in its output. If no incident carries a clock hour, those layers
+cannot be built at all and convergence correctly stops asking; recover the hour
+from the stored snapshots with `python -m safety.etl.run reprocess --city <id>`.
+
 ---
 
 ## Notes for developers
@@ -721,6 +850,30 @@ per service, so `etl` and `etl-hourly` cannot be one service with two schedules.
 All four services run the same image, built from `Dockerfile`, and differ only in
 start command and variables. `safety/config.py` reads all configuration from
 environment variables, so no `.env` file exists or is needed in the container.
+
+**Why `ops` converges rather than running a named task.** The honest constraint
+is that Railway redeploys on a variable change exactly as it does on a start
+command change, so an `OPS_TASK=onboard` style dispatcher would not have saved a
+single deploy over editing the start command — it would only have saved typing.
+What actually collapsed five deploys into one was bundling the sequence, and once
+the sequence is bundled, deriving it from the data costs almost nothing and buys
+the property that makes it safe on this platform: a service that redeploys on
+every push has to be safe to re-run.
+
+So `safety/ops.py` decides what is needed by inspecting the data — is there a
+completed pull, are there census blocks, is the snapshot current — and never by
+reading its own ledger. Convergence is therefore self-correcting: truncate
+`etl.ops_run` and the next run still does exactly the right work. The ledger
+exists only for retry backoff, which the data genuinely cannot answer, because
+"this city has no incidents" looks identical whether nobody has tried or somebody
+has tried and failed four times in the last hour.
+
+Two decisions sit deliberately outside it. Enabling a city is the moment its
+numbers start being shown to people, so it stays a manual act with its own
+readiness checks (`safety.etl.run enable`). And the staleness of the time-of-day
+layers belongs to `etl-hourly`'s weekly schedule — `ops` builds them only when a
+city has never had them, which is the gap between a first load and the next
+Sunday.
 
 **Cadence lives in the database, not in cron.** `--due-only` reads
 `reference.source_registry.expected_cadence` and the timestamp of the last
@@ -738,9 +891,13 @@ to ask. Two details in `safety/etl/run.py` worth knowing before changing it:
   pull would be wrong.
 
 **Only one service should run migrations.** `python -m safety.migrate` is the
-`api` service's Pre-Deploy Command and belongs nowhere else. It is idempotent, so
+`api` service's Pre-Deploy Command and belongs nowhere else — including `ops`,
+which is the service it would be most tempting to add it to. It is idempotent, so
 a second caller would be harmless rather than dangerous, but two services racing
-to apply the same DDL on a shared push is worth not arranging.
+to apply the same DDL on a shared push is worth not arranging. The cost of that
+rule is an ordering constraint on a brand-new project: `api` has to deploy once
+before `ops` has a schema to read, which `safety/ops.py` checks for explicitly
+and reports in those terms rather than failing on a missing relation.
 
 **Leave the `api` service's start command empty.** Railway passes a custom start
 command as argv, with no shell, so `$PORT` in it stays a literal string and

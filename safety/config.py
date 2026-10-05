@@ -78,6 +78,28 @@ class Settings(BaseSettings):
     # Register one at https://evergreen.data.socrata.com/signup
     socrata_app_token: str = ""
 
+    # --- ops convergence (safety/ops.py) ---------------------------------
+    #
+    # Settings rather than flags because the `ops` service is driven by Railway
+    # variables: its start command is set once to `python -m safety.ops` and
+    # never edited again, so anything an operator needs to vary has to be
+    # reachable as an environment variable. The CLI flags are the local
+    # equivalent and override these.
+    #
+    # One city instead of every enabled one.
+    ops_city: str = ""
+    # Re-run a step the ledger says was attempted recently. The escape hatch for
+    # "I know it failed, the portal is back up now, go".
+    ops_force: bool = False
+    # Print the plan and exit without doing any of it.
+    ops_dry_run: bool = False
+    # How long a failed step is left alone before it is retried. This exists
+    # because the ops service redeploys on every push to `main`: without a
+    # cooldown, a city whose portal is down gets a fresh 24-month backfill
+    # attempt on every unrelated code change. Six hours is below the ETL's own
+    # six-hourly tick, so a genuine outage is still retried promptly.
+    ops_retry_cooldown_hours: float = 6.0
+
     # Bound on a single connection attempt. Without it libpq waits out the OS
     # TCP timeout, which only matters when a host accepts the packets and never
     # answers -- a wrong hostname on a platform network, say, rather than one
