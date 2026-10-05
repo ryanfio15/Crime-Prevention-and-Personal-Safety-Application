@@ -64,4 +64,3 @@ sea_v1,sea,90I,*,,90I,Runaway,B,group_b,II,part_ii,other,exact,2019-05-01,,Sourc
 sea_v1,sea,90J,*,,90J,Trespass of Real Property,B,group_b,II,part_ii,quality_of_life,exact,2019-05-01,,Source publishes the NIBRS code; category from scripts/build_nibrs_crosswalk.py.
 sea_v1,sea,90Z,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,exact,2019-05-01,,Source publishes the NIBRS code; category from scripts/build_nibrs_crosswalk.py.
 sea_v1,sea,500,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2019-05-01,,SPD local code for violation of a no-contact order; residual 90Z.
-sea_v1,sea,999,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2019-05-01,,"SPD 'not reportable to NIBRS' -- not an offense; residual 90Z, product 'other'."

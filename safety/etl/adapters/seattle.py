@@ -4,8 +4,10 @@ Source quirks isolated here:
 
 * **NIBRS codes are published on every record** (`nibrs_offense_code`), so the
   crosswalk maps code to code and is `exact` (scripts/build_nibrs_crosswalk.py).
-  Two non-NIBRS codes appear: `500` (SPD's no-contact-order extension) and `999`
-  ("not reportable to NIBRS"); both are carried and filed under the residual.
+  Two non-NIBRS codes appear: `500` (SPD's no-contact-order extension), carried
+  and filed under the residual, and `999`, "not reportable to NIBRS" -- found
+  property, death investigations and other reports that are not offenses. 999
+  records are not promoted (see `normalize`); they stay in bronze verbatim.
 * `offense_date` is the **offense start time**, a real occurrence timestamp --
   the difference from Philadelphia's dispatch time that `occurred_basis` exists
   to record. Socrata floating, read as Seattle local wall clock.
@@ -49,6 +51,9 @@ _INCIDENT_COLUMNS = (
 # SPD's placeholder for a withheld value, and the dash it uses for "none".
 _WITHHELD = {"REDACTED", "-"}
 
+# SPD's code for a report that is "not reportable to NIBRS".
+_NOT_AN_OFFENSE = "999"
+
 
 class SeattleSocrataAdapter(SocrataAdapter):
     incident_columns = _INCIDENT_COLUMNS
@@ -66,6 +71,12 @@ class SeattleSocrataAdapter(SocrataAdapter):
     def normalize(self, record: dict[str, Any]) -> NormalizedIncident | None:
         source_incident_id = self._value(record.get("offense_id"))
         if source_incident_id is None:
+            return None
+        # Not an offense by SPD's own classification. Every incident in silver
+        # carries a severity weight, and the scale's floor is above zero, so
+        # loading these would rank a cell on found property and welfare checks
+        # -- about 8% of SPD's records. The raw rows remain in bronze.
+        if self._value(record.get("nibrs_offense_code")) == _NOT_AN_OFFENSE:
             return None
 
         occurred_at = self._parse_local(record.get("offense_date"))

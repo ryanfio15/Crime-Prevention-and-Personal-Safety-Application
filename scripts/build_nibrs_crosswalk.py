@@ -105,10 +105,8 @@ _LOCAL: dict[str, dict[str, tuple[str, str]]] = {
         # SPD's own extension for no-contact-order violations; NIBRS has no
         # Group A target, and the FBI's guidance files these under 90Z.
         "500": ("90Z", "SPD local code for violation of a no-contact order; residual 90Z."),
-        # "Not Reportable to NIBRS": a report SPD took that is not an offense
-        # (found property, death investigation). Kept and filed under the
-        # residual so it is counted honestly rather than dropped.
-        "999": ("90Z", "SPD 'not reportable to NIBRS' -- not an offense; residual 90Z, product 'other'."),
+        # "Not Reportable to NIBRS" (999) is deliberately absent: the Seattle
+        # adapter does not promote those records, since they are not offenses.
     },
     "lax": {},
 }
