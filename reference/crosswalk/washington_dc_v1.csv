@@ -1,0 +1,10 @@
+crosswalk_version,source_id,raw_offense_code,raw_offense_text,raw_source_category,nibrs_code,nibrs_offense_name,nibrs_group,nibrs_crime_against,ucr_part,severity_bucket,product_category,mapping_confidence,effective_from,effective_to,notes
+dc_v1,dc,HOMICIDE,*,,09A,Murder and Nonnegligent Manslaughter,A,person,I,part_i_violent,violent,exact,2008-01-01,,
+dc_v1,dc,SEX ABUSE,*,,11A,Rape,A,person,I,part_i_violent,violent,approximate,2008-01-01,,"DC Code first- and second-degree sexual abuse, the District's rape statutes. MPD publishes only these Part I degrees here, so fondling-level offenses are absent rather than mixed in."
+dc_v1,dc,ASSAULT W/DANGEROUS WEAPON,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2008-01-01,,
+dc_v1,dc,ROBBERY,*,,120,Robbery,A,property,I,part_i_violent,violent,exact,2008-01-01,,Violent though NIBRS files it against property; same call as every other crosswalk.
+dc_v1,dc,BURGLARY,*,,220,Burglary/Breaking and Entering,A,property,I,part_i_property,property,exact,2008-01-01,,
+dc_v1,dc,ARSON,*,,200,Arson,A,property,I,part_i_property,property,exact,2008-01-01,,
+dc_v1,dc,MOTOR VEHICLE THEFT,*,,240,Motor Vehicle Theft,A,property,I,part_i_property,property,exact,2008-01-01,,
+dc_v1,dc,THEFT F/AUTO,*,,23F,Theft From Motor Vehicle,A,property,I,part_i_property,property,exact,2008-01-01,,
+dc_v1,dc,THEFT/OTHER,*,,23H,All Other Larceny,A,property,I,part_i_property,property,approximate,2008-01-01,,"MPD's residual theft category; includes shoplifting and theft from building, which NIBRS would split out."
