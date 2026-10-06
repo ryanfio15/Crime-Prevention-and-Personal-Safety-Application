@@ -1,0 +1,29 @@
+# One continuous-deployment tick for one instance: `safety-autodeploy@prod`
+# follows main, `safety-autodeploy@dev` follows testing (deploy/autodeploy.sh).
+# Started every minute by safety-autodeploy@<instance>.timer; `systemctl start
+# safety-autodeploy@dev` runs one by hand.
+#
+# Root, because a deploy rsyncs into the instance tree, chowns it and restarts
+# safety-api@. The script and install.sh run from root-owned copies outside
+# /srv (deploy/install-deployer.sh), and repository code runs as `safety` via
+# runuser, which works under NoNewPrivileges. Writable: the instance trees, the
+# `safety` pip cache, and the state directory.
+
+[Unit]
+Description=Safety continuous deployment (%i)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/safety-autodeploy %i
+# pip plus a migrate that scans silver.incident can take minutes.
+TimeoutStartSec=15min
+StateDirectory=safety-deploy
+StateDirectoryMode=0700
+ReadWritePaths=/srv/safety/Crime-Prevention-and-Personal-Safety-Application -/srv/safety/.cache
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict

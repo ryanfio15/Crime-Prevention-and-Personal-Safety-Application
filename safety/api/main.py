@@ -26,7 +26,7 @@ from psycopg_pool import ConnectionPool
 from safety import PIPELINE_VERSION
 from safety.api import repository as repo
 from safety.api.ratelimit import RateLimitMiddleware
-from safety.config import WEB_DIR, settings
+from safety.config import REPO_ROOT, WEB_DIR, settings
 from safety.h3grid import RESOLUTIONS, cell_resolution, cells_for_point, grid_disk, is_valid_cell
 
 log = logging.getLogger(__name__)
@@ -169,11 +169,29 @@ def cached(conn, key: tuple, producer, source_id: str | None = None) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _deployed_commit() -> str | None:
+    """The full sha deploy/lib/install.sh wrote next to the code, if any.
+
+    Read once at import: a deploy always restarts uvicorn, so the file cannot
+    change under a running process. The auto deployer compares this with the
+    sha it just installed to know the restart picked up the new tree. None on a
+    checkout that was never deployed (local development, the Railway image).
+    """
+    try:
+        return (REPO_ROOT / "DEPLOYED_COMMIT").read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+DEPLOYED_COMMIT = _deployed_commit()
+
+
 @app.get(f"{API}/health", tags=["meta"])
 def health(conn: Conn) -> dict[str, Any]:
     version = repo.serving_version(conn)
     return {
         "status": "ok",
+        "commit": DEPLOYED_COMMIT,
         "pipeline_version": PIPELINE_VERSION,
         "data_as_of": version.get("data_as_of"),
         "last_refreshed_at": version.get("last_refreshed_at"),

@@ -1,0 +1,71 @@
+# The gate for continuous deployment on the home server: the auto deployer
+# (deploy/autodeploy.sh) installs a pushed commit only once the check run named
+# `ci` on it has concluded `success`. The job id and name are therefore part of
+# that contract -- rename them and nothing deploys -- and there is no matrix,
+# because a matrix would publish `ci (x)` check runs instead of `ci`.
+name: ci
+
+on:
+  push:
+    branches: [main, testing]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    # The same image docker-compose.yml runs, so migrations are exercised
+    # against the PostGIS they will meet in production.
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_USER: safety
+          POSTGRES_PASSWORD: safety_ci_pw
+          POSTGRES_DB: safety
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U safety -d safety"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # safety/config.py defaults to 55432, the port docker-compose.yml
+      # publishes locally; the service container is on the standard one.
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: safety
+      POSTGRES_PASSWORD: safety_ci_pw
+      POSTGRES_DB: safety
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Byte-compile
+        run: python -m compileall -q safety
+      # Importing the entry points catches a missing dependency or a broken
+      # module-level statement that compileall cannot see.
+      - name: Import entry points
+        run: python -c "import safety.api.main, safety.migrate, safety.etl.run"
+      - name: Migrate CLI parses
+        run: python -m safety.migrate --help
+      # One file per bash -n: given several, it parses the first and treats the
+      # rest as that script's arguments.
+      - name: Deploy scripts parse
+        run: for f in deploy/*.sh deploy/lib/*.sh; do bash -n "$f"; done
+      - name: Shellcheck deploy scripts
+        run: shellcheck deploy/*.sh deploy/lib/*.sh
+      # Twice: every deploy re-runs migrate against a database that is already
+      # up to date, so the second pass is the one that matches production.
+      - name: Migrate (fresh database)
+        run: python -m safety.migrate
+      - name: Migrate again (idempotency)
+        run: python -m safety.migrate

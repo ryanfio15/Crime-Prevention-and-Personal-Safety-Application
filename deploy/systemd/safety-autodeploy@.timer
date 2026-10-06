@@ -1,0 +1,18 @@
+# Polls GitHub once a minute; the script itself throttles API calls to one per
+# two minutes per instance and stays silent on a commit it has given up on.
+# Enabled per instance, explicitly:
+#
+#   systemctl enable --now safety-autodeploy@dev.timer
+#   systemctl stop safety-autodeploy@prod.timer     # pause prod deploys
+
+[Unit]
+Description=Safety continuous deployment check (%i)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=safety-autodeploy@%i.service
+
+[Install]
+WantedBy=timers.target

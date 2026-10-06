@@ -914,3 +914,123 @@ callers get an empty reply rather than a refusal. Railway's edge proxy arrives
 over IPv4. The IPv6-only private network matters for *outbound* connections to
 the database, which the listen address has no bearing on. Verified by running
 the image both ways against a local PostGIS container.
+
+## Continuous deployment (home server)
+
+The home server runs two instances side by side, each a copy of the repository
+under `/srv/safety/Crime-Prevention-and-Personal-Safety-Application/` with its
+own `.venv`, `.env` and `data/`: `prod` follows `main` (`safety-api@prod`, port
+8000) and `dev` follows `testing` (`safety-api@dev`, port 8001). A push to
+either branch deploys itself once CI has passed on it.
+
+### How it works
+
+1. GitHub Actions runs `.github/workflows/ci.yml` on every push to `main` or
+   `testing`: install, byte-compile, import the entry points, shellcheck the
+   deploy scripts, and run `python -m safety.migrate` twice against a fresh
+   PostGIS. The job is called `ci`, and that name is the contract — the
+   deployer looks for a check run with exactly that name.
+2. `safety-autodeploy@<instance>.timer` runs `/usr/local/sbin/safety-autodeploy
+   <instance>` (from `deploy/autodeploy.sh`) every minute as root. It asks
+   GitHub for the branch head and, if that is not what is deployed, for the
+   `ci` check run on it (unauthenticated, at most once per two minutes per
+   instance).
+3. When `ci` has succeeded, it fetches the commit into a root-owned bare cache
+   (`/var/lib/safety-deploy/repo.git`), extracts it and runs
+   `/usr/local/lib/safety-deploy/install.sh` (from `deploy/lib/install.sh`):
+   rsync the tree in, write `DEPLOYED_COMMIT`, `pip install` and
+   `safety.migrate` as `safety`, restart `safety-api@<instance>`, and wait up to
+   60 seconds for `/api/v1/health` to report the new commit.
+4. Only then is the commit recorded in `/var/lib/safety-deploy/<instance>.deployed`.
+
+Root never executes a file from an instance tree or from a pushed commit; it
+moves files and calls `systemctl`, and all repository code runs as `safety`.
+Deploys are serialised by `/var/lib/safety-deploy/deploy.lock`, shared with
+`deploy/deploy.sh`, and a deploy is put off while `safety-etl@<instance>` or
+`safety-etl-hourly@<instance>` is running.
+
+`/api/v1/health` reports the running commit, so checking a deploy is:
+
+```bash
+curl -s http://127.0.0.1:8001/api/v1/health | jq .commit
+```
+
+### Day to day
+
+Watch it:
+
+```bash
+journalctl -u safety-autodeploy@prod -f
+journalctl -u safety-autodeploy@prod -p err     # only skips and failures
+```
+
+Each tick logs one line: `up to date`, `pending` (CI not started, running, or
+the API rate limit), `deploying`, `deployed`, `deferred` (ETL running) or
+`skipped`.
+
+Pause and resume deploys of one instance:
+
+```bash
+sudo systemctl stop safety-autodeploy@prod.timer
+sudo systemctl start safety-autodeploy@prod.timer
+```
+
+`stop` lasts until the next boot; `disable --now` makes it stick.
+
+**Skipped commits.** A head whose CI failed, whose CI never appeared within 30
+minutes, or whose install failed is written to
+`/var/lib/safety-deploy/<instance>.skipped` and not tried again. Pushing a new
+commit supersedes it. To retry the same commit instead, re-run CI on GitHub if
+that was the problem, then:
+
+```bash
+sudo rm /var/lib/safety-deploy/prod.skipped
+```
+
+**Manual deploys** still work and go through the same `install.sh`:
+`deploy/deploy.sh prod|dev`. They wait for the deploy lock if the timer is mid
+deploy.
+
+**Updating the deployer.** Deploys never update the deployer itself — that
+would let a push choose what root runs. After changing `deploy/autodeploy.sh`,
+`deploy/lib/install.sh` or anything in `deploy/systemd/`, merge it and re-run,
+from an up-to-date checkout:
+
+```bash
+sudo deploy/install-deployer.sh
+```
+
+It installs the files and reloads systemd; it never enables a timer. On a fresh
+server, run it, then `deploy/deploy.sh <instance>` once (which records what is
+deployed), then `sudo systemctl enable --now safety-autodeploy@<instance>.timer`.
+If `<instance>.deployed` is missing, the first tick seeds it from the
+instance's `DEPLOYED_COMMIT` and refuses to deploy if it cannot.
+
+### What a deploy costs, and what a failed one leaves
+
+Every deploy restarts uvicorn: a few seconds of 502s from nginx, and the
+serving-layer cache starts empty, so the first requests per city are slow
+again.
+
+There is no automatic rollback. A failure after the rsync — pip, a migration,
+or a health check that never reports the new commit — leaves the new tree in
+place, possibly with some migrations applied and the old process still running
+or the new one crash-looping. The commit is marked skipped and the journal says
+which step failed. Recovery is a fix or a `git revert` pushed to the branch,
+which CI checks and the timer deploys like any other commit; a migration that
+was applied stays applied, so a revert must not depend on undoing it.
+
+### Recommended GitHub settings
+
+- Branch protection on `main` and `testing`: require the `ci` status check, and
+  block force pushes and deletion. Anyone who can push to `main` can change
+  what runs in production within a few minutes.
+- Two-factor authentication on every account with push access.
+
+Once the temporary passwordless sudo is removed, `deploy/deploy.sh` needs a
+sudoers rule for exactly the installer, for example in
+`/etc/sudoers.d/safety-deploy`:
+
+```
+ryan ALL=(root) NOPASSWD: /usr/local/lib/safety-deploy/install.sh
+```
