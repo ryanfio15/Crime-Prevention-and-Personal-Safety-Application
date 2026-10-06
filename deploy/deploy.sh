@@ -41,7 +41,7 @@ sudo rsync -a --delete \
     "$stage/" "$target/"
 sudo chown -R safety:safety "$target"
 
-as_safety() { sudo -u safety --chdir="$target" "$@"; }
+as_safety() { sudo -u safety env -C "$target" "$@"; }
 as_safety .venv/bin/pip install --quiet -r requirements.txt
 as_safety .venv/bin/python -m safety.migrate
 sudo systemctl restart "safety-api@$instance"
