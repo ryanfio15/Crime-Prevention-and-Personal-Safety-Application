@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly safety time-of-day rebuild (%i)
+
+[Timer]
+# 04:00 UTC Sunday for prod; dev's drop-in moves it to 06:00.
+OnCalendar=Sun *-*-* 04:00:00
+Persistent=true
+Unit=safety-etl-hourly@%i.service
+
+[Install]
+WantedBy=timers.target
