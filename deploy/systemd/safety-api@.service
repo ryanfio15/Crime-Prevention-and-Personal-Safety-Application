@@ -1,5 +1,6 @@
 # uvicorn for one instance: `safety-api@prod` (main, :8000) or `safety-api@dev`
-# (testing, :8001). The instance name is the directory under /srv/safety, and
+# (testing, :8001). The instance name is the directory under
+# /srv/safety/Crime-Prevention-and-Personal-Safety-Application, and
 # API_PORT comes from that instance's .env -- safety/config.py ignores keys it
 # does not know, so one file serves both.
 #
@@ -17,11 +18,11 @@ Wants=network-online.target docker.service
 Type=exec
 User=safety
 Group=safety
-WorkingDirectory=/srv/safety/%i
-EnvironmentFile=/srv/safety/%i/.env
+WorkingDirectory=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i
+EnvironmentFile=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/.env
 # Loopback only: nginx is the sole way in. --forwarded-allow-ips pairs with the
 # X-Forwarded-* headers nginx sets, so they are trusted from 127.0.0.1 only.
-ExecStart=/srv/safety/%i/.venv/bin/uvicorn safety.api.main:app --host 127.0.0.1 --port ${API_PORT} --proxy-headers --forwarded-allow-ips=127.0.0.1
+ExecStart=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/.venv/bin/uvicorn safety.api.main:app --host 127.0.0.1 --port ${API_PORT} --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
