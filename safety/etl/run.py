@@ -802,7 +802,11 @@ def cmd_reprocess(args: argparse.Namespace) -> int:
                     """
                     SELECT * FROM etl.pull_run
                     WHERE source_id = %s AND bronze_uri IS NOT NULL
-                      AND status = 'succeeded' AND mode <> 'boundary'
+                      AND status = 'succeeded'
+                      -- Incident pulls only. Census and boundary pulls write
+                      -- bronze too, and replaying a LODES archive through an
+                      -- incident adapter fails on the first byte.
+                      AND mode IN ('backfill', 'incremental')
                     ORDER BY pull_id DESC LIMIT 1
                     """,
                     (args.city,),

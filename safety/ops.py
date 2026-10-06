@@ -199,8 +199,14 @@ def plan_from_state(state: dict, source_id: str) -> list[Step]:
     # Only missing if it could be built. A source that publishes no clock hour
     # -- or whose stored timestamps have not had the hour recovered from the
     # bronze snapshots yet -- has no time-of-day layer to build, and asking for
-    # one every deploy is a loop, not a convergence.
-    needs_hourly = not state["has_hourly"] and state["has_clock_hours"]
+    # one every deploy is a loop, not a convergence. A city about to be
+    # backfilled has no silver rows yet, so `has_clock_hours` is necessarily
+    # false at planning time and says nothing about whether the source publishes
+    # an hour. Plan the layers anyway: gold.refresh_hourly_layer skips them with
+    # a log line when no hour arrives, and the next run's state settles it.
+    needs_hourly = not state["has_hourly"] and (
+        state["has_clock_hours"] or needs_backfill
+    )
 
     if needs_backfill:
         # `cmd_backfill` refreshes gold itself once the ingest succeeds, so
@@ -288,7 +294,13 @@ def advisories(state: dict) -> list[str]:
     """
     notes: list[str] = []
 
-    if not state["has_hourly"] and not state["has_clock_hours"]:
+    # Only once something has been pulled: before the first backfill there are
+    # no silver rows to carry an hour, and the advisory would be false.
+    if (
+        state["last_incident_pull_at"] is not None
+        and not state["has_hourly"]
+        and not state["has_clock_hours"]
+    ):
         notes.append(
             "no incident carries a clock hour, so the time-of-day view is empty and "
             "cannot be built. Recover the hour from the stored snapshots with: "

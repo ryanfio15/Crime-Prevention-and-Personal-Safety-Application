@@ -1,0 +1,32 @@
+# uvicorn for one instance: `safety-api@prod` (main, :8000) or `safety-api@dev`
+# (testing, :8001). The instance name is the directory under /srv/safety, and
+# API_PORT comes from that instance's .env -- safety/config.py ignores keys it
+# does not know, so one file serves both.
+#
+#   cp deploy/systemd/safety-*@.* /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now safety-api@prod safety-api@dev
+
+[Unit]
+Description=Safety API (%i)
+# Ordering only: the pool's check_connection recovers from a docker restart.
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=exec
+User=safety
+Group=safety
+WorkingDirectory=/srv/safety/%i
+EnvironmentFile=/srv/safety/%i/.env
+# Loopback only: nginx is the sole way in. --forwarded-allow-ips pairs with the
+# X-Forwarded-* headers nginx sets, so they are trusted from 127.0.0.1 only.
+ExecStart=/srv/safety/%i/.venv/bin/uvicorn safety.api.main:app --host 127.0.0.1 --port ${API_PORT} --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

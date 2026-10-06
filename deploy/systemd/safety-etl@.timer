@@ -1,0 +1,15 @@
+# Every six hours (docs/DEPLOY.md step 3): the registry decides who is pulled,
+# this only decides how often to ask. Dev is shifted three hours by a drop-in
+# (safety-etl@dev.timer.d/offset.conf) so the two instances never pull at once.
+
+[Unit]
+Description=Six-hourly safety ETL check (%i)
+
+[Timer]
+OnCalendar=00/6:00
+Persistent=true
+RandomizedDelaySec=900
+Unit=safety-etl@%i.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,18 @@
+# One incremental pass over every enabled city that is due, for one instance.
+# Started by safety-etl@<instance>.timer; `systemctl start safety-etl@dev` runs
+# one by hand.
+
+[Unit]
+Description=Safety ETL incremental pull (%i)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=safety
+Group=safety
+WorkingDirectory=/srv/safety/%i
+ExecStart=/srv/safety/%i/.venv/bin/python -m safety.etl.run incremental --all --due-only --skip-hourly
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full

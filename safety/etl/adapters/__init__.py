@@ -15,13 +15,21 @@ from safety.etl.adapters.base import (
     SourceConfig,
 )
 from safety.etl.adapters.chicago import ChicagoSocrataAdapter
+from safety.etl.adapters.los_angeles import LosAngelesSocrataAdapter
 from safety.etl.adapters.philadelphia import PhiladelphiaCartoAdapter
+from safety.etl.adapters.seattle import SeattleSocrataAdapter
+from safety.etl.adapters.washington_dc import WashingtonDcEsriAdapter
 
 # The registry maps a source_id to its adapter class. Onboarding a seventh city
 # is: add a reference.source_registry row, write one adapter, add one line here.
 ADAPTERS: dict[str, type[SourceAdapter]] = {
     "phl": PhiladelphiaCartoAdapter,
     "chi": ChicagoSocrataAdapter,
+    "sea": SeattleSocrataAdapter,
+    "lax": LosAngelesSocrataAdapter,
+    "dc": WashingtonDcEsriAdapter,
+    # Austin ("aus") has no adapter: neither APD dataset publishes a location
+    # finer than a census block group. See docs/PHASE2.md.
 }
 
 

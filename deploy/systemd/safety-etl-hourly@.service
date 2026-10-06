@@ -1,0 +1,17 @@
+# Weekly rebuild of the time-of-day layers for one instance (docs/DEPLOY.md
+# step 3b): the six-hourly pull passes --skip-hourly.
+
+[Unit]
+Description=Safety time-of-day layer rebuild (%i)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=safety
+Group=safety
+WorkingDirectory=/srv/safety/%i
+ExecStart=/srv/safety/%i/.venv/bin/python -m safety.etl.run hourly --all
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full

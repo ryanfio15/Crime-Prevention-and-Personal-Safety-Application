@@ -34,22 +34,14 @@ and nowhere else in the pipeline:
 
 from __future__ import annotations
 
-import csv
-import io
-import logging
-import time
-from collections.abc import Iterator
 from datetime import date, datetime, timezone
-from typing import Any, ClassVar
+from typing import Any
 
-import httpx
 import pyproj
 
-from safety.config import settings
 from safety.etl import location
-from safety.etl.adapters.base import NormalizedIncident, RawChunk, SourceAdapter
-
-log = logging.getLogger(__name__)
+from safety.etl.adapters.base import NormalizedIncident
+from safety.etl.adapters.socrata import SocrataAdapter
 
 # NAD83 / Illinois East (US survey feet) -- the City of Chicago's working
 # projection, published alongside the WGS84 pair. Built once; constructing a
@@ -81,204 +73,18 @@ _INCIDENT_COLUMNS = (
     "y_coordinate",
 )
 
-# Socrata's ceiling on $limit for a single request. A Chicago month is roughly
-# 17,000 rows, so one request per month sits comfortably inside it -- but the
-# guard below checks rather than assuming, because a month that actually hits the
-# ceiling would be silently truncated.
-_PAGE_LIMIT = 50_000
 
-
-class ChicagoSocrataAdapter(SourceAdapter):
-    api_type: ClassVar[str] = "socrata"
-
-    # ------------------------------------------------------------------ fetch
-
-    @property
-    def _endpoint(self) -> str:
-        return f"{self.config.base_url}/{self.config.incident_dataset}.csv"
-
-    def _headers(self) -> dict[str, str]:
-        """An app token raises Socrata's per-IP throttle, and is optional.
-
-        Without one the API is still usable but shares an anonymous quota, which
-        a 24-month backfill can exhaust. With four Socrata cities the value of
-        setting it goes up, so its absence is logged once rather than silently
-        tolerated.
-        """
-        if settings.socrata_app_token:
-            return {"X-App-Token": settings.socrata_app_token}
-        return {}
-
-    def _get(self, params: dict[str, str]) -> httpx.Response:
-        """GET with bounded exponential backoff on transient upstream failures.
-
-        Same policy as the Carto adapter. Socrata answers throttling with 429,
-        which is retried here for the same reason a 5xx is: it is a "come back"
-        rather than a "no".
-        """
-        last_exc: Exception | None = None
-        for attempt in range(1, settings.http_max_retries + 1):
-            try:
-                response = httpx.get(
-                    self._endpoint,
-                    params=params,
-                    headers=self._headers(),
-                    timeout=settings.http_timeout_seconds,
-                    follow_redirects=True,
-                )
-                if response.status_code >= 500 or response.status_code == 429:
-                    raise httpx.HTTPStatusError(
-                        f"upstream {response.status_code}",
-                        request=response.request,
-                        response=response,
-                    )
-                response.raise_for_status()
-                return response
-            except (httpx.HTTPError, httpx.TimeoutException) as exc:
-                last_exc = exc
-                backoff = 2.0**attempt
-                log.warning(
-                    "socrata request failed (attempt %s/%s), retrying in %.0fs: %s",
-                    attempt,
-                    settings.http_max_retries,
-                    backoff,
-                    exc,
-                )
-                time.sleep(backoff)
-        raise RuntimeError(f"Socrata request failed after retries: {last_exc}")
-
-    @staticmethod
-    def _month_starts(
-        since: datetime, until: datetime
-    ) -> Iterator[tuple[datetime, datetime]]:
-        """Calendar-month windows, as the Carto adapter uses.
-
-        Socrata does offer `$offset`, so paging is available -- but month chunks
-        are chosen anyway, for two reasons that outlive the pagination question.
-        Deep offsets on Socrata degrade badly, and a bronze snapshot partitioned
-        by calendar month is directly comparable against the previous one, which
-        is what makes the S8.5 volume-anomaly check meaningful.
-        """
-        cursor = since.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        while cursor < until:
-            if cursor.month == 12:
-                nxt = cursor.replace(year=cursor.year + 1, month=1)
-            else:
-                nxt = cursor.replace(month=cursor.month + 1)
-            yield cursor, min(nxt, until)
-            cursor = nxt
-
-    def fetch_incidents(self, since: datetime, until: datetime) -> Iterator[RawChunk]:
-        """Yield one chunk per calendar month.
-
-        Filtered on `date`, the occurrence timestamp, not on `updated_on`. That
-        is a deliberate limitation worth naming: a record revised today but
-        occurring two years ago will not be re-read by an incremental pull, only
-        by a backfill. `revision_lookback_days` covers the window in which
-        revisions actually cluster, and the bronze layer is what makes a full
-        reprocess cheap when a deeper correction is needed (S5, S8.3).
-
-        The floating timestamps have no offset, so the bounds are formatted
-        without one. Sending a UTC instant here would ask Chicago's local clock
-        to be compared against a different quantity.
-        """
-        for chunk_start, chunk_end in self._month_starts(since, until):
-            params = {
-                "$select": ", ".join(_INCIDENT_COLUMNS),
-                "$where": (
-                    f"date >= '{_floating(chunk_start)}' "
-                    f"AND date < '{_floating(chunk_end)}'"
-                ),
-                "$order": "id",
-                "$limit": str(_PAGE_LIMIT),
-            }
-            response = self._get(params)
-            payload = response.content
-            record_count = max(payload.count(b"\n") - 1, 0)
-
-            if record_count >= _PAGE_LIMIT:
-                # Truncation here would look exactly like a quiet month. It is
-                # not survivable silently: the month would be short in silver and
-                # every percentile in the city would be computed from it.
-                raise RuntimeError(
-                    f"chicago: {chunk_start:%Y-%m} returned {record_count} rows, at "
-                    f"or above the $limit ceiling of {_PAGE_LIMIT}, so the month is "
-                    "probably truncated. Split the chunking finer than monthly."
-                )
-
-            log.info(
-                "chi: fetched %s rows for %s", record_count, chunk_start.strftime("%Y-%m")
-            )
-            yield RawChunk(
-                name=f"{chunk_start.strftime('%Y-%m')}.csv",
-                content_type="text/csv",
-                payload=payload,
-                request_url=str(response.url),
-                fetched_at=datetime.now(timezone.utc),
-                record_count=record_count,
-                meta={
-                    "window_start": chunk_start.isoformat(),
-                    "window_end": chunk_end.isoformat(),
-                },
-            )
-
-    def fetch_boundary(self) -> RawChunk | None:
-        """None: the coverage polygon comes from TIGER/Line PLACE.
-
-        See safety/etl/boundary.py for why that is one shared loader rather than
-        a boundary integration per city. Philadelphia returns a polygon here
-        because it already had a working police-jurisdiction one.
-        """
-        return None
-
-    # ------------------------------------------------------------------ parse
-
-    def parse_incidents(self, chunk: RawChunk) -> Iterator[dict[str, Any]]:
-        text = chunk.payload.decode("utf-8-sig")
-        yield from csv.DictReader(io.StringIO(text))
-
-    # -------------------------------------------------------------- normalize
-
-    @staticmethod
-    def _clean(value: Any) -> str | None:
-        if value is None:
-            return None
-        text = str(value).strip()
-        return text or None
-
-    @staticmethod
-    def _to_float(value: Any) -> float | None:
-        text = ChicagoSocrataAdapter._clean(value)
-        if text is None:
-            return None
-        try:
-            return float(text)
-        except ValueError:
-            return None
-
-    @staticmethod
-    def _parse_local(value: Any) -> datetime | None:
-        """Read a Socrata floating timestamp: '2026-01-12T20:20:00.000'.
-
-        No offset in the payload and none attached here beyond a nominal UTC tag,
-        because the value is a local wall clock and the rest of the pipeline
-        treats `occurred_at` that way (see 009_time_of_day.sql and
-        migrate.backfill_incident_hour, which measures that assumption rather
-        than trusting it).
-        """
-        text = ChicagoSocrataAdapter._clean(value)
-        if text is None:
-            return None
-        candidate = text.replace(" ", "T")
-        if candidate.endswith("Z"):
-            candidate = candidate[:-1]
-        try:
-            parsed = datetime.fromisoformat(candidate)
-        except ValueError:
-            return None
-        # Tagged UTC to keep the column timezone-aware, not converted. Nothing
-        # here shifts the clock.
-        return parsed.replace(tzinfo=timezone.utc)
+class ChicagoSocrataAdapter(SocrataAdapter):
+    incident_columns = _INCIDENT_COLUMNS
+    # Filtered on `date`, the occurrence timestamp, not on `updated_on`. That is
+    # a deliberate limitation: a record revised today but occurring two years
+    # ago is not re-read by an incremental pull, only by a backfill.
+    # `revision_lookback_days` covers the window revisions actually cluster in,
+    # and bronze makes a deeper reprocess cheap (S5, S8.3). A Chicago month is
+    # roughly 17,000 rows, well inside the per-request ceiling the base class
+    # guards.
+    occurred_field = "date"
+    order_field = "id"
 
     @staticmethod
     def _resolve_coordinates(
@@ -381,8 +187,3 @@ class ChicagoSocrataAdapter(SourceAdapter):
             location_block=self._clean(record.get("block")),
             district=self._clean(record.get("district")),
         )
-
-
-def _floating(value: datetime) -> str:
-    """Format a bound as a Socrata floating timestamp, with no offset."""
-    return value.strftime("%Y-%m-%dT%H:%M:%S")
