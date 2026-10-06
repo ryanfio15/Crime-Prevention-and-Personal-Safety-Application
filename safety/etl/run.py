@@ -22,7 +22,7 @@ for a bi-weekly source like Los Angeles.
 
 Three flags turn that into something a scheduler can drive, and the deployed
 configuration is `incremental --all --due-only --skip-hourly` on a few-hourly
-schedule plus `hourly --all` weekly (see docs/DEPLOY.md):
+schedule plus `hourly --all` weekly (deploy/systemd/safety-etl*@.timer):
 
 * `--all` runs every enabled source, stalest first, and does not let one city's
   outage stop the other five -- which matters more than it sounds, because six
@@ -1340,9 +1340,8 @@ def cmd_enable(args: argparse.Namespace) -> int:
     """Enable or disable a source, so onboarding never needs database access.
 
     Exists because the alternative was telling an operator to run SQL, and a
-    Railway deployment whose database is a plain Docker image has no query
-    console at all -- the advice was unfollowable on the platform the project
-    documents deploying to.
+    hosted database often has no query console at all -- the advice was
+    unfollowable exactly where it was needed.
     """
     with connect() as conn:
         config = SourceConfig.load(conn, args.city)
@@ -1484,9 +1483,9 @@ def _require_enabled(config: SourceConfig) -> None:
             f"Enable it with:\n"
             f"  python -m safety.etl.run enable --city {config.source_id}\n"
             "which checks the adapter and crosswalk are actually in place first. "
-            "Deliberately not a SQL statement: a Railway deployment whose "
-            "database is a plain Docker image has no query console, so that "
-            "advice was unfollowable on the platform docs/DEPLOY.md targets."
+            "Deliberately not a SQL statement: a hosted database often has no "
+            "query console, so that advice would be unfollowable where it is "
+            "needed."
         )
 
 

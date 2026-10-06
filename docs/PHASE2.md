@@ -130,7 +130,7 @@ the block trim needs it.
 
 Three flags make one scheduled job cover six sources on five cadences. The
 deployed configuration is the first line below every few hours plus the second
-weekly — see [`DEPLOY.md`](DEPLOY.md) for the Railway service layout.
+weekly — see [`DEPLOY.md`](DEPLOY.md) and `deploy/systemd/` for the timers.
 
 ```bash
 python -m safety.etl.run incremental --all --due-only --skip-hourly
@@ -347,7 +347,7 @@ is a sourced weight row, not an invented one.
 
 ## Fitting six cities on one volume
 
-`DEPLOY.md` sizes the database at 20 GB and is right about why: the gold layer
+The original deployment guide sized the database at 20 GB and was right about why: the gold layer
 scales with *cells*, not with incidents, and six cities are roughly ten times
 Philadelphia's area. On a volume smaller than that — a 5 GB plan, say — the
 question is which of those cells anything actually asks about.
@@ -359,7 +359,7 @@ resolution 10 is 86% of every table keyed by cell.
 
 It is still the wrong one to reach for *first*, for two reasons. It is the only one
 of these that costs the product a feature. And it does not touch the table
-`DEPLOY.md` names as dominant: `HOURLY_RESOLUTIONS` is `(8, 9)`, so
+the deployment guide named as dominant: `HOURLY_RESOLUTIONS` is `(8, 9)`, so
 `gold.cell_hour_safety` has never held a resolution-10 row, and dropping resolution
 10 would not save a byte of it.
 
@@ -385,7 +385,7 @@ nscs_v1` still builds it on demand when there is a reason to compare again.
 One side effect is a fix. `point_sources_at_scheme` only fills a city's NULL
 scheme pointer when exactly one scheme is enabled, so with two shipping enabled
 it always declined, and a fresh deploy that skipped `--activate` served no safety
-layer at all. That is the failure `DEPLOY.md` documented under
+layer at all. That is the failure the deployment guide documented under
 "the ranking is empty". With one enabled scheme it resolves itself.
 
 **2. The resolution-10 ranking was built and never served.** `Scheme.resolutions`
@@ -490,7 +490,7 @@ look like data:
 
 One city, 347 km², 317,822 incidents, **1,251 MB**. The hourly layer had never been
 built in this database, so `gold.cell_hour_safety` is absent from these figures —
-read everything below knowing that the table `DEPLOY.md` expects to dominate is
+read everything below knowing that the table the deployment guide expected to dominate is
 not in it.
 
 | Table | Size | Rows | of which res 10 |
@@ -620,7 +620,7 @@ lever at different depths:
 ## The hourly layer, measured with two cities on it
 
 Everything above was measured on a database where `gold.cell_hour_safety` had never
-been built. On Railway, with Philadelphia and Chicago loaded and the hourly job
+been built. On the production server, with Philadelphia and Chicago loaded and the hourly job
 having run, it is not a footnote — it is the largest table there is:
 
 | Table | Size |

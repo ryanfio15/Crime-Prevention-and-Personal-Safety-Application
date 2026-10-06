@@ -68,19 +68,21 @@ ensure_cache() {
 }
 
 # First run for this instance: adopt whatever is already installed as the
-# deployed commit, so the first tick deploys only a genuinely newer head. Both
-# branches are fetched because an instance may be running the other branch's
-# commit (a fast-forward merge, a manual deploy). DEPLOYED_COMMIT was short
-# before install.sh wrote full shas; rev-parse expands either.
+# deployed commit, so the first tick deploys only a genuinely newer head
+# (deploy/migrate-layout.sh normally seeds it already). Both branches are
+# fetched because an instance may be running the other branch's commit (a
+# fast-forward merge, a manual deploy). A flat checkout's DEPLOYED_COMMIT was
+# short; rev-parse expands either.
 if [ ! -f "$state/$instance.deployed" ]; then
     ensure_cache
     git -C "$cache" fetch --quiet origin \
         '+refs/heads/main:refs/remotes/origin/main' \
         '+refs/heads/testing:refs/remotes/origin/testing'
-    installed=$(tr -d '[:space:]' < "$target/DEPLOYED_COMMIT" 2>/dev/null) || installed=
+    installed=$(tr -d '[:space:]' < "$target/current/DEPLOYED_COMMIT" 2>/dev/null) ||
+        installed=$(tr -d '[:space:]' < "$target/DEPLOYED_COMMIT" 2>/dev/null) || installed=
     if [[ ! $installed =~ ^[0-9a-f]{7,40}$ ]] ||
         ! full=$(git -C "$cache" rev-parse --quiet --verify "$installed^{commit}"); then
-        err "cannot seed: $target/DEPLOYED_COMMIT ('$installed') is not a commit on main or testing; refusing to deploy unseeded"
+        err "cannot seed: DEPLOYED_COMMIT ('$installed') in $target is not a commit on main or testing; refusing to deploy unseeded"
         exit 1
     fi
     echo "$full" > "$state/$instance.deployed"
@@ -180,6 +182,6 @@ case $rc in
     0)  log "deployed $head" ;;
     75) log "deferred $head: ETL running on $instance; trying again next tick" ;;
     *)  echo "$head" > "$state/$instance.skipped"
-        err "skipped $head: install failed (exit $rc); $instance may be half deployed, see docs/DEPLOY.md"
+        err "skipped $head: install failed (exit $rc); $instance is on its previous release (rolled back if it got as far as switching), see the lines above"
         exit 1 ;;
 esac

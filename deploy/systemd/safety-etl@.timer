@@ -1,4 +1,4 @@
-# Every six hours (docs/DEPLOY.md step 3): the registry decides who is pulled,
+# Every six hours: the registry decides who is pulled,
 # this only decides how often to ask. Dev is shifted three hours by a drop-in
 # (safety-etl@dev.timer.d/offset.conf) so the two instances never pull at once.
 

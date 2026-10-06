@@ -4,8 +4,12 @@
 # API_PORT comes from that instance's .env -- safety/config.py ignores keys it
 # does not know, so one file serves both.
 #
-#   cp deploy/systemd/safety-*@.* /etc/systemd/system/
-#   systemctl daemon-reload
+# It runs whatever release `current` points at (deploy/lib/install.sh switches
+# it, then restarts this). `python -m uvicorn` rather than the venv's uvicorn
+# script, whose #! line names the path the venv was built at. The release is
+# read-only to `safety`, hence no bytecode writes.
+#
+#   sudo deploy/install-deployer.sh --units
 #   systemctl enable --now safety-api@prod safety-api@dev
 
 [Unit]
@@ -18,11 +22,12 @@ Wants=network-online.target docker.service
 Type=exec
 User=safety
 Group=safety
-WorkingDirectory=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i
+WorkingDirectory=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/current
 EnvironmentFile=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/.env
+Environment=PYTHONDONTWRITEBYTECODE=1
 # Loopback only: nginx is the sole way in. --forwarded-allow-ips pairs with the
 # X-Forwarded-* headers nginx sets, so they are trusted from 127.0.0.1 only.
-ExecStart=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/.venv/bin/uvicorn safety.api.main:app --host 127.0.0.1 --port ${API_PORT} --proxy-headers --forwarded-allow-ips=127.0.0.1
+ExecStart=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/current/.venv/bin/python -m uvicorn safety.api.main:app --host 127.0.0.1 --port ${API_PORT} --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

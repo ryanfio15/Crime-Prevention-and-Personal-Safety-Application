@@ -5,13 +5,12 @@
     python -m safety.ops --city chi     # one city
     python -m safety.ops --force        # ignore the retry cooldown
 
-This is the whole of the `ops` service. Its Railway start command is set to
-`python -m safety.ops` once, at creation, and is never edited again -- which is
-the point. The alternative, documented in docs/DEPLOY.md until this module
-existed, was to retype a different `safety.etl.run` subcommand into the start
-command for each step of each workflow and redeploy between them: five deploys
-to onboard a city, two more to finish a first load, in an order that had to be
-remembered because getting it wrong fails quietly rather than loudly.
+One fixed command line covers every data-maintenance workflow -- which is the
+point. The alternative, documented until this module existed, was to run a
+different `safety.etl.run` subcommand for each step of each workflow: five
+separate runs to onboard a city, two more to finish a first load, in an order
+that had to be remembered because getting it wrong fails quietly rather than
+loudly.
 
 It is a convergence loop, not a script of steps. Every run asks the database
 what is actually missing for each enabled city and does only that:
@@ -25,30 +24,28 @@ what is actually missing for each enabled city and does only that:
 So a run against a healthy deployment is a handful of EXISTS queries and an
 exit; a run against a city enabled ten minutes ago does the full onboarding
 sequence in one deploy, in dependency order. Nothing has to be sequenced by
-hand, and re-running is always safe. That last property is what makes this
-survivable on Railway, where a push to `main` redeploys `ops` along with
-everything else and re-runs whatever it points at.
+hand, and re-running is always safe, so it can be run on every deploy or on a
+schedule without harm.
 
 Two things it deliberately does not do.
 
-**It does not run migrations.** `python -m safety.migrate` is the `api`
-service's Pre-Deploy Command and belongs to exactly one service (docs/DEPLOY.md,
-"Only one service should run migrations"). It is idempotent, so a second caller
-would be harmless rather than dangerous, but two services racing to apply the
-same DDL on a shared push is worth not arranging. The consequence is a startup
-ordering rule, checked explicitly below: on a brand-new project, `api` has to
-deploy once before `ops` has a schema to read.
+**It does not run migrations.** `python -m safety.migrate` belongs to the
+deploy step alone (deploy/lib/install.sh). It is idempotent, so a second caller
+would be harmless rather than dangerous, but two processes racing to apply the
+same DDL is worth not arranging. The consequence is a startup ordering rule,
+checked explicitly below: on a brand-new database, migrate has to run once
+before `ops` has a schema to read.
 
 **It does not enable cities.** Enabling one is the moment that city's numbers
 start being shown to people, and the design document treats that as a
-deliberate act rather than something infrastructure decides (docs/DEPLOY.md
-step 6). `safety.etl.run enable --city <id>` does it, with the readiness checks
+deliberate act rather than something infrastructure decides.
+`safety.etl.run enable --city <id>` does it, with the readiness checks
 that catch an enabled city with no crosswalk -- which loads perfectly happily
 and produces a complete, plausible, wrong map. Convergence operates on cities
 that are already enabled.
 
 **Staleness of the time-of-day layers is not its job either.** Those are rebuilt
-weekly by the `etl-hourly` service, because they are the most expensive thing
+weekly by the `safety-etl-hourly@` timer, because they are the most expensive thing
 the pipeline builds and their windows are a year wide. This module builds them
 only when they have *never* been built for a city, which is the gap a new city
 leaves between its first load and the next Sunday.
@@ -177,7 +174,7 @@ def plan_for_city(conn: psycopg.Connection, source_id: str) -> list[Step]:
 def plan_from_state(state: dict, source_id: str) -> list[Step]:
     """The steps this city needs, in dependency order.
 
-    The order is the one docs/DEPLOY.md spells out, and each dependency is real
+    The order is the documented onboarding order, and each dependency is real
     rather than conventional:
 
     * `backfill` first because it is what fetches the coverage boundary, and
@@ -214,8 +211,8 @@ def plan_from_state(state: dict, source_id: str) -> list[Step]:
         # census landing afterwards and changing the denominator it ranked
         # against. Hence the branch rather than queueing gold unconditionally:
         # a full gold refresh is minutes of work on a large city, and doing it
-        # twice in one deploy is the kind of waste that shows up on the Railway
-        # usage tab.
+        # twice in one run is the kind of waste that shows up on the bill or
+        # the load graph.
         needs_gold = (
             "the population denominator is loaded after the backfill in this run"
             if needs_census
@@ -506,10 +503,9 @@ def converge(
             print(
                 "etl.ops_run does not exist, so the schema has not been migrated yet.\n"
                 "\n"
-                "Only the `api` service runs migrations (docs/DEPLOY.md, 'Only one\n"
-                "service should run migrations'), so on a new project `api` has to\n"
-                "deploy once before `ops` has anything to read. Deploy `api`, wait for\n"
-                "its Pre-Deploy Command to finish, then redeploy this service.",
+                "Only the deploy step runs migrations (deploy/lib/install.sh), so on\n"
+                "a new database `python -m safety.migrate` has to run once before\n"
+                "`ops` has anything to read. Run it (or deploy), then run this again.",
                 file=sys.stderr,
             )
             return 1
@@ -642,8 +638,8 @@ def converge(
     # One city's bad day must not stop the other five: six independent
     # government portals have six independent outages, and a partial converge
     # that loaded four cities is a better outcome than one that stopped at the
-    # first failure. The exit code still reports it, so Railway marks the deploy
-    # failed and the next run picks up where this one left off.
+    # first failure. The exit code still reports it, so the scheduler marks the
+    # run failed and the next run picks up where this one left off.
     failed = {r.city: r.failed for r in results if r.failed}
     print(
         "\n"
@@ -710,9 +706,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
 
     # Flags win over environment, and the environment wins over the defaults.
-    # The `ops` service sets no arguments at all -- its start command stays
-    # `python -m safety.ops` -- so on Railway every one of these arrives as a
-    # variable; the flags are for running the same code locally.
+    # A scheduled `python -m safety.ops` sets no arguments at all, so there
+    # every one of these arrives as a variable; the flags are for running the
+    # same code by hand.
     city = args.city or settings.ops_city or None
     force = settings.ops_force if args.force is None else args.force
     dry_run = settings.ops_dry_run if args.dry_run is None else args.dry_run

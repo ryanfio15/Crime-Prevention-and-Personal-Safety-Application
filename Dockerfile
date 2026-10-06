@@ -1,8 +1,10 @@
-# One image, two services (docs/DEPLOY.md).
+# One image, two roles: the API and the ETL. The home server runs from a
+# release tree instead (docs/DEPLOY.md); this image is for container hosts and
+# local experiments.
 #
 # The API and the ETL run identical code and differ only in start command, so
 # they share an image rather than duplicating a build. The API is the default
-# CMD; the ETL service overrides it with
+# CMD; an ETL container overrides it with
 # `python -m safety.etl.run incremental --city phl`.
 #
 # 3.12 rather than the 3.14 used for local development: every compiled
@@ -57,8 +59,8 @@ EXPOSE 8000
 # Python sets IPV6_V6ONLY on the listening socket, so the process accepts IPv6
 # only and every IPv4 connection is dropped before it reaches the application --
 # uvicorn logs a clean startup and no request line, and the client sees an empty
-# reply. Railway's edge proxy and Docker's port forwarding both arrive over
-# IPv4. The IPv6-only private network is used for *outbound* connections to the
+# reply. Docker's port forwarding and typical hosting proxies arrive over IPv4.
+# An IPv6-only private network would matter for *outbound* connections to the
 # database, which the listen address does not affect.
 #
 # --proxy-headers plus a permissive --forwarded-allow-ips is what makes

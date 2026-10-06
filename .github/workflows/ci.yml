@@ -69,3 +69,40 @@ jobs:
         run: python -m safety.migrate
       - name: Migrate again (idempotency)
         run: python -m safety.migrate
+      # The same deploy/lib/smoke.sh the deployer runs against the candidate
+      # and the live port, so a commit that would be rejected on the server is
+      # red here first. "-": nothing is deployed, so no commit to match.
+      - name: Start the app and smoke it
+        run: |
+          python -m uvicorn safety.api.main:app --host 127.0.0.1 --port 8000 \
+            > "$RUNNER_TEMP/uvicorn.log" 2>&1 &
+          deploy/lib/smoke.sh 8000 - || { cat "$RUNNER_TEMP/uvicorn.log"; exit 1; }
+      # Migrations run before a deploy can be rejected and are not undone by a
+      # rollback, so the previous release has to keep working on the migrated
+      # schema (expand/contract, docs/DEPLOY.md). This serves the push's
+      # previous commit against the database the new one just migrated.
+      # Advisory: the previous commit may itself be a broken one that never
+      # deployed (a revert's parent), so a failure warns instead of gating.
+      - name: Previous commit on the migrated schema (advisory)
+        if: >-
+          github.event_name == 'push' &&
+          github.event.before != '0000000000000000000000000000000000000000'
+        continue-on-error: true
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if ! git fetch --quiet --depth=1 origin "$BEFORE"; then
+            echo "::warning::previous commit $BEFORE is not fetchable; skipped"
+            exit 0
+          fi
+          git worktree add --quiet --detach "$RUNNER_TEMP/before" "$BEFORE"
+          python -m venv "$RUNNER_TEMP/before-venv"
+          "$RUNNER_TEMP/before-venv/bin/python" -m pip install --quiet -r "$RUNNER_TEMP/before/requirements.txt"
+          (cd "$RUNNER_TEMP/before" &&
+            exec "$RUNNER_TEMP/before-venv/bin/python" -m uvicorn safety.api.main:app \
+              --host 127.0.0.1 --port 8002) > "$RUNNER_TEMP/before.log" 2>&1 &
+          if ! deploy/lib/smoke.sh 8002 -; then
+            cat "$RUNNER_TEMP/before.log"
+            echo "::warning::previous commit $BEFORE does not serve on this commit's schema"
+            exit 1
+          fi

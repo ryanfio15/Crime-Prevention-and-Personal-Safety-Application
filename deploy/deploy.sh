@@ -12,9 +12,11 @@
 # also deploy on their own once CI passes (deploy/autodeploy.sh); this is the
 # manual path for redeploying or for when the timer is stopped.
 #
-# Each instance keeps its own .venv, .env (which names its database and API
-# port) and data/ across deploys; everything else is replaced, including files
-# deleted on the branch.
+# Each deploy is a new release directory next to the live one, switched to only
+# after it has passed the same checks as CI on a spare port, and switched back
+# automatically if the live check then fails. Each instance keeps its own .env
+# (which names its database and API port) and data/ across deploys. Layout and
+# failure handling: docs/DEPLOY.md.
 #
 # Both instances share the one PostGIS container (`safety_db`) and differ by
 # database: `safety` for prod, `safety_dev` for dev. Never run `docker compose`
@@ -39,7 +41,8 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 git -C "$repo" archive "$commit" | tar -x -C "$stage"
 
-# Everything from here on -- rsync, pip, migrate, restart, health check -- is
-# the same code the auto deployer runs, installed root-owned outside the repo.
-# It waits for the deploy lock if the timer is mid-deploy.
+# Everything from here on -- release, venv, migrate, candidate check, switch,
+# verify, rollback -- is the same code the auto deployer runs, installed
+# root-owned outside the repo. It waits for the deploy lock if the timer is
+# mid-deploy.
 sudo /usr/local/lib/safety-deploy/install.sh "$instance" "$stage" "$commit"

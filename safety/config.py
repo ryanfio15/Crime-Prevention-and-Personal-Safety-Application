@@ -80,11 +80,10 @@ class Settings(BaseSettings):
 
     # --- ops convergence (safety/ops.py) ---------------------------------
     #
-    # Settings rather than flags because the `ops` service is driven by Railway
-    # variables: its start command is set once to `python -m safety.ops` and
-    # never edited again, so anything an operator needs to vary has to be
-    # reachable as an environment variable. The CLI flags are the local
-    # equivalent and override these.
+    # Settings rather than flags so a scheduler that runs a fixed
+    # `python -m safety.ops` command line can still be steered: anything an
+    # operator needs to vary is reachable as an environment variable. The CLI
+    # flags are the interactive equivalent and override these.
     #
     # One city instead of every enabled one.
     ops_city: str = ""

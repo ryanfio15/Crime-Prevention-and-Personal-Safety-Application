@@ -18,8 +18,9 @@ Wants=network-online.target
 Type=oneshot
 User=root
 ExecStart=/usr/local/sbin/safety-autodeploy %i
-# pip plus a migrate that scans silver.incident can take minutes.
-TimeoutStartSec=15min
+# A new venv, a migrate that scans silver.incident, the candidate check and a
+# possible rollback can add up to many minutes.
+TimeoutStartSec=30min
 StateDirectory=safety-deploy
 StateDirectoryMode=0700
 ReadWritePaths=/srv/safety/Crime-Prevention-and-Personal-Safety-Application -/srv/safety/.cache

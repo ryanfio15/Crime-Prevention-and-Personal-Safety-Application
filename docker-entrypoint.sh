@@ -2,7 +2,7 @@
 # Fix the volume mount, then drop privileges.
 #
 # Mounted volumes arrive owned by root regardless of what the image sets -- both
-# on Railway and with a plain `docker run -v` -- while the application runs as
+# on container hosts and with a plain `docker run -v` -- while the application runs as
 # the unprivileged `safety` account. The ETL would then fail with a permission
 # error partway through its first pull, when it tries to write a bronze snapshot
 # (safety/etl/bronze.py:102). The container therefore starts as root, fixes the

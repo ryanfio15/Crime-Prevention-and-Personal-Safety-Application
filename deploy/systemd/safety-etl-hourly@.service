@@ -1,5 +1,5 @@
-# Weekly rebuild of the time-of-day layers for one instance (docs/DEPLOY.md
-# step 3b): the six-hourly pull passes --skip-hourly.
+# Weekly rebuild of the time-of-day layers for one instance: the six-hourly
+# pull (safety-etl@) passes --skip-hourly.
 
 [Unit]
 Description=Safety time-of-day layer rebuild (%i)
@@ -10,8 +10,10 @@ Wants=network-online.target
 Type=oneshot
 User=safety
 Group=safety
-WorkingDirectory=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i
-ExecStart=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/.venv/bin/python -m safety.etl.run hourly --all
+WorkingDirectory=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/current
+# The release is read-only to safety (deploy/lib/release.sh).
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/current/.venv/bin/python -m safety.etl.run hourly --all
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

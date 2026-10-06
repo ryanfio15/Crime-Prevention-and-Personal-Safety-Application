@@ -175,7 +175,7 @@ def _deployed_commit() -> str | None:
     Read once at import: a deploy always restarts uvicorn, so the file cannot
     change under a running process. The auto deployer compares this with the
     sha it just installed to know the restart picked up the new tree. None on a
-    checkout that was never deployed (local development, the Railway image).
+    checkout that was never deployed (local development, the Docker image).
     """
     try:
         return (REPO_ROOT / "DEPLOYED_COMMIT").read_text(encoding="utf-8").strip() or None
