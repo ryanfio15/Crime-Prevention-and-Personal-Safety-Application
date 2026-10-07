@@ -43,10 +43,11 @@ jobs:
       POSTGRES_HOST: 127.0.0.1
       POSTGRES_PORT: "5432"
       # Every step runs as the non-superuser owner role the host's instances use
-      # (docs/DEPLOY.md "Database roles"), so a migration or code path that
-      # quietly needs superuser fails here first. Only the steps that build the
-      # host's starting state -- a schema created by the bootstrap superuser --
-      # override this with POSTGRES_USER=safety.
+      # (docs/DEPLOY.md "Database roles"). Only the steps that build the host's
+      # starting state override this with POSTGRES_USER=safety, and the superuser
+      # applies only main's migrations -- what the host already has. Every
+      # migration this branch adds is applied as safety_app, so one (or any
+      # runtime path) that quietly needs superuser fails here, not at deploy.
       POSTGRES_USER: safety_app
       POSTGRES_PASSWORD: safety_app_ci_pw
       POSTGRES_DB: safety
@@ -81,15 +82,29 @@ jobs:
         run: for f in deploy/*.sh deploy/lib/*.sh deploy/git-hooks/*; do bash -n "$f"; done
       - name: Shellcheck deploy scripts
         run: shellcheck deploy/*.sh deploy/lib/*.sh deploy/git-hooks/*
-      # Twice: every deploy re-runs migrate against a database that is already
-      # up to date, so the second pass is the one that matches production.
-      # As the superuser: on the host every object was created by `safety`, and
-      # the role switch has to *transfer* them, so CI starts from the same shape.
-      - name: Migrate (fresh database)
+      # As the superuser, and with main's own code: on the host every object
+      # main's migrations created was created by `safety`, and the role switch
+      # has to *transfer* them, so CI starts from exactly that shape. This
+      # branch's new migrations are applied later, as safety_app (P2).
+      - name: Migrate main's schema as the superuser (host shape)
         env:
           POSTGRES_USER: safety
           POSTGRES_PASSWORD: safety_ci_pw
-        run: python -m safety.migrate
+        run: |
+          git fetch --quiet --depth=1 origin main
+          git worktree add --quiet --detach "$RUNNER_TEMP/base" FETCH_HEAD
+          py=python
+          if ! cmp -s requirements.txt "$RUNNER_TEMP/base/requirements.txt"; then
+            python -m venv "$RUNNER_TEMP/base-venv"
+            "$RUNNER_TEMP/base-venv/bin/pip" install --quiet -r "$RUNNER_TEMP/base/requirements.txt"
+            py="$RUNNER_TEMP/base-venv/bin/python"
+          fi
+          (cd "$RUNNER_TEMP/base" && "$py" -m safety.migrate)
+          # The superuser applied exactly main's migrations, nothing of this branch.
+          n=$(PGPASSWORD=safety_ci_pw psql -h 127.0.0.1 -U safety -d safety -X -Atc "select count(*) from public.schema_migration")
+          want=$(ls "$RUNNER_TEMP/base/db/migrations"/*.sql | wc -l)
+          test "$n" = "$want" || { echo "::error title=Base schema::$n migrations recorded, main has $want"; exit 1; }
+          echo "::notice title=Base schema::main $(git rev-parse --short FETCH_HEAD): $want migrations applied as the superuser"
       # The host's silver partitions were created by the superuser too.
       - name: Create superuser-owned partitions (host shape)
         env:
@@ -131,9 +146,34 @@ jobs:
           test "$(psql -d safety -X -Atc "select count(*) from pg_namespace where nspname in ('topology','tiger','tiger_data') and nspowner <> 'safety'::regrole")" = 0
           test "$(PGUSER=safety_app PGPASSWORD=safety_app_ci_pw psql -d safety -X -Atc 'select rolsuper from pg_roles where rolname = current_user')" = f
       # As safety_app (job env): the host's real case -- the first migrate run by
-      # the new owner role over a schema transferred from the superuser.
+      # the new owner role over a schema transferred from the superuser, which
+      # applies whatever this branch adds on top of main.
+      - name: Migrate as the app role (this branch's new migrations)
+        run: |
+          out=$(python -m safety.migrate)
+          printf '%s\n' "$out"
+          applied=$(printf '%s\n' "$out" | sed -n 's/^Applied [0-9]* migration(s): //p')
+          echo "::notice title=Applied as safety_app::${applied:-none}"
+      # Twice: every deploy re-runs migrate against a database that is already
+      # up to date, so this pass is the one that matches production.
       - name: Migrate again (idempotency)
         run: python -m safety.migrate
+      # P2: the app role must not be able to apply a migration that needs
+      # superuser, so a branch's new migration that quietly needs it fails here,
+      # not at deploy. A local worktree of HEAD plus one CREATE ROLE migration;
+      # each migration is its own transaction, so the failed file leaves nothing.
+      - name: App role cannot apply a superuser-only migration (P2 self-test)
+        run: |
+          git worktree add --quiet --detach "$RUNNER_TEMP/p2probe" HEAD
+          printf 'CREATE ROLE p2_probe;\n' > "$RUNNER_TEMP/p2probe/db/migrations/999_p2_probe.sql"
+          if (cd "$RUNNER_TEMP/p2probe" && python -m safety.migrate) > "$RUNNER_TEMP/p2probe.log" 2>&1; then
+            echo "::error title=P2 self-test::a CREATE ROLE migration was applied as safety_app"; exit 1
+          fi
+          grep -q 'permission denied to create role' "$RUNNER_TEMP/p2probe.log" ||
+            { cat "$RUNNER_TEMP/p2probe.log"; echo "::error title=P2 self-test::failed for another reason"; exit 1; }
+          echo "P2 self-test: permission denied to create role (expected)"
+          test "$(PGPASSWORD=safety_ci_pw psql -h 127.0.0.1 -U safety -d safety -X -Atc "select (select count(*) from public.schema_migration where filename = '999_p2_probe.sql') + (select count(*) from pg_roles where rolname = 'p2_probe')")" = 0
+          git worktree remove --force "$RUNNER_TEMP/p2probe"
       # Failures are also raised as annotations, which show on the run page
       # (and through the check-runs API) without access to the raw logs.
       - name: Database tests
