@@ -16,9 +16,7 @@ const DEFAULT_CITY = "phl";
 
 /* A distinct state, not the bottom of the ramp: nothing was reported here. */
 const ZERO_FILL = "#e1e0d9";
-const SURFACE_GAP = "#fcfcfb";
 const SERIES_1 = "#2a78d6";
-const INK_PRIMARY = "#0b0b0b";
 const INK_SECONDARY = "#52514e";
 const BASELINE = "#c3c2b7";
 
@@ -503,54 +501,6 @@ function fillColorExpression() {
   ];
 }
 
-/* Approximate width of a cell, in metres, per resolution. */
-const CELL_SPAN_M = { 8: 530, 9: 200, 10: 76 };
-
-/**
- * Resting width of the hairline between fills.
- *
- * The surface-coloured hairline only reads as a 2px gap while a cell is more
- * than a few pixels across. At resolution 10 the whole-city view puts ~26,000
- * hexagons on screen at roughly two pixels each, and a 1.1px line is then most
- * of the cell -- the map turns into a sheet of surface colour with no data
- * visible at all. So the line fades in at the zoom where this resolution's
- * cells are actually wide enough to carry it, and is absent below that.
- *
- * Selection and hover keep a fixed width at every zoom: those are pointer
- * feedback on one cell, not a boundary between thousands.
- */
-/** Web-mercator metres per pixel at zoom 0, for the current city's latitude.
- *
- * 156,543 m/px at the equator, narrowing by cos(latitude). Taken from the city
- * being viewed rather than pinned to one: across the six cities this runs from
- * ~105,000 in Seattle to ~135,000 in Austin, which moves the zoom at which a
- * hexagon becomes wide enough to outline by about a third of a zoom level.
- * Falls back to the equator figure before the first city record arrives, which
- * only matters for the first frame. */
-function groundResolution() {
-  const lat = state.cityRecord?.center_lat;
-  if (!Number.isFinite(lat)) return 156543;
-  return 156543 * Math.cos((lat * Math.PI) / 180);
-}
-
-function outlineWidthExpression() {
-  const span = CELL_SPAN_M[state.res] ?? CELL_SPAN_M[8];
-  // The zoom at which a cell spans roughly six pixels.
-  const legible = Math.log2((6 * groundResolution()) / span);
-  // MapLibre only accepts ["zoom"] as the input of a top-level interpolate or
-  // step, so the zoom ramp is the outer expression and the feature-state choice
-  // is repeated at each stop. Nested the other way round, addLayer rejected the
-  // whole layer (an "error" event, not a throw) and every later
-  // setPaintProperty("cells-outline") threw "non-existing layer".
-  const width = (base) => [
-    "case",
-    ["boolean", ["feature-state", "selected"], false], 2.2,
-    ["boolean", ["feature-state", "hover"], false], 1.6,
-    base,
-  ];
-  return ["interpolate", ["linear"], ["zoom"], legible - 1, width(0), legible, width(1.1)];
-}
-
 /* ------------------------------------------------------------------- legend */
 
 /** Tick label for a domain endpoint: as precise as the magnitude deserves. */
@@ -643,7 +593,7 @@ async function loadLayer({ quiet = false } = {}) {
   }
 
   // The pointer can sit still across a layer swap, so mouseleave never fires
-  // and the hover outline would stay on a cell from the previous layer.
+  // and the hover highlight would stay on a cell from the previous layer.
   if (state.hovered) {
     map.setFeatureState({ source: "cells", id: state.hovered }, { hover: false });
     state.hovered = null;
@@ -675,9 +625,6 @@ async function loadLayer({ quiet = false } = {}) {
     if (source) source.setData(collection);
 
     map.setPaintProperty("cells-fill", "fill-color", fillColorExpression());
-    // The cell size may have just changed, and the hairline is sized per
-    // resolution -- see outlineWidthExpression.
-    map.setPaintProperty("cells-outline", "line-width", outlineWidthExpression());
     renderLegend();
     renderTable();
     // The city rate the safety headline is a share of has just moved, and so has
@@ -1483,23 +1430,6 @@ async function initMap() {
     },
   });
 
-  // A surface-coloured hairline between fills reads as a 2px gap, rather than
-  // as a contrasting border drawn around every mark.
-  map.addLayer({
-    id: "cells-outline",
-    type: "line",
-    source: "cells",
-    paint: {
-      "line-color": [
-        "case",
-        ["boolean", ["feature-state", "selected"], false], INK_PRIMARY,
-        ["boolean", ["feature-state", "hover"], false], INK_SECONDARY,
-        SURFACE_GAP,
-      ],
-      "line-width": outlineWidthExpression(),
-    },
-  });
-
   map.on("mousemove", "cells-fill", (event) => {
     const feature = event.features?.[0];
     if (!feature) return;
@@ -1782,8 +1712,8 @@ function watchForRefresh() {
   syncSafetyAvailability();
   // Expose read-only state for debugging and for the smoke-test driver.
   window.__safetyState = state;
-  // Sequential, not parallel: the outline width and the frame both read the
-  // city record, so the layer should paint after it exists.
+  // Sequential, not parallel: the frame reads the city record, so the layer
+  // should paint after it exists.
   await loadFreshness();
   await loadLayer();
 
