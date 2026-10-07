@@ -44,3 +44,30 @@ def test_statement_timeout_is_only_on_the_api_pool():
 
     assert settings.api_statement_timeout_ms == 15000
     assert settings.api_pool_timeout_seconds == 10.0
+
+
+def test_lifespan_builds_the_pool_with_both_timeouts(monkeypatch):
+    # P4: the settings above are only worth something if the pool is built with
+    # them. A fake pool records the ConnectionPool(...) call the lifespan makes.
+    from safety.config import settings
+
+    captured = {}
+
+    class FakePool:
+        check_connection = staticmethod(lambda conn: None)
+
+        def __init__(self, conninfo, **kw):
+            captured.update(kw, conninfo=conninfo)
+
+        def wait(self, timeout=None):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(settings, "postgres_password", "x")  # F20: dsn refuses an empty one
+    monkeypatch.setattr(main, "ConnectionPool", FakePool)
+    with TestClient(main.app):
+        pass
+    assert captured["kwargs"]["options"] == f"-c statement_timeout={settings.api_statement_timeout_ms}"
+    assert captured["timeout"] == settings.api_pool_timeout_seconds
