@@ -619,6 +619,10 @@ function renderLegend() {
 /* --------------------------------------------------------------- data fetch */
 
 async function loadLayer({ quiet = false } = {}) {
+  // A background refresh that lands while a visible load (or its error) is on
+  // screen takes that load over, so it must own the indicator too: the aborted
+  // load returns silently, and a quiet failure here would leave "Loading…" up (P3).
+  if (quiet && !$("loading").hidden) quiet = false;
   const seq = ++state.layerSeq;
   state.layerAbort?.abort();
   const controller = (state.layerAbort = new AbortController());
