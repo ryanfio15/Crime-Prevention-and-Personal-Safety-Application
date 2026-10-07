@@ -6,7 +6,17 @@
 <!-- Replaced from the selected city's snapshot on load; this is the pre-boot value. -->
 <title>Reported-incident activity</title>
 <link rel="preconnect" href="https://basemaps.cartocdn.com">
-<link href="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.css" rel="stylesheet">
+<!-- Third-party assets are pinned to an exact version AND to its hash
+     (subresource integrity): if unpkg ever served different bytes for these
+     URLs, the browser refuses them instead of running them. When bumping a
+     version, recompute each hash and update both together:
+       curl -sSfL <url> | openssl dgst -sha384 -binary | openssl base64 -A
+     crossorigin="anonymous" is required for SRI on a cross-origin fetch; unpkg
+     answers with access-control-allow-origin: *. Same-origin files (styles.css,
+     html.js, app.js) need no integrity attribute. -->
+<link href="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.css" rel="stylesheet"
+      integrity="sha384-gNYNsUmuZqDYiT3gbirWTV5K7rt71RoveS/yXAaU09d4ZUmeDVTD3XoqB6uJAIFR"
+      crossorigin="anonymous">
 <link href="styles.css" rel="stylesheet">
 </head>
 <body>
@@ -126,7 +136,8 @@
     </div>
 
 
-    <div class="loading" id="loading" hidden>Loading&hellip;</div>
+    <!-- A live region, so a load error that stays on screen is announced. -->
+    <div class="loading" id="loading" role="status" aria-live="polite" hidden>Loading&hellip;</div>
   </section>
 
   <!-- Detail panel: opens on cell click. -->
@@ -254,8 +265,12 @@
   <div id="methodology-body">Loading&hellip;</div>
 </dialog>
 
-<script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"></script>
-<script src="https://unpkg.com/h3-js@4.2.1/dist/h3-js.umd.js"></script>
+<script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"
+        integrity="sha384-81ppUWZZO+pveTPk4qU9cZuScEFULHfuOMHVJHFZ7xVBlWQTG1zsPrVIMGAl1WMb"
+        crossorigin="anonymous"></script>
+<script src="https://unpkg.com/h3-js@4.2.1/dist/h3-js.umd.js"
+        integrity="sha384-ViAXEmpUtfR6LTFA4VPFElyF4q6ysOu7yi4fs2v5udUWy6l162CdHpDx1SyS870v"
+        crossorigin="anonymous"></script>
 <script src="html.js"></script>
 <script src="app.js"></script>
 </body>
