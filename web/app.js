@@ -537,12 +537,18 @@ function outlineWidthExpression() {
   const span = CELL_SPAN_M[state.res] ?? CELL_SPAN_M[8];
   // The zoom at which a cell spans roughly six pixels.
   const legible = Math.log2((6 * groundResolution()) / span);
-  return [
+  // MapLibre only accepts ["zoom"] as the input of a top-level interpolate or
+  // step, so the zoom ramp is the outer expression and the feature-state choice
+  // is repeated at each stop. Nested the other way round, addLayer rejected the
+  // whole layer (an "error" event, not a throw) and every later
+  // setPaintProperty("cells-outline") threw "non-existing layer".
+  const width = (base) => [
     "case",
     ["boolean", ["feature-state", "selected"], false], 2.2,
     ["boolean", ["feature-state", "hover"], false], 1.6,
-    ["interpolate", ["linear"], ["zoom"], legible - 1, 0, legible, 1.1],
+    base,
   ];
+  return ["interpolate", ["linear"], ["zoom"], legible - 1, width(0), legible, width(1.1)];
 }
 
 /* ------------------------------------------------------------------- legend */
