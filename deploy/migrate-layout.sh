@@ -58,7 +58,7 @@ prepare() {
     local sha installed
     sha=$(current_sha "$target")
     if [ -z "$sha" ]; then
-        installed=$(tr -d '[:space:]' < "$target/DEPLOYED_COMMIT" 2>/dev/null) || installed=
+        installed=$(tr -d '[:space:]' 2>/dev/null < "$target/DEPLOYED_COMMIT") || installed=
         if [[ ! $installed =~ ^[0-9a-f]{7,40}$ ]] ||
             ! sha=$(git -C "$cache" rev-parse --quiet --verify "$installed^{commit}"); then
             echo "$target/DEPLOYED_COMMIT ('$installed') is not a commit on main or testing" >&2

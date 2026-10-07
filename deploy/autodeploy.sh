@@ -78,8 +78,8 @@ if [ ! -f "$state/$instance.deployed" ]; then
     git -C "$cache" fetch --quiet origin \
         '+refs/heads/main:refs/remotes/origin/main' \
         '+refs/heads/testing:refs/remotes/origin/testing'
-    installed=$(tr -d '[:space:]' < "$target/current/DEPLOYED_COMMIT" 2>/dev/null) ||
-        installed=$(tr -d '[:space:]' < "$target/DEPLOYED_COMMIT" 2>/dev/null) || installed=
+    installed=$(tr -d '[:space:]' 2>/dev/null < "$target/current/DEPLOYED_COMMIT") ||
+        installed=$(tr -d '[:space:]' 2>/dev/null < "$target/DEPLOYED_COMMIT") || installed=
     if [[ ! $installed =~ ^[0-9a-f]{7,40}$ ]] ||
         ! full=$(git -C "$cache" rev-parse --quiet --verify "$installed^{commit}"); then
         err "cannot seed: DEPLOYED_COMMIT ('$installed') in $target is not a commit on main or testing; refusing to deploy unseeded"

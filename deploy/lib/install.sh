@@ -82,7 +82,7 @@ if etl_running "$instance"; then
     exit 75
 fi
 
-inject=$(tr -d '[:space:]' < "$state/$instance.inject_fail" 2>/dev/null) || inject=
+inject=$(tr -d '[:space:]' 2>/dev/null < "$state/$instance.inject_fail") || inject=
 [ -z "$inject" ] || echo "inject_fail is set to '$inject' for $instance"
 
 as_safety() {
