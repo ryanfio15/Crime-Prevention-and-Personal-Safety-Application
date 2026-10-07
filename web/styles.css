@@ -326,23 +326,6 @@ select:focus-visible, .btn:focus-visible {
   border: 1px solid var(--baseline);
 }
 
-/* --------------------------------------------------------------- tooltip --- */
-
-.map-tooltip {
-  position: absolute;
-  z-index: 4;
-  pointer-events: none;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: rgba(252, 252, 251, 0.97);
-  font-size: 12.5px;
-  white-space: nowrap;
-  transform: translate(-50%, calc(-100% - 12px));
-}
-.map-tooltip b { font-variant-numeric: tabular-nums; }
-.map-tooltip small { display: block; color: var(--text-muted); font-size: 11px; }
-
 /* ---------------------------------------------------------- detail panel --- */
 
 .detail {
