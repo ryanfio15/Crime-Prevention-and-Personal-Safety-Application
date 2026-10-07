@@ -1,0 +1,14 @@
+{
+  "normal": {
+    "uniquenibrno": "240100001-1", "date_occ": "2024-03-01T00:00:00.000", "time_occ": "45",
+    "date_rptd": "2024-03-02T00:00:00.000", "area_name": "Central", "nibr_code": "23H",
+    "nibr_description": "All Other Larceny", "crime_against": "Property",
+    "premis_desc": "101 - STREET", "hndrdth_loc_chk": "600 S SPRING ST",
+    "hndrdth_lat": "34.0453", "hndrdth_lon": "-118.2507"
+  },
+  "bad_time_zero_coords": {
+    "uniquenibrno": "240100002-1", "date_occ": "2024-03-01T00:00:00.000", "time_occ": "2400",
+    "nibr_code": "13B", "nibr_description": "Simple Assault",
+    "hndrdth_lat": "0", "hndrdth_lon": "0"
+  }
+}

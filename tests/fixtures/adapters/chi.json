@@ -1,0 +1,19 @@
+{
+  "normal": {
+    "id": "13300001", "case_number": "JH100001", "date": "2024-01-12T20:20:00.000",
+    "block": "001XX N STATE ST", "iucr": "0820", "primary_type": "THEFT",
+    "description": "$500 AND UNDER", "location_description": "STREET", "fbi_code": "06",
+    "district": "001", "x_coordinate": "1176000", "y_coordinate": "1900000",
+    "latitude": "41.8781", "longitude": "-87.6298"
+  },
+  "state_plane_only": {
+    "id": "13300002", "date": "2024-01-12T08:00:00.000", "iucr": "0486",
+    "description": "DOMESTIC BATTERY SIMPLE", "fbi_code": "08B",
+    "x_coordinate": "1176000", "y_coordinate": "1900000", "latitude": "", "longitude": ""
+  },
+  "no_coordinates": {
+    "id": "13300003", "date": "2024-01-12T08:00:00.000", "iucr": "0486",
+    "description": "DOMESTIC BATTERY SIMPLE", "x_coordinate": "", "y_coordinate": "0",
+    "latitude": "0", "longitude": "0"
+  }
+}

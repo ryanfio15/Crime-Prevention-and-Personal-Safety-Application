@@ -1,0 +1,17 @@
+{
+  "new_layer": {
+    "_layer": "Theft", "_legacy": false, "RIN": "2024000001", "OCCURRENCE_DATE": 1710056700000,
+    "OCCURRENCE_TIME": 145, "ADDRESS_BLOCK": "500 BLOCK", "STREET_NAME": "CONGRESS", "STREET_TYPE": "AVE",
+    "PRIMARY_OFFENSE_CODE": "600", "CRIME_DESCRIPTION": "THEFT", "LOCATION_DESCRIPTION": "STREETS",
+    "SECTOR": "GE", "_x": -97.7431, "_y": 30.2672
+  },
+  "legacy": {
+    "_layer": "Aggravated Assault", "_legacy": true, "OCCURRENCE_DATE": 1556686800000,
+    "OCCURRENCE_TIME": 1530, "ADDRESS_BLOCK": "1100 BLOCK", "STREET_NAME": "6TH", "STREET_TYPE": "ST",
+    "PRIMARY_OFFENSE_CODE": "402", "CRIME_DESCRIPTION": "AGG ASSAULT", "_x": 3114000, "_y": 10070000
+  },
+  "not_an_offense": {
+    "_layer": "Part II Crimes", "_legacy": false, "RIN": "2024000002", "OCCURRENCE_DATE": 1710056700000,
+    "PRIMARY_OFFENSE_CODE": "3400", "_x": -97.74, "_y": 30.26
+  }
+}
