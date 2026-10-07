@@ -22,7 +22,8 @@
 #
 # Steps (a failed pre-check exits before anything changes):
 #   1. pre-checks: root, committed script, new deployer installed, regular .env,
-#      root-owned app directory, no symlink anywhere on the instance path;
+#      root-owned app directory, no symlink anywhere on the instance path, no
+#      file in the instance tree hard-linked from elsewhere (e.g. prod/data);
 #   2. the deploy lock, then -- with the dev ETL timers stopped -- the ETL lock;
 #   3. creates safety-dev (system user, home /srv/safety-dev) if missing;
 #   4. stops safety-api@dev (dev is down until step 7);
@@ -85,6 +86,13 @@ for d in data releases venvs; do
     { [ -d "$inst/$d" ] && [ ! -L "$inst/$d" ]; } || die "$inst/$d is not a real directory; refusing"
 done
 { [ -f "$inst/.env" ] && [ ! -L "$inst/.env" ]; } || die "$inst/.env is not a regular file; refusing"
+# chown changes an inode, not a name: a file in dev/ hard-linked from elsewhere
+# (dev's data seeded from prod's with cp -al, say) would be re-owned there too,
+# handing safety-dev write access to prod's copy. Refuse; docs/DEPLOY.md "OS
+# users" has the command that gives dev its own copies.
+shared=$(find "$inst" -xdev ! -type d -links +1 -print -quit)
+[ -z "$shared" ] ||
+    die "$shared (and maybe more) has other hard links, possibly into prod/; break them first (docs/DEPLOY.md \"OS users\"); refusing"
 
 # Who owns the instance's files right now (safety, or safety-dev on a re-run).
 cur=$(stat -c %U "$inst/.env")

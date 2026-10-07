@@ -516,6 +516,15 @@ code deployed to dev -- any push to testing -- cannot read prod's `.env`, data o
   `/srv/safety` itself are `root:root` (0755 / 0751), so neither user can rename
   or replace `dev/` or `prod/`; `safety` keeps `/srv/safety/.cache` and its
   dotfiles.
+- *No shared inodes.* `chown` re-owns an inode, not a name, so os-isolate
+  refuses while any file under `dev/` has another hard link. On this host 189
+  bronze files in `dev/data` were hard links of `prod/data`'s (dev was seeded
+  from prod), and a first isolation re-owned prod's copies to `safety-dev`
+  until it was rolled back. Give dev its own copies first, as dev's current
+  user, under its ETL lock (contents and timestamps are kept; prod's files are
+  not touched):
+  `sudo runuser -u safety -- flock -w 600 dev/data/.etl.lock find dev/data -xdev -type f -links +1 -exec sh -c 'for f; do t=$(mktemp "$f.unlink.XXXXXX") && cp -p "$f" "$t" && mv -f "$t" "$f"; done' sh {} +`
+  (paths relative to the app directory).
 - *Root never follows a dev-planted path.* Scripts that lock an instance's ETL
   open `data/.etl.lock` read-only and refuse a symlink there; a missing one is
   created by the instance user. Edits to `dev/.env` are made as `safety-dev`
