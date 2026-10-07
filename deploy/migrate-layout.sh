@@ -54,7 +54,8 @@ prepare() {
         '+refs/heads/testing:refs/remotes/origin/testing'
 
     # Re-run after a deploy: current already names the release in use.
-    local sha installed stage
+    # stage is global: the EXIT trap runs after this function has returned.
+    local sha installed
     sha=$(current_sha "$target")
     if [ -z "$sha" ]; then
         installed=$(tr -d '[:space:]' < "$target/DEPLOYED_COMMIT" 2>/dev/null) || installed=
