@@ -257,6 +257,16 @@ and `I/data/` in place:
 If `<instance>.deployed` is missing, the first tick seeds it from the running
 release's `DEPLOYED_COMMIT`, and refuses to deploy if it cannot.
 
+**nginx sites.** `deploy/nginx/safety.conf` (prod) and `safety-dev.conf` (dev)
+are byte-for-byte the installed `/etc/nginx/sites-available/{safety,safety-dev}`,
+certbot's TLS and redirect lines included (certificate *paths* only; the keys
+stay in `/etc/letsencrypt`). Change a site in the repo, then
+`sudo deploy/install-deployer.sh --nginx` installs it, runs `nginx -t` and
+reloads, putting the old file back if the test fails. If certbot (or a hand
+edit) has changed a live site since it was last installed from the repo, the
+install refuses and prints the diff: copy the live file into the repo and commit
+it first, so a stale repo copy can never revert certbot's edits.
+
 ### Moving an instance to the release layout
 
 A one-time step for an instance that still runs from a flat checkout. The unit
