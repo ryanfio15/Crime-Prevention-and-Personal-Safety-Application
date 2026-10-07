@@ -33,9 +33,10 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def db_conn():
-    """A live connection, for db-marked tests only."""
+    """A live connection, for db-marked tests only. Module-scoped, so a module's
+    expensive fixture (a gold refresh) is built once and read by every test."""
     from safety.db import connect, wait_for_db
 
     wait_for_db()

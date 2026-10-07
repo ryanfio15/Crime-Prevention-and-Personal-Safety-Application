@@ -134,12 +134,10 @@ jobs:
       # the new owner role over a schema transferred from the superuser.
       - name: Migrate again (idempotency)
         run: python -m safety.migrate
-      # pytest exits 5 when it collects nothing; tolerated until the first
-      # db-marked tests land.
       - name: Database tests
         env:
           SAFETY_TEST_DB: "1"
-        run: python -m pytest -q -m db || [ $? -eq 5 ]
+        run: python -m pytest -q -m db
       # Empty manifests, but it runs the query with every filter combination.
       - name: Run log query
         run: |
