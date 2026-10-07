@@ -14,6 +14,8 @@
 
 [Unit]
 Description=Safety API (%i)
+# A failure logs a critical alert to the journal (safety-notify@.service).
+OnFailure=safety-notify@%N.service
 # Ordering only: the pool's check_connection recovers from a docker restart.
 After=network-online.target docker.service
 Wants=network-online.target docker.service

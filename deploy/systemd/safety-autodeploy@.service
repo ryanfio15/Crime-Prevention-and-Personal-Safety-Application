@@ -11,6 +11,8 @@
 
 [Unit]
 Description=Safety continuous deployment (%i)
+# A failure logs a critical alert to the journal (safety-notify@.service).
+OnFailure=safety-notify@%N.service
 After=network-online.target docker.service
 Wants=network-online.target
 

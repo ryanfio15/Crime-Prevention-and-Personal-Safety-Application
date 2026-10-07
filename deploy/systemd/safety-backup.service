@@ -6,6 +6,8 @@
 
 [Unit]
 Description=Safety database backup (pg_dump of prod and dev)
+# A failure logs a critical alert to the journal (safety-notify@.service).
+OnFailure=safety-notify@%N.service
 After=docker.service
 Requires=docker.service
 

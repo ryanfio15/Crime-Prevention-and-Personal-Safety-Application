@@ -464,6 +464,23 @@ to its role only.
 
 ## If something goes wrong
 
+**Alerts.** Every ETL, ops, deploy, API and backup unit carries
+`OnFailure=safety-notify@%N.service`. When one fails, `safety-notify@` logs one
+err-priority line tagged `safety-notify` naming the unit, the host and the
+time, and appends the same line to `/var/lib/safety-notify/alerts.log`, which
+outlives journal rotation. Alerts go to the journal only:
+
+```bash
+journalctl -t safety-notify -p err           # every alert, newest last
+sudo cat /var/lib/safety-notify/alerts.log
+```
+
+Check it whenever you look at the host. `safety-api@` restarts itself on
+failure, so it alerts only once systemd gives up restarting it. Adding an
+external channel later (a webhook, mail) is one command after `logger` in
+`deploy/lib/notify.sh`, followed by `sudo deploy/install-deployer.sh`; keep it
+best-effort, since the hook must never fail.
+
 **A deploy was skipped.** `journalctl -u safety-autodeploy@<instance> -p err`
 names the commit and the reason; the lines before it show which install step
 failed. Fix forward with a new push, or clear the skip as above.
