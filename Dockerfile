@@ -63,11 +63,18 @@ EXPOSE 8000
 # An IPv6-only private network would matter for *outbound* connections to the
 # database, which the listen address does not affect.
 #
-# --proxy-headers plus a permissive --forwarded-allow-ips is what makes
-# X-Forwarded-For trustworthy for safety/api/ratelimit.py: the container is only
-# reachable through the platform's proxy, never directly.
+# --proxy-headers makes uvicorn resolve the client address that
+# safety/api/ratelimit.py keys its buckets on. Set FORWARDED_ALLOW_IPS to the
+# platform proxy's address or CIDR wherever it is known: uvicorn then walks
+# X-Forwarded-For from the right and skips only that proxy. The default `*`
+# trusts every hop, which makes uvicorn take the *first* X-Forwarded-For element
+# -- a value the client chooses -- so with `*` the per-client limit is only as
+# trustworthy as the platform's guarantee that it overwrites the header. `*`
+# stays the default because on an unknown platform 127.0.0.1 would put every
+# client in one bucket (mass 429s). The host deployment (systemd, nginx on
+# 127.0.0.1) does not use this image and is unaffected.
 #
 # `exec` so uvicorn replaces the shell and becomes PID 1. Without it the shell
 # stays in front, and a platform stop signal is delivered to the shell rather
 # than to uvicorn -- no graceful shutdown, just a kill after the grace period.
-CMD ["sh", "-c", "exec uvicorn safety.api.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]
+CMD ["sh", "-c", "exec uvicorn safety.api.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips=\"${FORWARDED_ALLOW_IPS:-*}\""]
