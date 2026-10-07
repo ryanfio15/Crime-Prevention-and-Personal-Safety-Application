@@ -17,11 +17,13 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from psycopg.errors import QueryCanceled
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+from psycopg_pool import ConnectionPool, PoolTimeout
 
 from safety import PIPELINE_VERSION
 from safety.api import repository as repo
@@ -41,7 +43,18 @@ async def lifespan(app: FastAPI):
         settings.dsn,
         min_size=1,
         max_size=8,
-        kwargs={"row_factory": dict_row},
+        # statement_timeout lives here, on the API's own connections, and never
+        # on the role or the database (ALTER ROLE/DATABASE ... SET): the ETL and
+        # migrate share both and legitimately run for minutes. A migration that
+        # holds an ACCESS EXCLUSIVE lock for longer than this makes queued reads
+        # answer 503 rather than hang.
+        kwargs={
+            "row_factory": dict_row,
+            "options": f"-c statement_timeout={settings.api_statement_timeout_ms}",
+        },
+        # How long a request waits for a free connection. Pool exhaustion now
+        # fails in 10 s with a 503 instead of hanging /health with everything else.
+        timeout=settings.api_pool_timeout_seconds,
         # Restarting the database container kills every pooled connection, and
         # without this the pool keeps handing the dead ones out until it is
         # bounced. Validate on checkout so the API rides out a `docker compose
@@ -82,6 +95,23 @@ if settings.enable_rate_limit:
 # the finest cell size is only usable on a fast connection, which is the
 # opposite of what S2's mobile-first resident/commuter segment needs.
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+
+_BUSY = {"detail": "The service is busy; retry shortly."}
+
+
+@app.exception_handler(PoolTimeout)
+@app.exception_handler(QueryCanceled)
+async def _busy(request: Request, exc: Exception) -> JSONResponse:
+    """Saturation and runaway queries are a "come back shortly", not a 500.
+
+    PoolTimeout: no connection freed up within api_pool_timeout_seconds.
+    QueryCanceled: statement_timeout cancelled a query. Both are transient from
+    the client's side, so they get 503 with Retry-After; the smoke check treats a
+    503 from /health as a failure, which is right.
+    """
+    log.warning("503 for %s: %s: %s", request.url.path, type(exc).__name__, exc)
+    return JSONResponse(_BUSY, status_code=503, headers={"Retry-After": "5"})
 
 
 def get_conn():

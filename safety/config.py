@@ -66,6 +66,17 @@ class Settings(BaseSettings):
     cache_max_entries: int = 192
     cache_max_bytes: int = 256 * 1024 * 1024
 
+    # Bounds on the API's database work (safety/api/main.py). The largest
+    # legitimate uncached query measured on dev is ~4 s (resolution-10 cells for
+    # Chicago and Los Angeles); nginx gives up at 60 s. A query past the
+    # statement timeout is cancelled and answered 503, as is a request that
+    # waits longer than the pool timeout for a free connection -- before, pool
+    # exhaustion hung every endpoint, /health included, for 30 s and then 500ed.
+    # API pool only: the ETL and migrate (safety/db.py) legitimately run for
+    # minutes and never get a statement timeout.
+    api_statement_timeout_ms: int = 15000
+    api_pool_timeout_seconds: float = 10.0
+
     # HTTP behaviour for source adapters.
     http_timeout_seconds: float = 120.0
     http_max_retries: int = 4
