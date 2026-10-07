@@ -366,10 +366,13 @@ def data_quality(conn: psycopg.Connection, source_id: str) -> dict[str, Any]:
         )
         issues = cur.fetchall()
 
+        # No bronze_uri: the host's filesystem layout is not public information.
+        # The ETL's replay paths (safety/etl/run.py) read it from etl.pull_run
+        # directly, never from here.
         cur.execute(
             """
             SELECT pull_id, mode, status, records_fetched, records_rejected,
-                   records_upserted, duration_seconds, started_at, finished_at, bronze_uri
+                   records_upserted, duration_seconds, started_at, finished_at
             FROM etl.pull_run
             WHERE source_id = %s
             ORDER BY pull_id DESC
