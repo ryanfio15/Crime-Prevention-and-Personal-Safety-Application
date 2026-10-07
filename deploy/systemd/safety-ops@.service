@@ -1,0 +1,28 @@
+# Converge one instance's data on what the registry says it should be
+# (safety/ops.py): backfill, census, gold and first time-of-day build for any
+# enabled city that is missing them. Started without blocking by
+# deploy/lib/install.sh after every successful deploy; against an up-to-date
+# database it is a handful of EXISTS queries and an exit. Disabled cities are
+# never touched -- enabling one stays a manual act. `systemctl start
+# safety-ops@dev` runs it by hand.
+
+[Unit]
+Description=Safety data convergence (%i)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=safety
+Group=safety
+WorkingDirectory=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/current
+# The release is read-only to safety (deploy/lib/release.sh).
+Environment=PYTHONDONTWRITEBYTECODE=1
+# One ETL process per instance at a time: ops, the six-hourly pull and the
+# weekly rebuild all take this lock, and wait for it rather than overlap.
+ExecStart=/usr/bin/flock -w 21600 /srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/data/.etl.lock /srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/current/.venv/bin/python -m safety.ops
+# A first backfill of a city runs for a long time.
+TimeoutStartSec=infinity
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full

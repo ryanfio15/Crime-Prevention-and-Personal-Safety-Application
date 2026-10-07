@@ -162,3 +162,13 @@ fi
 echo "$sha" > "$state/$instance.deployed"
 prune_releases "$target" "$sha" "$previous"
 echo "$instance is up on :$port at $sha"
+
+# A deploy can bring a newly enabled city, a new pipeline version or a schema
+# that leaves data stale. safety-ops@ works out what is missing and loads only
+# that; started without waiting, because a first backfill can take hours and
+# the deploy is already done. A missing unit must not fail a good deploy.
+if systemctl start --no-block "safety-ops@$instance"; then
+    echo "started safety-ops@$instance to load any missing data"
+else
+    err "$instance: could not start safety-ops@$instance; run sudo deploy/install-deployer.sh --units"
+fi
