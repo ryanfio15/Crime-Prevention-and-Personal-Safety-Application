@@ -128,6 +128,22 @@ previous commit may itself be a broken one that was never deployed.
 
 ## Day to day
 
+**Your working folders.** One clone, two folders, each pinned to the branch
+its instance runs (`deploy/setup-worktrees.sh` creates them and installs the
+guard hooks; re-run it after changing a hook):
+
+```
+~/Crime-Prevention-and-Personal-Safety-Application        testing -> dev    edit, commit, push here
+~/Crime-Prevention-and-Personal-Safety-Application-main   main    -> prod   read-only view of prod
+```
+
+Commit and push in the testing folder; dev deploys itself. When dev looks
+right, `deploy/promote.sh` fast-forwards main to origin/testing (after checking
+CI passed on it) and prod deploys itself; merging a testing -> main PR on
+GitHub does the same. The hooks refuse commits and merges on main, and any
+push to main that is not a fast-forward to exactly origin/testing.
+
+
 Watch it:
 
 ```bash

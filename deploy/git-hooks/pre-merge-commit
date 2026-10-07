@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Commits happen on testing (or a feature branch), never on main: main only
+# moves by promoting testing (deploy/promote.sh or a PR), and every push to it
+# deploys prod. Installed by deploy/setup-worktrees.sh.
+set -euo pipefail
+branch=$(git symbolic-ref --quiet --short HEAD || echo "(detached)")
+if [ "$branch" = main ]; then
+    echo "refusing to merge into main -- commit in the testing worktree and promote with deploy/promote.sh" >&2
+    exit 1
+fi
