@@ -42,8 +42,13 @@ jobs:
       # publishes locally; the service container is on the standard one.
       POSTGRES_HOST: 127.0.0.1
       POSTGRES_PORT: "5432"
-      POSTGRES_USER: safety
-      POSTGRES_PASSWORD: safety_ci_pw
+      # Every step runs as the non-superuser owner role the host's instances use
+      # (docs/DEPLOY.md "Database roles"), so a migration or code path that
+      # quietly needs superuser fails here first. Only the steps that build the
+      # host's starting state -- a schema created by the bootstrap superuser --
+      # override this with POSTGRES_USER=safety.
+      POSTGRES_USER: safety_app
+      POSTGRES_PASSWORD: safety_app_ci_pw
       POSTGRES_DB: safety
     steps:
       - uses: actions/checkout@v4
@@ -78,8 +83,46 @@ jobs:
         run: shellcheck deploy/*.sh deploy/lib/*.sh
       # Twice: every deploy re-runs migrate against a database that is already
       # up to date, so the second pass is the one that matches production.
+      # As the superuser: on the host every object was created by `safety`, and
+      # the role switch has to *transfer* them, so CI starts from the same shape.
       - name: Migrate (fresh database)
+        env:
+          POSTGRES_USER: safety
+          POSTGRES_PASSWORD: safety_ci_pw
         run: python -m safety.migrate
+      # The host's silver partitions were created by the superuser too.
+      - name: Create superuser-owned partitions (host shape)
+        env:
+          POSTGRES_USER: safety
+          POSTGRES_PASSWORD: safety_ci_pw
+        run: python -c "from safety.db import connect, ensure_partitions; c = connect().__enter__(); ensure_partitions(c, 'phl', [2024, 2025]); c.commit()"
+      # The host's instances move from the bootstrap superuser to a per-environment
+      # owner role with exactly this script (deploy/db-isolate.sh, docs/DEPLOY.md
+      # "Database roles"). Run it here against the same PostGIS image -- which, like
+      # the host, has postgis_topology and the tiger geocoder in POSTGRES_DB -- twice,
+      # because the host run is retried on lock timeouts and must be idempotent.
+      - name: Transfer ownership to the non-superuser role
+        env:
+          PGPASSWORD: safety_ci_pw
+          PGHOST: 127.0.0.1
+          PGUSER: safety
+        run: |
+          psql -d safety -v ON_ERROR_STOP=1 -X -q <<'SQL'
+          CREATE ROLE safety_app LOGIN PASSWORD 'safety_app_ci_pw' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+          ALTER DATABASE safety OWNER TO safety_app;
+          REVOKE CONNECT, TEMPORARY ON DATABASE safety FROM PUBLIC;
+          GRANT CONNECT, TEMPORARY ON DATABASE safety TO safety_app;
+          SQL
+          for pass in 1 2; do
+            out=$(psql -d safety -X -q -At -v from_role=safety -v to_role=safety_app -f deploy/db/transfer-ownership.sql)
+            echo "pass $pass report: ${out:-<empty>}"
+            [ -z "$out" ] || { echo "objects still owned by safety"; exit 1; }
+          done
+          test "$(psql -d safety -X -Atc "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','reference','etl','silver','gold') and c.relkind in ('r','p','v','m','S') and c.relowner = 'safety'::regrole and not exists (select 1 from pg_depend d where d.classid='pg_class'::regclass and d.objid=c.oid and d.deptype='e')")" = 0
+          test "$(psql -d safety -X -Atc "select count(*) from pg_namespace where nspname in ('topology','tiger','tiger_data') and nspowner <> 'safety'::regrole")" = 0
+          test "$(PGUSER=safety_app PGPASSWORD=safety_app_ci_pw psql -d safety -X -Atc 'select rolsuper from pg_roles where rolname = current_user')" = f
+      # As safety_app (job env): the host's real case -- the first migrate run by
+      # the new owner role over a schema transferred from the superuser.
       - name: Migrate again (idempotency)
         run: python -m safety.migrate
       # pytest exits 5 when it collects nothing; tolerated until the first
