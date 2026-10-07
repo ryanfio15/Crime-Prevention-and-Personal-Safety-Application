@@ -128,6 +128,11 @@ class Settings(BaseSettings):
     # address fail in minutes with visible progress.
     connect_timeout_seconds: int = 10
 
+    # How long `python -m safety.migrate` waits for another migrate to finish
+    # before giving up (safety/migrate.py migration_lock, F16). Deploys are
+    # serialised anyway; this bounds a manual run racing one.
+    migrate_lock_wait_seconds: float = 600.0
+
     @property
     def dsn(self) -> str:
         # connect_timeout rides on the DSN so it applies to both plain

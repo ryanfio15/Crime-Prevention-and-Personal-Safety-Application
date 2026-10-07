@@ -124,6 +124,19 @@ an advisory step serves the push's previous commit against the schema the new
 commit just migrated and warns if it breaks. It is advisory because that
 previous commit may itself be a broken one that was never deployed.
 
+**Applied migrations are immutable.** `safety.migrate` records a SHA-256 of each
+file it applies (`public.schema_migration.checksum`, CRLF-normalised) and refuses
+to run — so the deploy is rejected at step 4, before anything switches — if a
+file it already applied has since been edited. Fix a shipped migration with a
+new one. If an edit was deliberate and reviewed (a comment, say), re-adopt the
+file as it is now with
+`UPDATE public.schema_migration SET checksum = NULL WHERE filename = '<file>'`;
+the next run records the new checksum. Rows written by an older release (no
+checksum) are adopted the same way. Migrate also takes a database-wide advisory
+lock for its whole run, data loaders included, so a manual
+`python -m safety.migrate` waits (up to `MIGRATE_LOCK_WAIT_SECONDS`, default
+600) for a deploy's migrate instead of racing it.
+
 ---
 
 ## Day to day

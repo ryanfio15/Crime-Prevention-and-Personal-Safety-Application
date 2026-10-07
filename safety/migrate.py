@@ -7,12 +7,17 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import logging
 import sys
+import time
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from pathlib import Path
 
 import psycopg
 
-from safety.config import CROSSWALK_DIR, MIGRATIONS_DIR, SEVERITY_DIR
+from safety.config import CROSSWALK_DIR, MIGRATIONS_DIR, SEVERITY_DIR, settings
 from safety.db import connect, wait_for_db
 from safety.h3grid import RESOLUTIONS, cell_for
 
@@ -25,17 +30,129 @@ CREATE TABLE IF NOT EXISTS public.schema_migration (
 )
 """
 
+# Arbitrary constant: one migrate per database at a time. Deploys are already
+# serialised by install.sh's flock; this also covers a manual run racing one (F16).
+_MIGRATE_LOCK_KEY = 0x5AFE_0016
 
-def apply_migrations(conn: psycopg.Connection) -> list[str]:
-    """Apply every unapplied db/migrations/*.sql in filename order."""
-    applied: list[str] = []
+
+class MigrationChecksumError(RuntimeError):
+    """An applied migration file was edited after it ran."""
+
+
+def migration_checksum(path: Path) -> str:
+    # CRLF-normalised: a checkout with autocrlf must not look like an edit.
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _ensure_migration_table(conn: psycopg.Connection) -> None:
     with conn.cursor() as cur:
         cur.execute(_MIGRATION_TABLE)
+        cur.execute(
+            """
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'schema_migration'
+              AND column_name = 'checksum'
+            """
+        )
+        if cur.fetchone() is None:
+            # Expand-only: the previous release's INSERT (filename only) still
+            # works and leaves NULL, which the next run of this code adopts.
+            cur.execute("ALTER TABLE public.schema_migration ADD COLUMN checksum text")
+    conn.commit()
+
+
+def verify_checksums(conn: psycopg.Connection, paths: Iterable[Path]) -> int:
+    """Raise on an edited applied migration; record checksums still missing.
+
+    Commits only after a clean check. Returns how many checksums it recorded.
+    """
+    files = {p.name: p for p in paths}
+    rows = conn.execute("SELECT filename, checksum FROM public.schema_migration").fetchall()
+    bad = [
+        r["filename"]
+        for r in rows
+        if r["checksum"]
+        and r["filename"] in files
+        and migration_checksum(files[r["filename"]]) != r["checksum"]
+    ]
+    if bad:
+        conn.rollback()
+        raise MigrationChecksumError(
+            f"applied migration(s) edited since they ran: {', '.join(sorted(bad))}. "
+            "Revert the edit and add a new migration instead; after review, "
+            "`UPDATE public.schema_migration SET checksum = NULL WHERE filename = ...` "
+            "re-adopts the file as it is now."
+        )
+    adopt = [
+        (migration_checksum(files[r["filename"]]), r["filename"])
+        for r in rows
+        if r["checksum"] is None and r["filename"] in files
+    ]
+    if adopt:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "UPDATE public.schema_migration SET checksum = %s "
+                "WHERE filename = %s AND checksum IS NULL",
+                adopt,
+            )
+        log.info("recorded checksums for %s previously applied migration(s)", len(adopt))
+    conn.commit()
+    gone = sorted(r["filename"] for r in rows if r["filename"] not in files)
+    if gone:
+        log.warning("applied migrations no longer in the tree: %s", ", ".join(gone))
+    return len(adopt)
+
+
+@contextmanager
+def migration_lock(
+    conn: psycopg.Connection, wait_seconds: float | None = None, poll: float = 2.0
+) -> Iterator[None]:
+    """Session-level advisory lock, held across this run's commits.
+
+    pg_try_advisory_lock never waits, so the deploy's lock_timeout does not
+    apply; this polls up to `wait_seconds`. Closing the session releases it too.
+    """
+    wait = settings.migrate_lock_wait_seconds if wait_seconds is None else wait_seconds
+    deadline = time.monotonic() + wait
+    while True:
+        ok = conn.execute(
+            "SELECT pg_try_advisory_lock(%s) AS ok", (_MIGRATE_LOCK_KEY,)
+        ).fetchone()["ok"]
+        conn.commit()
+        if ok:
+            break
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"another safety.migrate has held the migration lock for {wait:.0f}s"
+            )
+        log.info("another safety.migrate is running; waiting for it")
+        time.sleep(poll)
+    try:
+        yield
+    finally:
+        try:
+            conn.rollback()
+            conn.execute("SELECT pg_advisory_unlock(%s)", (_MIGRATE_LOCK_KEY,))
+            conn.commit()
+        except psycopg.Error:
+            pass
+
+
+def apply_migrations(conn: psycopg.Connection) -> list[str]:
+    """Apply every unapplied db/migrations/*.sql in filename order.
+
+    Refuses (MigrationChecksumError) if an already-applied file was edited.
+    """
+    paths = sorted(MIGRATIONS_DIR.glob("*.sql"))
+    _ensure_migration_table(conn)
+    verify_checksums(conn, paths)
+    with conn.cursor() as cur:
         cur.execute("SELECT filename FROM public.schema_migration")
         already = {r["filename"] for r in cur.fetchall()}
     conn.commit()
 
-    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+    applied: list[str] = []
+    for path in paths:
         if path.name in already:
             continue
         log.info("applying migration %s", path.name)
@@ -44,7 +161,8 @@ def apply_migrations(conn: psycopg.Connection) -> list[str]:
         with conn.cursor() as cur:
             cur.execute(path.read_text(encoding="utf-8"))
             cur.execute(
-                "INSERT INTO public.schema_migration (filename) VALUES (%s)", (path.name,)
+                "INSERT INTO public.schema_migration (filename, checksum) VALUES (%s, %s)",
+                (path.name, migration_checksum(path)),
             )
         conn.commit()
         applied.append(path.name)
@@ -864,24 +982,34 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = build_parser().parse_args(argv)
     wait_for_db()
-    with connect() as conn:
-        applied = apply_migrations(conn)
-        # Schemes before weights (foreign key), and both before the registry
-        # pointer they are referenced by.
-        scheme_rows = load_severity_schemes(conn)
-        weight_rows = load_severity_weights(conn)
-        # After the weight files, so an inheriting scheme copies a table that
-        # actually exists.
-        copy_inherited_weights(conn)
-        crosswalk_rows = load_crosswalks(conn)
-        point_sources_at_scheme(conn)
-        if args.activate:
-            activate_scheme(conn, args.activate, args.city)
-        # After --activate, so a scheme being promoted in this same run is never
-        # a candidate, and after the loader, so `enabled` reflects the CSV.
-        pruned = prune_disabled_schemes(conn)
-        backfilled = backfill_h3_cells(conn)
-        hours_filled = backfill_incident_hour(conn)
+    try:
+        with connect() as conn, migration_lock(conn):
+            return _run(conn, args)
+    except (MigrationChecksumError, TimeoutError) as exc:
+        print(f"migrate refused: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run(conn: psycopg.Connection, args: argparse.Namespace) -> int:
+    # Everything under the migration lock, the data loaders included: they
+    # DELETE and VACUUM, and must not race another migrate either.
+    applied = apply_migrations(conn)
+    # Schemes before weights (foreign key), and both before the registry
+    # pointer they are referenced by.
+    scheme_rows = load_severity_schemes(conn)
+    weight_rows = load_severity_weights(conn)
+    # After the weight files, so an inheriting scheme copies a table that
+    # actually exists.
+    copy_inherited_weights(conn)
+    crosswalk_rows = load_crosswalks(conn)
+    point_sources_at_scheme(conn)
+    if args.activate:
+        activate_scheme(conn, args.activate, args.city)
+    # After --activate, so a scheme being promoted in this same run is never
+    # a candidate, and after the loader, so `enabled` reflects the CSV.
+    pruned = prune_disabled_schemes(conn)
+    backfilled = backfill_h3_cells(conn)
+    hours_filled = backfill_incident_hour(conn)
 
     if applied:
         print(f"Applied {len(applied)} migration(s): {', '.join(applied)}")
