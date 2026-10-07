@@ -74,3 +74,45 @@ def test_body_is_gzipped_exactly_once(calls):
     (stored,) = [v[1] for k, v in main._cache.items() if k[0] == "cells"]
     assert raw == stored
     assert json.loads(gzip.decompress(raw)) == FIXTURE
+
+
+# ---------------------------------------------------------------- cache scope (F17)
+
+
+def test_city_without_a_stamp_is_never_cached(calls, monkeypatch):
+    monkeypatch.setattr(main, "_refresh_stamp", lambda conn, source_id=None: None)
+    client = TestClient(main.app)
+    client.get(URL)
+    client.get(URL)
+    assert len(calls) == 2
+    assert not main._cache
+
+
+def test_non_finite_bbox_is_rejected(calls):
+    r = TestClient(main.app).get(URL + "&bbox=nan,0,1,1")
+    assert r.status_code == 400
+    assert calls == []
+
+
+def test_bbox_requests_are_served_fresh(calls):
+    client = TestClient(main.app)
+    client.get(URL + "&bbox=-75.2,39.9,-75.1,40.0")
+    client.get(URL + "&bbox=-75.2,39.9,-75.1,40.0")
+    assert len(calls) == 2
+    assert not main._cache
+
+
+def test_min_count_requests_are_served_fresh(calls):
+    client = TestClient(main.app)
+    client.get(URL + "&min_count=1")
+    client.get(URL + "&min_count=1")
+    assert len(calls) == 2
+    assert not main._cache
+
+
+def test_plain_layer_is_still_cached(calls):
+    client = TestClient(main.app)
+    client.get(URL)
+    client.get(URL)
+    assert len(calls) == 1
+    assert main._cache_stats["hits"] == 1

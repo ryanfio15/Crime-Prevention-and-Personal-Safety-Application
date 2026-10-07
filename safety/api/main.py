@@ -15,6 +15,7 @@ import concurrent.futures
 import gzip
 import json
 import logging
+import math
 import threading
 from collections import OrderedDict
 from contextlib import asynccontextmanager
@@ -157,15 +158,20 @@ _cache: OrderedDict[tuple, tuple[str, str | bytes]] = OrderedDict()
 _cache_stats = {"hits": 0, "misses": 0, "bytes": 0, "evictions": 0}
 
 
-def _refresh_stamp(conn, source_id: str | None = None) -> str:
+def _refresh_stamp(conn, source_id: str | None = None) -> str | None:
     """The stamp a cached entry is validated against.
 
     Per city (S8.2: refresh cadence differs per city). Keying on the aggregate
     would invalidate Philadelphia's cached layers every time Los Angeles
     refreshed, which with a bi-weekly source against a daily one is most days.
+
+    None for a city with no snapshot -- an unknown or not-yet-built city. Such
+    responses are never cached: stamped "None", any string in `city` would have
+    taken a cache slot.
     """
     version = repo.serving_version(conn, source_id)
-    return str(version.get("last_refreshed_at"))
+    refreshed = version.get("last_refreshed_at")
+    return None if refreshed is None else str(refreshed)
 
 
 # Thread safety. The endpoints are plain `def`s, so Starlette runs them on its
@@ -217,8 +223,21 @@ def _store(key: tuple, stamp: str, value: str | bytes) -> None:
     _cache_stats["bytes"] += len(value)
 
 
-def cached(conn, key: tuple, producer, source_id: str | None = None) -> str | bytes:
+def cached(
+    conn, key: tuple, producer, source_id: str | None = None, store: bool = True
+) -> str | bytes:
+    """`producer()`'s value, from the cache when the city's refresh stamp matches.
+
+    `store=False` (ad-hoc filters, see cells()) and a city with no stamp bypass
+    the cache entirely -- no lookup, no single flight, nothing stored -- so a
+    caller walking free-form parameters cannot evict the layers real map
+    requests use.
+    """
+    if not store:
+        return producer()
     stamp = _refresh_stamp(conn, source_id)
+    if stamp is None:
+        return producer()
     flight_key = (key, stamp)
     with _cache_lock:
         hit = _cache.get(key)
@@ -468,6 +487,10 @@ def cells(
         except ValueError:
             raise HTTPException(400, "bbox must be 'west,south,east,north'") from None
         parsed_bbox = (west, south, east, north)
+        # float() accepts "nan" and "inf", which would reach SQL as nonsense
+        # and give every variant its own cache key.
+        if not all(math.isfinite(v) for v in parsed_bbox):
+            raise HTTPException(400, "bbox values must be finite numbers")
 
     key = ("cells", city, res, window, category, min_count, hour, parsed_bbox)
     payload = cached(
@@ -495,6 +518,10 @@ def cells(
             compresslevel=6,
         ),
         source_id=city,
+        # Only the shapes the shipped map requests are cached (it sends neither
+        # bbox nor min_count, web/app.js loadLayer); free-form filters are
+        # served fresh and cannot evict real layers.
+        store=parsed_bbox is None and min_count == 0,
     )
     headers = {"Cache-Control": "public, max-age=60", "Vary": "Accept-Encoding"}
     # The same naive substring test starlette's GZipMiddleware uses: a client
