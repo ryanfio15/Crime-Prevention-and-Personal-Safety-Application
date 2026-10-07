@@ -81,6 +81,9 @@ _FIELDS = (
 
 class WashingtonDcEsriAdapter(SourceAdapter):
     api_type: ClassVar[str] = "esri_featureserver"
+    # F13: the pull filters on REPORT_DAT (reported_at), not START_DATE, so an
+    # occurred-date domain would count every late-reported incident as withdrawn.
+    reconcile_basis: ClassVar[str | None] = "reported"
 
     # ------------------------------------------------------------------ fetch
 

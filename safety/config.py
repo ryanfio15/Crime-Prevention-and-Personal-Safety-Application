@@ -136,6 +136,18 @@ class Settings(BaseSettings):
     # serialised anyway; this bounds a manual run racing one.
     migrate_lock_wait_seconds: float = 600.0
 
+    # Records withdrawn upstream (safety/etl/withdrawn.py, F13; docs/DEPLOY.md
+    # "Operating the data"): off | report | delete. An incremental compares its
+    # revision window with silver; `report` records what is missing as a
+    # `withdrawn_upstream` validation issue, `delete` also removes it behind an
+    # outage guard, archiving each row. Anything else means report (with a
+    # warning), so a typo can neither break the import nor enable deletion.
+    # The default stays report (user decision 2026-10-07); enable deletion per
+    # instance in its .env.
+    withdrawn_reconcile: str = "report"
+    # How long deleted rows stay in etl.withdrawn_incident for exact recovery.
+    withdrawn_retention_days: int = 90
+
     @property
     def dsn(self) -> str:
         if not self.postgres_password:

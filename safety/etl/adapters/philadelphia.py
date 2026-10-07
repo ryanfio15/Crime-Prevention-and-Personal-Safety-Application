@@ -71,6 +71,8 @@ _INCIDENT_COLUMNS = (
 
 class PhiladelphiaCartoAdapter(SourceAdapter):
     api_type: ClassVar[str] = "carto_sql"
+    # F13: the pull filters on dispatch_date_time, which occurred_local_date comes from.
+    reconcile_basis: ClassVar[str | None] = "occurred"
 
     # ------------------------------------------------------------------ fetch
 

@@ -45,13 +45,14 @@ import sys
 import time
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
 import psycopg
 
 from safety import PIPELINE_VERSION
 from safety.db import connect, wait_for_db
 from safety.etl import boundary as boundary_loader
-from safety.etl import census, gold, transform, validate
+from safety.etl import census, gold, transform, validate, withdrawn
 from safety.etl.adapters import ADAPTERS, SourceConfig, get_adapter
 from safety.etl.adapters.base import NormalizedIncident, RawChunk, SourceAdapter
 from safety.etl.bronze import LocalBronzeStore, build_manifest
@@ -363,7 +364,14 @@ def _ingest(
     mode: str,
     since: datetime,
     until: datetime,
-) -> dict[str, int | str]:
+    reconcile: bool = False,
+) -> dict[str, Any]:
+    """Fetch, validate and promote one pull.
+
+    `reconcile` (incrementals with a watermark only, never a backfill or a bronze
+    replay) also compares the revision window with silver and handles records
+    withdrawn upstream (safety/etl/withdrawn.py, F13).
+    """
     adapter = get_adapter(config)
     ensure_boundary(conn, adapter, config)
     bbox = _city_bbox(conn, config.source_id)
@@ -465,6 +473,30 @@ def _ingest(
             log.error("pull %s BLOCKED before promotion: %s", pull_id, result.block_reason)
             return {"pull_id": pull_id, "status": "blocked", "upserted": 0}
 
+        # --- withdrawn upstream: assess before promotion (F13) ---------------
+        # Before promotion so `prior` is what silver held for the window. Every
+        # normalised record counts as seen, valid or not: a record the validator
+        # rejected is still upstream.
+        assessment = None
+        reconcile_mode = withdrawn.resolve_mode(settings.withdrawn_reconcile)
+        if reconcile and reconcile_mode != "off":
+            try:
+                assessment = withdrawn.assess(
+                    conn,
+                    adapter,
+                    config.source_id,
+                    config.incident_dataset,
+                    {r.source_incident_id for r in records},
+                    since,
+                    until,
+                )
+            except Exception:
+                conn.rollback()  # read-only; nothing of this pull is lost
+                log.exception(
+                    "withdrawn-upstream assessment failed for pull %s; ingest unaffected", pull_id
+                )
+            conn.commit()
+
         # --- transform + promote -------------------------------------------
         transform.stage_records(
             conn,
@@ -491,6 +523,10 @@ def _ingest(
         transform.clear_staging(conn, pull_id)
         conn.commit()
 
+        withdrawn_outcome = None
+        if assessment is not None:
+            withdrawn_outcome = _reconcile_safely(conn, pull_id, assessment, reconcile_mode)
+
         _finish_pull(
             conn,
             pull_id,
@@ -510,6 +546,7 @@ def _ingest(
             "fetched": fetched,
             "rejected": result.rejected,
             "upserted": upserted,
+            "withdrawn": withdrawn_outcome,
         }
 
     except Exception as exc:
@@ -517,6 +554,37 @@ def _ingest(
         _finish_pull(conn, pull_id, status="failed", started=started, error=repr(exc))
         _mark_source_failure(conn, config.source_id, "failed", repr(exc))
         raise
+
+
+def _reconcile_safely(
+    conn: psycopg.Connection, pull_id: int, assessment: withdrawn.Assessment, mode: str
+) -> dict[str, Any]:
+    """Apply the withdrawn-upstream outcome in its own transaction; never raises."""
+    try:
+        outcome = withdrawn.apply(conn, pull_id, assessment, mode)
+        conn.commit()
+        return outcome
+    except Exception:
+        # A failed statement aborts the whole transaction; without this rollback
+        # the _finish_pull after it would fail and mark an already-committed pull
+        # as failed.
+        conn.rollback()
+        log.exception("withdrawn-upstream reconcile failed for pull %s; ingest unaffected", pull_id)
+        return {"action": "error"}
+
+
+def _prune_safely(conn: psycopg.Connection, source_id: str, days: int) -> int | None:
+    """Drop archived withdrawn rows past retention, in its own transaction; never raises."""
+    try:
+        pruned = withdrawn.prune(conn, source_id, days)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        log.exception("pruning etl.withdrawn_incident for %s failed; continuing", source_id)
+        return None
+    if pruned:
+        log.info("pruned %s archived withdrawn row(s) for %s older than %s days", pruned, source_id, days)
+    return pruned
 
 
 # ---------------------------------------------------------------------------
@@ -771,7 +839,17 @@ def cmd_incremental(args: argparse.Namespace) -> int:
                 days=config.revision_lookback_days
             )
 
-        outcome = _ingest(conn, config, mode="incremental", since=since, until=until)
+        outcome = _ingest(
+            conn,
+            config,
+            mode="incremental",
+            since=since,
+            until=until,
+            # Not on the backfill fallback: a 24-month re-read is not a revision window.
+            reconcile=config.last_success_watermark is not None,
+        )
+        # Every run, whatever the outcome and the mode (F13 retention, 90 days).
+        _prune_safely(conn, config.source_id, settings.withdrawn_retention_days)
         if outcome["status"] == "succeeded":
             stats = gold.refresh_all(
                 conn,

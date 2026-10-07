@@ -130,6 +130,11 @@ _STATE_PLANE_TO_WGS84 = pyproj.Transformer.from_crs(
 
 class AustinEsriAdapter(SourceAdapter):
     api_type: ClassVar[str] = "esri_featureserver"
+    # F13: the pull filters on OCCURRENCE_DATE, which occurred_local_date comes
+    # from; each layer is fetched separately, so one coming back empty (Esri can
+    # answer 200 with no features) must trip the guard, not wipe the layer.
+    reconcile_basis: ClassVar[str | None] = "occurred"
+    reconcile_stratum: ClassVar[str | None] = "raw_source_category"
 
     # ------------------------------------------------------------------ fetch
 

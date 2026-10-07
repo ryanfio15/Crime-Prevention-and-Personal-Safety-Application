@@ -371,6 +371,79 @@ its `gold.city_snapshot` row is removed.
 LODES, which publishes yearly: bump `LODES_YEAR` in `safety/etl/census.py`, then
 run `census` per city. The population half is decennial.
 
+**Records withdrawn upstream (F13).** Each scheduled incremental re-reads a
+source's revision window (`revision_lookback_days` behind its watermark).
+Promotion is an upsert, so a record the agency has since withdrawn would stay in
+silver for ever; `safety/etl/withdrawn.py` compares what silver holds for that
+window with what the re-pull returned. Setting `WITHDRAWN_RECONCILE` in the
+instance's `.env`:
+
+- `report` (the code default, and what prod runs until the user flips it): every
+  absent record is counted in one `withdrawn_upstream` / `warn` validation issue
+  per pull; nothing is deleted. `/api/v1/quality` lists it.
+- `delete`: the same, and the absent rows are deleted from silver -- each one
+  copied, in the same statement, into `etl.withdrawn_incident` -- and gold is
+  rebuilt in the same run. Deletion is enabled per instance with
+  `WITHDRAWN_RECONCILE=delete` in its `.env`; prod stays `report` until the user
+  changes that line (dev's is edited as `safety-dev`, see "OS users").
+- `off`: no comparison at all. An empty value means `report`; an unknown one
+  means `report` with a warning in the log. No restart is needed: each ETL run
+  reads the `.env` when it starts.
+
+Only incrementals with a watermark reconcile -- never a backfill, the
+incremental's backfill fallback, or a bronze replay (`reprocess`). The domain is
+exactly what the pull re-read, minus a day at each end, on the date the
+adapter's upstream filter uses (`reconcile_basis`: occurrence date everywhere
+except DC, which is filtered on its report date) and only for rows of the
+source's current dataset id.
+
+*The outage guard* skips all deletion for the pull (recorded as `skipped`, with
+the reason) when the pull looks partial: overall it re-confirmed under 90% of
+the rows silver held for the window; or a month (for Austin, a month × layer)
+holding 50+ rows re-confirmed under 90%; or one holding 3+ rows came back empty.
+A city whose guard keeps tripping -- say a small Austin layer that really was
+withdrawn -- gets no deletions until someone looks; the reason names the stratum.
+
+*Reading the numbers.* In report mode the same absent rows are recorded again on
+every run, so the `withdrawn_upstream` total in `/quality` (a sum over all
+history) keeps growing; read one pull's `detail` instead:
+`select pull_id, occurrences, detail from etl.validation_issue where check_name = 'withdrawn_upstream' order by issue_id desc limit 5`
+(`action`, `prior_in_window`, `absent_share`, `reason`, `strata`, `sample_keys`).
+
+*Restoring deleted rows.* Archived rows are kept 90 days
+(`WITHDRAWN_RETENTION_DAYS`) and then pruned by the ETL itself; after that,
+recovery means a bronze replay or a dump. To restore one pull's deletions, as
+the instance role, first create the partitions for the rows' years (from the
+instance's `current`, as its OS user):
+
+```bash
+.venv/bin/python - <<'PY'
+from safety.db import connect, ensure_partitions
+with connect() as c:
+    ensure_partitions(c, "<city>", [<year>, ...]); c.commit()
+PY
+```
+
+then:
+
+```sql
+INSERT INTO silver.incident
+SELECT (jsonb_populate_record(NULL::silver.incident, w.row || jsonb_build_object('geom',
+        ST_AsEWKT(ST_SetSRID(ST_MakePoint((w.row->>'longitude')::float8,
+                                          (w.row->>'latitude')::float8), 4326))))).*
+FROM etl.withdrawn_incident w WHERE w.pull_id = <pull_id>
+ON CONFLICT (source_id, occurred_year, incident_key) DO NOTHING;
+```
+
+and `python -m safety.etl.run gold --city <city>`. (This is
+`withdrawn.RESTORE_SQL`, which the CI tests run.) `reprocess --pull-id <older
+pull>` is the coarse alternative. Either way, the next incremental deletes the
+rows again if they are still absent upstream: set the instance to `report` first.
+
+*Known residual.* An incident whose upstream date is revised from inside the
+window to before it drops out of the re-pull and is deleted although it still
+exists upstream; a backfill brings it back.
+
 **Backups.** The database volume is the only state that cannot be redeployed.
 The data can be rebuilt from the cities' public sources, but that takes hours
 with six cities and loses the record of past pulls, so both databases are

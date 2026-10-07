@@ -34,6 +34,8 @@ PAGE_LIMIT = 50_000
 
 class SocrataAdapter(SourceAdapter):
     api_type: ClassVar[str] = "socrata"
+    # F13: the pull filters on occurred_field, the field occurred_local_date comes from.
+    reconcile_basis: ClassVar[str | None] = "occurred"
 
     # Set by each city.
     incident_columns: ClassVar[tuple[str, ...]]

@@ -116,6 +116,17 @@ class SourceAdapter(ABC):
 
     api_type: ClassVar[str]
 
+    # F13: how a withdrawal reconcile (safety/etl/withdrawn.py) maps what
+    # fetch_incidents(since, until) re-reads onto silver. 'occurred' =
+    # silver.occurred_local_date, 'reported' = the UTC date of silver.reported_at;
+    # None = never reconcile (the default: a new adapter must decide, with its
+    # upstream filter field in view).
+    reconcile_basis: ClassVar[str | None] = None
+    # Extra silver column whose values come from independent upstream requests
+    # (an empty one must not look like mass withdrawal); the month of the basis
+    # date is always a stratum.
+    reconcile_stratum: ClassVar[str | None] = None
+
     def __init__(self, config: SourceConfig) -> None:
         self.config = config
 
