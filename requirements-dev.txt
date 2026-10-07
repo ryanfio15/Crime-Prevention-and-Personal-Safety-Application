@@ -1,0 +1,5 @@
+# Test-only dependencies. Kept out of requirements.txt on purpose: release.sh
+# builds every deployed venv from requirements.txt, and test tooling has no
+# business in production.
+-r requirements.txt
+pytest==9.1.1
