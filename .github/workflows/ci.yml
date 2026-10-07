@@ -78,9 +78,9 @@ jobs:
       # One file per bash -n: given several, it parses the first and treats the
       # rest as that script's arguments.
       - name: Deploy scripts parse
-        run: for f in deploy/*.sh deploy/lib/*.sh; do bash -n "$f"; done
+        run: for f in deploy/*.sh deploy/lib/*.sh deploy/git-hooks/*; do bash -n "$f"; done
       - name: Shellcheck deploy scripts
-        run: shellcheck deploy/*.sh deploy/lib/*.sh
+        run: shellcheck deploy/*.sh deploy/lib/*.sh deploy/git-hooks/*
       # Twice: every deploy re-runs migrate against a database that is already
       # up to date, so the second pass is the one that matches production.
       # As the superuser: on the host every object was created by `safety`, and
