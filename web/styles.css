@@ -15,6 +15,7 @@
   --text-primary:   #0b0b0b;
   --text-secondary: #52514e;
   --text-muted:     #898781;
+  --danger:         #b91c1c;   /* errors; 6.1:1 on --page, 6.3:1 on --surface-1 */
   --gridline:       #e1e0d9;
   --baseline:       #c3c2b7;
   --border:         rgba(11, 11, 11, 0.10);
@@ -260,6 +261,13 @@ select:focus-visible, .btn:focus-visible {
   color: var(--text-secondary);
   font-size: 12px;
   z-index: 3;
+}
+
+/* A failed load stays on screen (app.js loadLayer) and must read as an error,
+   not as a stuck "Loading". */
+.loading.is-error {
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 /* ---------------------------------------------------------------- legend --- */

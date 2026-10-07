@@ -411,6 +411,11 @@ const state = {
   rampDomain: null,
   refreshStamp: null,
   framed: false,
+  // Layer requests are numbered and the previous one aborted, so a slow
+  // response for controls the user has since changed can never overwrite the
+  // layer they now describe.
+  layerSeq: 0,
+  layerAbort: null,
 };
 
 const nf = new Intl.NumberFormat("en-US");
@@ -614,8 +619,16 @@ function renderLegend() {
 /* --------------------------------------------------------------- data fetch */
 
 async function loadLayer({ quiet = false } = {}) {
+  const seq = ++state.layerSeq;
+  state.layerAbort?.abort();
+  const controller = (state.layerAbort = new AbortController());
+
   if (!quiet) {
     $("map").classList.add("is-refetching");
+    // Reset first: a previous failure's message must not sit under the
+    // "loading" state of the request that may fix it.
+    $("loading").textContent = "Loading…";
+    $("loading").classList.remove("is-error");
     $("loading").hidden = false;
   }
 
@@ -635,9 +648,15 @@ async function loadLayer({ quiet = false } = {}) {
   if (state.hour !== null) params.set("hour", String(state.hour));
 
   try {
-    const response = await fetch(`${API}/cells?${params}`);
-    if (!response.ok) throw new Error(`cells request failed: ${response.status}`);
+    const response = await fetch(`${API}/cells?${params}`, { signal: controller.signal });
+    if (!response.ok) {
+      throw Object.assign(new Error(`cells request failed: ${response.status}`), {
+        status: response.status,
+      });
+    }
     const collection = await response.json();
+    // A newer request has been issued since; its result is the one the controls describe.
+    if (seq !== state.layerSeq) return;
 
     state.meta = collection.metadata;
     state.features = collection.features;
@@ -657,14 +676,29 @@ async function loadLayer({ quiet = false } = {}) {
     if (state.detail) renderHeadlineStat(state.detail);
     // Only now is it known whether the hourly layer exists at all.
     syncHourAvailability();
-  } catch (error) {
-    console.error(error);
-    $("loading").textContent = "Could not load cell data. Is the API running?";
-    return;
-  } finally {
-    $("map").classList.remove("is-refetching");
     $("loading").hidden = true;
     $("loading").textContent = "Loading…";
+    $("loading").classList.remove("is-error");
+  } catch (error) {
+    // Superseded or aborted: the newer request owns the screen.
+    if (error.name === "AbortError" || seq !== state.layerSeq) return;
+    // A failed background refresh (the 60 s poll) keeps the layer on screen,
+    // which is still valid; it is not worth an alarm.
+    if (quiet) {
+      console.error(error);
+      return;
+    }
+    console.error(error);
+    // Left on screen until the next successful load replaces it -- hiding it in
+    // `finally` was what made every failure look like a frozen map.
+    $("loading").textContent =
+      error.status === 429
+        ? "Too many requests — wait a moment, then change a control to retry."
+        : "Could not load cell data. Try again shortly.";
+    $("loading").classList.add("is-error");
+    $("loading").hidden = false;
+  } finally {
+    if (seq === state.layerSeq) $("map").classList.remove("is-refetching");
   }
 }
 
@@ -1692,7 +1726,10 @@ function wireControls() {
 /* Poll the pipeline's own refresh stamp; reload the layer when the ETL runs.
    Cheap enough to sit behind the same cache-invalidation rule the API uses. */
 function watchForRefresh() {
-  setInterval(async () => {
+  // Skipped while the tab is hidden: a background tab has nobody to show a
+  // fresher layer to. Coming back runs a tick at once, so it catches up.
+  const tick = async () => {
+    if (document.hidden) return;
     try {
       // Scoped to the displayed city: a bi-weekly Los Angeles refresh is not a
       // reason to reload a Philadelphia layer that has not moved.
@@ -1708,7 +1745,11 @@ function watchForRefresh() {
     } catch {
       /* transient; try again next tick */
     }
-  }, 60_000);
+  };
+  setInterval(tick, 60_000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) tick();
+  });
 }
 
 (async function main() {
