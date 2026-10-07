@@ -134,10 +134,18 @@ jobs:
       # the new owner role over a schema transferred from the superuser.
       - name: Migrate again (idempotency)
         run: python -m safety.migrate
+      # Failures are also raised as annotations, which show on the run page
+      # (and through the check-runs API) without access to the raw logs.
       - name: Database tests
         env:
           SAFETY_TEST_DB: "1"
-        run: python -m pytest -q -m db
+        run: |
+          set -o pipefail
+          python -m pytest -q -m db -rfE --tb=line 2>&1 | tee "$RUNNER_TEMP/db-tests.log" || {
+            grep -E '^(FAILED|ERROR) |^/.*:[0-9]+: |^E ' "$RUNNER_TEMP/db-tests.log" | head -10 |
+              while IFS= read -r line; do echo "::error title=Database tests::$line"; done
+            exit 1
+          }
       # Empty manifests, but it runs the query with every filter combination.
       - name: Run log query
         run: |
