@@ -14,6 +14,7 @@ from safety.etl.adapters.base import (
     SourceAdapter,
     SourceConfig,
 )
+from safety.etl.adapters.austin import AustinEsriAdapter
 from safety.etl.adapters.chicago import ChicagoSocrataAdapter
 from safety.etl.adapters.los_angeles import LosAngelesSocrataAdapter
 from safety.etl.adapters.philadelphia import PhiladelphiaCartoAdapter
@@ -28,8 +29,7 @@ ADAPTERS: dict[str, type[SourceAdapter]] = {
     "sea": SeattleSocrataAdapter,
     "lax": LosAngelesSocrataAdapter,
     "dc": WashingtonDcEsriAdapter,
-    # Austin ("aus") has no adapter: neither APD dataset publishes a location
-    # finer than a census block group. See docs/PHASE2.md.
+    "aus": AustinEsriAdapter,
 }
 
 

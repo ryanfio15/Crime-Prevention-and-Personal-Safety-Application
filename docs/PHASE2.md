@@ -19,7 +19,7 @@ Section references below (§n) point at the design document.
 | Washington DC | ✅ Esri MapServer | ✅ 9 rows, hand-written | TIGER PLACE | ✅ |
 | Seattle | ✅ Socrata | ✅ NIBRS code-only | TIGER PLACE | ✅ |
 | Los Angeles | ✅ Socrata | ✅ NIBRS code-only | TIGER PLACE | ✅ |
-| Austin | ❌ no point locations published | — | TIGER PLACE | ❌ |
+| Austin | ✅ Esri FeatureServer + MapServer | ✅ generated from APD's own NIBRS pairing | TIGER PLACE | ❌ pending first backfill and reuse terms |
 
 A city is enabled only once its adapter, crosswalk and boundary have all landed
 *and* its first backfill has been read against the checks below. Enabling is a
@@ -782,21 +782,96 @@ rejected, 9 duplicate CCNs dropped, zero unmapped after the date fix, census
 retention 100.0% / 99.9%, every incident with a clock hour and a zero modal
 shift. 177 km² of coverage, 273 resolution-8 cells.
 
-## Austin — not loadable
+## Austin
 
-Neither of Austin's current APD datasets publishes a location finer than a
-census block group. `fdj4-gpfu` ("Crime Reports") has dropped its coordinate and
-address columns, and the NIBRS dataset (`i7fg-wrk5`, "NIBRS Group A Offense
-Crimes") carries only `census_block_group` and `zip_code`. A block group is
-larger than a resolution-8 cell, and placing incidents at block-group centroids
-would manufacture hot spots at those points. Austin stays seeded and disabled,
-with no adapter; the trigger to revisit is APD publishing block-level points
-again.
+`safety/etl/adapters/austin.py` — Esri again, but not the open-data portal.
+APD's Socrata datasets locate an incident no finer than its census block group
+(`fdj4-gpfu` dropped its coordinates; the NIBRS dataset `i7fg-wrk5` carries only
+`census_block_group` and `zip_code`), and placing incidents at block-group
+centroids would manufacture hot spots. The services behind APD's public
+**CrimeViewer** map (maps.austintexas.gov/GIS/CrimeViewer/) do publish
+hundred-block points, from 2021-09-23 to the previous day, refreshed daily.
+`016_onboard_austin.sql` points the registry at them.
+
+- **Two services.** `base_url` is the current FeatureServer
+  (`arcgis/rest/services/CrimeViewer_new/APD_Reported_Crimes_new`), one point
+  layer per offence family. **Its "Aggravated Assault" layer is a copy of
+  Robbery** — same rows, same RINs — and no other layer carries an 04xx code.
+  Aggravated assault is read from the older MapServer
+  (`gis/rest/APDCrimeViewer/APD_Reported_Crimes`, no `/services/` in the path),
+  which still serves it: about 13,400 records over the same span. Without it
+  Austin would have simple assault and no aggravated assault. Layers are
+  discovered by name on every pull and the run fails if one is missing; both are
+  undocumented app backends and the newer has already been renamed once.
+- **The two services date the same field differently.** In the new one
+  `OCCURRENCE_DATE` is a true UTC instant (agrees with `OCCURRENCE_TIME`, the
+  Austin clock, on every record checked); in the old one it is the local date at
+  midnight and the time is only in `OCCURRENCE_TIME` (`HHMM`). Both become
+  America/Chicago wall clock. Chunks are named `new-…` / `legacy-…` because a
+  reprocess rebuilds chunks from bronze with their names and nothing else.
+- **Layer is not category**: the Theft layer carries 0601 BURGLARY OF VEHICLE.
+  The layer name is kept as `raw_source_category` for provenance only.
+- **Residential burglary is published twice** (Burglary and Part II layers, same
+  RIN, identical fields). The validator drops the second copy as
+  `duplicate_incident_id` — about 100 a month, expected.
+- **Calls that are not offences are not promoted** — family, dating, parental
+  and other disturbances, civil disturbance, suspicious person, domestic-violence
+  alarm (`2400`, `3400`–`3403`, `3458`, `3459`), about a quarter of the Part II
+  layer.
+  Same reasoning as Seattle's `999`; they stay in bronze.
+- **Sex offences are withheld by the source**: no 02xx layer and almost no 11x
+  codes. They are not on the map, as with Seattle's redactions; the registry's
+  location note says so.
+- **One row per incident, the primary offence only**, where Seattle and Los
+  Angeles publish one row per offence.
+- `RIN` is the key in the new service. The old one has no key and reassigns
+  OBJECTIDs on reload, so its records are keyed `aa-` + a hash of date, time,
+  block, street, code and point. Neither is APD's report number, so nothing here
+  joins to the open-data datasets.
+- `LOCATION_DESCRIPTION` fills `location_type`; `SECTOR` fills `district`. Street
+  names have no direction prefix ("300 5TH ST"), so `location_block` is display
+  text and the geometry is the location.
+
+### The crosswalk is generated from APD's own classification
+
+```bash
+python scripts/build_austin_crosswalk.py > reference/crosswalk/austin_v1.csv
+```
+
+APD codes are local, not NIBRS. But `i7fg-wrk5` pairs the same descriptions with
+the NIBRS offence APD filed them under — and the field names are misleading:
+`nibrs_offense_code_and_extension_description` holds APD's text ("BURGLARY OF
+VEHICLE"), and the NIBRS code is the leading token of `nibrs_desc` ("23F …").
+Across all 238 descriptions each maps to exactly one code, so those rows are
+APD's own mapping and `exact`; they cover 87% of records. Each code also gets a
+`*` row for descriptions the services spell differently (some are abbreviated
+or cut at 30 characters). Group B codes — DWI, public intoxication, disorderly conduct,
+liquor — are not in a Group A dataset and are mapped by hand in
+`_CODE_OVERRIDES`; a code with no pairing and no override stops the generator.
+Categories come from `build_nibrs_crosswalk.py`'s table, shared with Seattle and
+Los Angeles. Two description-level overrides, both read: the truncated
+"ASSAULT CONTACT-SEXUAL NATURE" is fondling (11D), and "BURG OF RES -
+FAM/DATING ASLT" is simple assault (13B), as APD files the untruncated form.
+
+**Offline check, August 2026** (adapter run against the live services, no
+database): 7,254 rows fetched, 1,051 non-offences not promoted, 106 duplicate
+burglaries dropped, 5,737 incidents — every one with published coordinates and
+a clock hour, zero unmapped codes. Per NIBRS code against APD's own `i7fg-wrk5`
+for the same month: aggravated assault 211 vs 234, simple assault 780 vs 851,
+theft from vehicle 494 vs 487, motor vehicle theft 257 vs 246, robbery 77 vs 73;
+rape 0 vs 50 (withheld). `i7fg-wrk5` is offence-level, so it runs slightly
+higher. The busiest 1% of resolution-10 cells hold 10% of incidents (downtown).
+
+**Still to run** before enabling: the database checks above — rejection rate,
+census retention across Travis, Williamson and Hays, weights, hour shift,
+shrinkage and the map — plus the Philadelphia gate. And **confirm reuse terms
+with the City**: the services publish no licence, unlike the portal's public
+domain datasets.
 
 ## Still to build
 
 - **Sourced severity weights** for the NIBRS codes in the coverage gap above.
-- **Austin**, if APD restores point locations.
+- **Austin**: first backfill, the checks above, and written reuse terms from the City.
 
 ### Out of scope, with triggers
 
