@@ -574,7 +574,7 @@ function renderLegend() {
   // Both modes run the same direction now: green at the low end of the
   // measured value, red at the high end.
   $("legend-ramp").innerHTML =
-    `<span style="background:${rampGradient(VALUE_RAMP)}"></span>`;
+    html`<span style="background:${rampGradient(VALUE_RAMP)}"></span>`;
 
   const domain = state.rampDomain;
   if (!domain) {
@@ -589,25 +589,26 @@ function renderLegend() {
   // lowest painted cell at the left edge, the median in the middle, the highest
   // at the right. The middle tick is the whole point of a value scale -- it is
   // what the centre colour means.
-  $("legend-ticks").innerHTML = [domain.min, domain.median, domain.max]
-    .map((value) => `<span>${formatDomainValue(value)}</span>`)
-    .join("");
+  $("legend-ticks").innerHTML = html`${[domain.min, domain.median, domain.max].map(
+    (value) => html`<span>${formatDomainValue(value)}</span>`
+  )}`;
 
   const skew =
     `Colour follows the value itself and the middle of the bar is the median ` +
     `of the ${nf.format(domain.painted)} cells carrying one. The distribution ` +
     `is heavily skewed, so most cells sit left of centre.`;
 
+  // `skew` is plain text and is escaped like any other value; the markup lives
+  // only in the literal parts.
   $("legend-foot").innerHTML = safety
-    ? `<span class="legend-zero"><i></i> Nothing of this kind reported</span>` +
-      `<br>Severity-weighted offence per 1,000 residents and workers, smoothed` +
-      (state.hour === null ? "" : " <b>within this hour</b>") +
-      `. ${skew} A cell with no reports is not therefore safe.`
-    : `<span class="legend-zero"><i></i> No reported incidents</span>` +
-      `<br>${skew}` +
-      (state.hour === null
-        ? ""
-        : `<br>Counts exclude incidents the source published with no clock time.`);
+    ? html`<span class="legend-zero"><i></i> Nothing of this kind reported</span><br>Severity-weighted offence per 1,000 residents and workers, smoothed${
+        state.hour === null ? "" : html` <b>within this hour</b>`
+      }. ${skew} A cell with no reports is not therefore safe.`
+    : html`<span class="legend-zero"><i></i> No reported incidents</span><br>${skew}${
+        state.hour === null
+          ? ""
+          : html`<br>Counts exclude incidents the source published with no clock time.`
+      }`;
 }
 
 /* --------------------------------------------------------------- data fetch */
@@ -668,7 +669,7 @@ async function loadLayer({ quiet = false } = {}) {
 }
 
 async function loadFreshness({ refit = false } = {}) {
-  const response = await fetch(`${API}/cities/${state.city}`);
+  const response = await fetch(`${API}/cities/${encodeURIComponent(state.city)}`);
   if (!response.ok) return;
   const city = await response.json();
   state.cityRecord = city;
@@ -809,9 +810,10 @@ function renderHeadlineStat(detail) {
 
   const stat = relativeStat(rel, windowLabel);
   value.textContent = stat.value;
+  // stat.label/note carry the server's window_label: plain text, escaped.
   label.innerHTML = stat.note
-    ? `${stat.label}<span class="kv-note">${stat.note}</span>`
-    : stat.label;
+    ? html`${stat.label}<span class="kv-note">${stat.note}</span>`
+    : html`${stat.label}`;
 }
 
 async function selectCell(h3) {
@@ -823,9 +825,9 @@ async function selectCell(h3) {
 
   const hourParam = state.hour === null ? "" : `&hour=${state.hour}`;
   const [detail, ring] = await Promise.all([
-    fetch(`${API}/cells/${h3}?window=${state.window}${hourParam}`)
+    fetch(`${API}/cells/${encodeURIComponent(h3)}?window=${state.window}${hourParam}`)
       .then((r) => (r.ok ? r.json() : null)),
-    fetch(`${API}/cells/ring?h3=${h3}&k=1&window=${state.window}&category=all`)
+    fetch(`${API}/cells/ring?h3=${encodeURIComponent(h3)}&k=1&window=${state.window}&category=all`)
       .then((r) => (r.ok ? r.json() : null)),
   ]);
   if (!detail) return;
@@ -897,12 +899,12 @@ function safetyLabel(percentile) {
 function renderSafety(rows) {
   const byTrack = Object.fromEntries((rows ?? []).map((r) => [r.track, r]));
   const format = (row) => {
-    if (!row) return "&mdash;";
+    if (!row) return "—";
     const label = SAFETY_TIER_LABELS[row.safety_tier] ?? "";
     return `${safetyLabel(row.safety_percentile)} · ${label}`;
   };
-  $("d-safety-violent").innerHTML = format(byTrack.violent);
-  $("d-safety-nonviolent").innerHTML = format(byTrack.non_violent);
+  $("d-safety-violent").innerHTML = html`${format(byTrack.violent)}`;
+  $("d-safety-nonviolent").innerHTML = html`${format(byTrack.non_violent)}`;
 
   const missing = !rows?.length;
   $("d-safety-note").textContent = missing
@@ -960,10 +962,9 @@ function renderHourShare(detail) {
     pct > 105 ? "busier than its average hour"
     : pct < 95 ? "quieter than its average hour"
     : "about its average hour";
-  value.innerHTML =
-    `<b>${nf.format(pct)}%</b> — ${sense}` +
-    `<span class="kv-note">${nf.format(rel.hour_count)} here vs. ` +
-    `${rel.mean_per_hour} per hour on average</span>`;
+  value.innerHTML = html`<b>${nf.format(pct)}%</b> — ${sense}<span class="kv-note">${nf.format(
+    rel.hour_count
+  )} here vs. ${rel.mean_per_hour} per hour on average</span>`;
 }
 
 function renderHours(detail) {
@@ -983,14 +984,12 @@ function renderHours(detail) {
   const max = Math.max(...counts, 1);
   const total = counts.reduce((sum, n) => sum + n, 0);
 
-  $("d-hours").innerHTML = counts
-    .map((n, hour) => {
-      const height = Math.max((n / max) * 100, n > 0 ? 4 : 0);
-      const selected = hour === state.hour ? " data-selected" : "";
-      const on = n > 0 ? " data-on" : "";
-      return `<i style="height:${height}%"${on}${selected} title="${hourLabel(hour)}: ${nf.format(n)}"></i>`;
-    })
-    .join("");
+  $("d-hours").innerHTML = html`${counts.map((n, hour) => {
+    const height = Math.max((n / max) * 100, n > 0 ? 4 : 0);
+    const selected = hour === state.hour ? html` data-selected` : "";
+    const on = n > 0 ? html` data-on` : "";
+    return html`<i style="height:${height}%"${on}${selected} title="${hourLabel(hour)}: ${nf.format(n)}"></i>`;
+  })}`;
 
   $("d-hour-title").textContent =
     state.hour === null
@@ -1047,18 +1046,17 @@ function renderCategoryBars(rows, available = true) {
   // Nominal categories: one hue for every bar. Bar length already encodes the
   // value, so the hue channel is not spent re-encoding it.
   const max = Math.max(...rows.map((r) => r.incident_count), 1);
-  container.innerHTML = rows
-    .map((row) => {
-      const label = CATEGORY_LABELS[row.category] ?? row.category;
-      const width = Math.max((row.incident_count / max) * 100, row.incident_count > 0 ? 1.5 : 0);
-      return `
+  container.innerHTML = html`${rows.map((row) => {
+    // The fallback is the server's raw category string: escaped by html``.
+    const label = CATEGORY_LABELS[row.category] ?? row.category;
+    const width = Math.max((row.incident_count / max) * 100, row.incident_count > 0 ? 1.5 : 0);
+    return html`
         <div class="bar-row">
           <span class="bar-name">${label}</span>
           <span class="bar-track"><span class="bar-fill" style="width:${width}%"></span></span>
           <span class="bar-value">${nf.format(row.incident_count)}</span>
         </div>`;
-    })
-    .join("");
+  })}`;
 }
 
 /** True when the whole calendar month is covered by data up to `anchorIso`. */
@@ -1178,16 +1176,23 @@ function renderOffenseMix(rows) {
     body.innerHTML = `<tr><td colspan="3">Nothing reported in this window.</td></tr>`;
     return;
   }
-  body.innerHTML = rows
-    .map(
-      (row) => `
-      <tr>
-        <td>${row.raw_offense_text}</td>
-        <td class="nibrs">${row.nibrs_code ?? "—"}</td>
-        <td class="num">${nf.format(row.incident_count)}</td>
-      </tr>`
-    )
-    .join("");
+  // Third-party offence descriptions, verbatim from the source: built as DOM
+  // nodes with textContent, so nothing in them is ever parsed as markup.
+  body.replaceChildren(
+    ...rows.map((row) => {
+      const offence = document.createElement("td");
+      offence.textContent = row.raw_offense_text;
+      const nibrs = document.createElement("td");
+      nibrs.className = "nibrs";
+      nibrs.textContent = row.nibrs_code ?? "—";
+      const count = document.createElement("td");
+      count.className = "num";
+      count.textContent = nf.format(row.incident_count);
+      const tr = document.createElement("tr");
+      tr.append(offence, nibrs, count);
+      return tr;
+    })
+  );
 }
 
 function closeDetail() {
@@ -1226,10 +1231,9 @@ function renderTable() {
       ? "—"
       : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(0)}`;
 
-  body.innerHTML = rows
-    .map((feature, index) => {
-      const p = feature.properties;
-      return `
+  body.innerHTML = html`${rows.map((feature, index) => {
+    const p = feature.properties;
+    return html`
       <tr>
         <td class="num">${index + 1}</td>
         <td class="mono">${p.h3}</td>
@@ -1242,8 +1246,7 @@ function renderTable() {
         <td class="num">${pct(p[props.hpct])}</td>
         <td class="num">${points(p[props.delta])}</td>
       </tr>`;
-    })
-    .join("");
+  })}`;
 }
 
 /* --------------------------------------------------------------- methodology */
@@ -1251,21 +1254,24 @@ function renderTable() {
 async function openMethodology() {
   const dialog = $("methodology");
   dialog.showModal();
-  const response = await fetch(`${API}/methodology?city=${state.city}`);
+  const response = await fetch(`${API}/methodology?city=${encodeURIComponent(state.city)}`);
   if (!response.ok) return;
   const m = await response.json();
+  // Every field is server prose (registry text included): html`` escapes it.
+  // terms_url becomes a link only if it is a plain http(s) URL.
+  const terms = safeHttpUrl(m.terms_url);
 
-  $("methodology-body").innerHTML = `
+  $("methodology-body").innerHTML = html`
     <h2>How to read this map</h2>
     <p>${m.what_this_shows}</p>
 
     <div class="callout">
       <h3 style="margin-top:0">What this is not</h3>
-      <ul>${m.what_this_is_not.map((line) => `<li>${line}</li>`).join("")}</ul>
+      <ul>${m.what_this_is_not.map((line) => html`<li>${line}</li>`)}</ul>
     </div>
 
     <h3>Known limitations</h3>
-    <ul>${m.known_limitations.map((line) => `<li>${line}</li>`).join("")}</ul>
+    <ul>${m.known_limitations.map((line) => html`<li>${line}</li>`)}</ul>
 
     <h3>The cell model</h3>
     <p>
@@ -1278,7 +1284,7 @@ async function openMethodology() {
     <p>${m.cell_model.fine_resolution_note}</p>
     <p>${m.cell_model.relative_measure}</p>
 
-    ${m.safety_measure ? `
+    ${m.safety_measure ? html`
     <h3>The safety ranking</h3>
     <p>${m.safety_measure.what_it_is}</p>
     <p>${m.safety_measure.why_two_rankings}</p>
@@ -1295,13 +1301,13 @@ async function openMethodology() {
     </dl>
     <p>${m.safety_measure.weights.fallback_note}</p>
     <p>${m.safety_measure.smoothing.note}</p>
-    <ul>${m.safety_measure.known_limitations.map((line) => `<li>${line}</li>`).join("")}</ul>
+    <ul>${m.safety_measure.known_limitations.map((line) => html`<li>${line}</li>`)}</ul>
     ` : ""}
 
-    ${m.time_of_day ? `
+    ${m.time_of_day ? html`
     <h3>Time of day</h3>
     <p>${m.time_of_day.what_it_is}</p>
-    <ul>${m.time_of_day.two_ratings.map((line) => `<li>${line}</li>`).join("")}</ul>
+    <ul>${m.time_of_day.two_ratings.map((line) => html`<li>${line}</li>`)}</ul>
     <p>${m.time_of_day.hour_index_note}</p>
 
     <div class="callout">
@@ -1321,7 +1327,7 @@ async function openMethodology() {
     </dl>
     <p>${m.time_of_day.coverage.note}</p>
     <p>${m.time_of_day.scope.note}</p>
-    <ul>${m.time_of_day.known_limitations.map((line) => `<li>${line}</li>`).join("")}</ul>
+    <ul>${m.time_of_day.known_limitations.map((line) => html`<li>${line}</li>`)}</ul>
     ` : ""}
 
     <h3>Offence classification</h3>
@@ -1342,7 +1348,7 @@ async function openMethodology() {
     </dl>
     <p>${m.freshness_note ?? ""}</p>
     <p>${m.location_precision_note ?? ""}</p>
-    ${m.terms_url ? `<p><a href="${m.terms_url}" target="_blank" rel="noopener">Source dataset and terms of use</a></p>` : ""}
+    ${terms ? html`<p><a href="${terms}" target="_blank" rel="noopener">Source dataset and terms of use</a></p>` : ""}
   `;
 }
 
@@ -1690,7 +1696,7 @@ function watchForRefresh() {
     try {
       // Scoped to the displayed city: a bi-weekly Los Angeles refresh is not a
       // reason to reload a Philadelphia layer that has not moved.
-      const response = await fetch(`${API}/version?city=${state.city}`);
+      const response = await fetch(`${API}/version?city=${encodeURIComponent(state.city)}`);
       if (!response.ok) return;
       const version = await response.json();
       const stamp = String(version.last_refreshed_at);
@@ -1730,7 +1736,7 @@ function watchForRefresh() {
   await loadFreshness();
   await loadLayer();
 
-  const version = await fetch(`${API}/version?city=${state.city}`)
+  const version = await fetch(`${API}/version?city=${encodeURIComponent(state.city)}`)
     .then((r) => r.json())
     .catch(() => null);
   state.refreshStamp = version ? String(version.last_refreshed_at) : null;

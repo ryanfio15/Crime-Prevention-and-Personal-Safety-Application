@@ -61,6 +61,13 @@ jobs:
         run: python -c "import safety.api.main, safety.migrate, safety.etl.run"
       - name: Unit tests (no database)
         run: python -m pytest -q -m "not db"
+      # The shell expands the glob: Node 22's `node --test <dir>` treats a
+      # directory argument as a module path, not a folder to search.
+      - name: JS unit tests
+        run: |
+          node --check web/app.js
+          node --check web/html.js
+          node --test tests/js/*.test.mjs
       - name: Migrate CLI parses
         run: python -m safety.migrate --help
       # One file per bash -n: given several, it parses the first and treats the
