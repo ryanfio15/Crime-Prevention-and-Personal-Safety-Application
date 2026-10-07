@@ -54,11 +54,15 @@ log()  { echo "$instance: $*"; }
 warn() { echo "<4>$instance: $*" >&2; }
 err()  { echo "<3>$instance: $*" >&2; }
 
-# Before anything else, including the bootstrap seed: a manual deploy.sh or the
-# other instance's tick holding the lock means this tick has nothing to do. fd 9
-# stays open, and so the lock held, until this process exits.
+# Before anything else, including the bootstrap seed. Wait for the lock rather
+# than give up at once: both instances' timers share AccuracySec, so systemd
+# fires them in the same instant, and with a bare `flock -n` the instance that
+# loses that race loses it on every tick and never deploys. A deploy holds the
+# lock for seconds to a few minutes; systemd will not start this unit again
+# while a tick is still waiting. fd 9 stays open, and so the lock held, until
+# this process exits.
 exec 9>"$lock"
-flock -n 9 || { log "another deploy is running; skipping this tick"; exit 0; }
+flock -w 600 9 || { log "another deploy has held the lock for 10 minutes; skipping this tick"; exit 0; }
 
 ensure_cache() {
     if [ ! -d "$cache" ]; then
