@@ -95,7 +95,16 @@ jobs:
         env:
           POSTGRES_USER: safety
           POSTGRES_PASSWORD: safety_ci_pw
-        run: python -c "from safety.db import connect, ensure_partitions; c = connect().__enter__(); ensure_partitions(c, 'phl', [2024, 2025]); c.commit()"
+        # `with`, not connect().__enter__(): connect() is a generator context
+        # manager, and once the unreferenced manager is collected its finally
+        # closes the connection under you.
+        run: |
+          python - <<'PY'
+          from safety.db import connect, ensure_partitions
+          with connect() as conn:
+              ensure_partitions(conn, "phl", [2024, 2025])
+              conn.commit()
+          PY
       # The host's instances move from the bootstrap superuser to a per-environment
       # owner role with exactly this script (deploy/db-isolate.sh, docs/DEPLOY.md
       # "Database roles"). Run it here against the same PostGIS image -- which, like
