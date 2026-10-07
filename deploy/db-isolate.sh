@@ -61,6 +61,17 @@ smoke=/usr/local/lib/safety-deploy/smoke.sh
 log() { echo "db-isolate[$instance]: $*"; }
 die() { echo "db-isolate[$instance]: $*" >&2; exit 1; }
 
+# The OS user that owns the instance's .env and data (N1): the same allow-listed
+# lookup as instance_user in deploy/lib/release.sh (this script runs from the
+# checkout and does not source the installed copy). Root-owned state only.
+owner=$(tr -d '[:space:]' 2>/dev/null < "$state/$instance.user") || owner=
+owner=${owner:-safety}
+case "$instance:$owner" in
+    prod:safety|dev:safety|dev:safety-dev) ;;
+    *) die "refusing: instance $instance may not run as '$owner'" ;;
+esac
+getent passwd "$owner" >/dev/null || die "no such user: $owner"
+
 # psql as the bootstrap superuser over the container's local socket.
 psql_su() { docker exec -i "$container" psql -U safety -X -q -v ON_ERROR_STOP=1 "$@"; }
 scalar() { psql_su -d "$1" -Atc "$2"; }
@@ -82,7 +93,7 @@ rollback() {
     if [ -e "$rotated" ]; then
         die "the superuser password was rotated after isolation ($rotated), so $bak holds a dead password; roll back by hand with the new one (docs/DEPLOY.md \"Database roles\")"
     fi
-    install -o safety -g safety -m 0600 "$bak" "$env"
+    install -o "$owner" -g "$owner" -m 0600 "$bak" "$env"
     psql_su -d postgres -c "GRANT CONNECT, TEMPORARY ON DATABASE $db TO PUBLIC"
     log "restored the pre-isolation .env; restarting safety-api@$instance"
     restart_and_smoke || die "rollback smoke FAILED: safety-api@$instance is not serving -- investigate now"
@@ -123,10 +134,17 @@ log "waiting for the deploy lock"
 flock -w 900 8 || die "the deploy lock has been held for 15 minutes; try again later"
 # Then the instance's ETL lock, which every ETL/ops unit takes with flock -w 21600:
 # waits out a running pull, and timers that fire meanwhile queue behind us.
-if [ ! -e "$inst/data/.etl.lock" ]; then
-    install -o safety -g safety -m 0644 /dev/null "$inst/data/.etl.lock"
+# Root never creates or opens for writing a path inside the instance user's
+# data/: a planted symlink there would be followed (protected_symlinks covers
+# sticky directories only). A missing lock is created by the owner; an existing
+# one must be a regular file, and is opened read-only -- flock works on any fd.
+lockf=$inst/data/.etl.lock
+if [ ! -e "$lockf" ] && [ ! -L "$lockf" ]; then
+    # shellcheck disable=SC2016  # $1 expands in the inner sh
+    runuser -u "$owner" -- sh -c 'umask 022; : >> "$1"' sh "$lockf"
 fi
-exec 9>>"$inst/data/.etl.lock"
+{ [ -f "$lockf" ] && [ ! -L "$lockf" ]; } || die "$lockf is not a regular file; refusing"
+exec 9<"$lockf"
 log "waiting for the ETL lock"
 flock -w 3600 9 || die "an ETL run has held $inst/data/.etl.lock for an hour; try again later"
 
@@ -209,7 +227,7 @@ ROLE=$role PW=$pw ADD_DB=$add_db awk '
         if (!d && ENVIRON["ADD_DB"] != "") print "POSTGRES_DB=" ENVIRON["ADD_DB"]
     }
 ' "$env" > "$tmp"
-install -o safety -g safety -m 0600 "$tmp" "$env"
+install -o "$owner" -g "$owner" -m 0600 "$tmp" "$env"
 rm -f "$tmp"
 unset pw
 [ "$(grep -cx "POSTGRES_USER=$role" "$env")" = 1 ] || die "$env was not rewritten as expected"

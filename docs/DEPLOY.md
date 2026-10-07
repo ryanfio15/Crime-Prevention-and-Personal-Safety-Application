@@ -37,9 +37,9 @@ For running the project on your own machine, see the quick start in
 ### Release layout
 
 ```
-I/.env                       the instance's settings (safety, 0600)
-I/data/                      bronze snapshots written by the ETL (safety)
-I/releases/<full sha>/       one commit's tree, read-only to safety
+I/.env                       the instance's settings (its OS user U, 0600)
+I/data/                      bronze snapshots written by the ETL (U)
+I/releases/<full sha>/       one commit's tree, read-only to U
     .venv -> ../../venvs/<hash>
     .env  -> ../../.env
     data  -> ../../data
@@ -48,8 +48,9 @@ I/venvs/<hash>/              one venv per requirements.txt + interpreter
 I/current -> releases/<sha>  the only path the systemd units name
 ```
 
-Releases and venvs are owned by root and readable by the `safety` group, so the
-running application cannot modify its own code. Bytecode is compiled at deploy
+U is `safety` for prod and `safety-dev` for dev (see "OS users"). Releases and
+venvs are owned by root and readable by U's group, so the running application
+cannot modify its own code. Bytecode is compiled at deploy
 time and the units set `PYTHONDONTWRITEBYTECODE=1`. A venv is keyed by
 `sha256(requirements.txt + python3.12 -VV)`, so a commit that does not touch
 requirements reuses the previous one and a deploy takes seconds. The three
@@ -480,10 +481,50 @@ to its role only.
   `safety_db`: a restart for both instances. The data volume and the roles are
   untouched (the image ignores `POSTGRES_*` on an initialised volume), but do it
   at a quiet time. Never run `docker compose` from `dev`.
-- *Residual risk.* Both instances still run as the same OS user `safety`, so
-  code running on dev can read prod's `.env` and with it prod's credentials. The
-  roles stop accidental cross-environment access, not deliberately malicious dev
-  code; a separate OS user for dev is planned (finding N1).
+- *OS users.* The roles stop cross-environment access in the database; the
+  separate OS users below (N1) stop dev code from reading prod's `.env` and so
+  its credentials.
+
+### OS users
+
+Prod runs as `safety`; dev runs as its own system user, `safety-dev` (N1), so
+code deployed to dev -- any push to testing -- cannot read prod's `.env`, data or
+`/proc/<pid>/environ`, and prod's user cannot read dev's.
+
+- *How.* `sudo deploy/os-isolate.sh dev` (idempotent) creates `safety-dev`
+  (home `/srv/safety-dev`, 0700, which holds its pip cache), installs
+  `deploy/systemd/instance-user/dev.conf` as a `10-instance-user.conf` drop-in
+  for `safety-{api,etl,etl-hourly,ops}@dev`, writes `safety-dev` to
+  `/var/lib/safety-deploy/dev.user`, re-owns the dev tree and restarts
+  `safety-api@dev`, then verifies the isolation both ways (it rolls back by
+  itself if anything fails). The unit templates are unchanged, so prod's units
+  are exactly what they were.
+- *The deployer* runs an instance's code (pip, import check, migrate, the
+  candidate) as `instance_user` (`deploy/lib/release.sh`): the user named in
+  root-owned `/var/lib/safety-deploy/<instance>.user`, `safety` if absent, and
+  only from the allow-list `prod:safety`, `dev:safety`, `dev:safety-dev`. Nothing
+  in an instance tree can choose it, and prod is always `safety`. The journal
+  line `0/7 running dev as safety-dev` shows it.
+- *Ownership after isolation.* `dev/` is `root:safety-dev 0750`: root owns it so
+  that `safety-dev` cannot replace `releases/`, `venvs/` or `current` with
+  symlinks into `prod/` that root would then follow on a deploy (chgrp, build,
+  prune). `dev/.env` and `dev/data/` belong to `safety-dev`; releases and venvs
+  are sealed `root:safety-dev`, read-only to it. The app directory
+  (`/srv/safety/Crime-Prevention-and-Personal-Safety-Application`) and
+  `/srv/safety` itself are `root:root` (0755 / 0751), so neither user can rename
+  or replace `dev/` or `prod/`; `safety` keeps `/srv/safety/.cache` and its
+  dotfiles.
+- *Root never follows a dev-planted path.* Scripts that lock an instance's ETL
+  open `data/.etl.lock` read-only and refuse a symlink there; a missing one is
+  created by the instance user. Edits to `dev/.env` are made as `safety-dev`
+  (`sudo runuser -u safety-dev -- ...`), never by root writing into it.
+- *Rollback.* `sudo deploy/os-isolate.sh dev --rollback` removes the drop-ins and
+  `dev.user`, puts the tree back to `safety:safety` (`dev/` 0700) and restarts
+  dev. The user is kept; `sudo userdel safety-dev && sudo rm -rf /srv/safety-dev`
+  removes it afterwards if wanted.
+- *Day to day.* Commands that run as dev's user use `safety-dev` (or
+  `$(sudo cat /var/lib/safety-deploy/dev.user)`); prod's stay `safety`.
+  `deploy/logs.sh` picks the user from the owner of the instance's `.env`.
 
 ---
 

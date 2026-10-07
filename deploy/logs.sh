@@ -14,7 +14,7 @@
 # lines and tracebacks -- for the runs systemd started (safety-etl@,
 # safety-etl-hourly@ and the post-deploy safety-ops@). The history step reads
 # the instance's .env, so it runs
-# as safety via sudo; the journal is readable by the adm group without it.
+# as the instance's OS user via sudo; the journal is readable by the adm group without it.
 set -euo pipefail
 
 case "${1:-}" in
@@ -33,10 +33,19 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-current=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/$instance/current
+inst=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/$instance
+current=$inst/current
+
+# The instance's OS user (N1): the owner of its .env -- the instance directory
+# itself is root's once dev is isolated. Allow-listed like instance_user.
+user=$(sudo stat -c %U "$inst/.env")
+case "$instance:$user" in
+    prod:safety|dev:safety|dev:safety-dev) ;;
+    *) echo "unexpected owner of $inst/.env: $user" >&2; exit 1 ;;
+esac
 
 echo "=== $instance: run history (etl.pull_run + etl.ops_run) ==="
-sudo -u safety env -C "$current" PYTHONDONTWRITEBYTECODE=1 \
+sudo -u "$user" env -C "$current" PYTHONDONTWRITEBYTECODE=1 \
     .venv/bin/python -m safety.etl.run log "${history_args[@]}"
 
 # journalctl understands absolute times but not "7d"; turn the short forms

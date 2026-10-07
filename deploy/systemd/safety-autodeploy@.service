@@ -5,9 +5,10 @@
 #
 # Root, because a deploy rsyncs into the instance tree, chowns it and restarts
 # safety-api@. The script and install.sh run from root-owned copies outside
-# /srv (deploy/install-deployer.sh), and repository code runs as `safety` via
-# runuser, which works under NoNewPrivileges. Writable: the instance trees, the
-# `safety` pip cache, and the state directory.
+# /srv (deploy/install-deployer.sh), and repository code runs as the instance's
+# OS user (`safety`, or `safety-dev` for an isolated dev) via runuser, which
+# works under NoNewPrivileges. Writable: the instance trees, both users' pip
+# caches (`-`: ignored while a path does not exist), and the state directory.
 
 [Unit]
 Description=Safety continuous deployment (%i)
@@ -25,7 +26,7 @@ ExecStart=/usr/local/sbin/safety-autodeploy %i
 TimeoutStartSec=30min
 StateDirectory=safety-deploy
 StateDirectoryMode=0700
-ReadWritePaths=/srv/safety/Crime-Prevention-and-Personal-Safety-Application -/srv/safety/.cache
+ReadWritePaths=/srv/safety/Crime-Prevention-and-Personal-Safety-Application -/srv/safety/.cache -/srv/safety-dev/.cache
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true

@@ -10,7 +10,8 @@
 #
 # Root only moves files, compiles bytecode and calls systemctl. Everything that
 # executes repository code -- pip, the import check, safety.migrate, the
-# candidate server -- runs as `safety`.
+# candidate server -- runs as the instance's OS user: `safety` for prod, and
+# for dev whatever deploy/os-isolate.sh recorded (`safety-dev` once isolated).
 #
 #   1. release   I/releases/<sha> from the stage (reused if already complete)
 #   2. venv      I/venvs/<hash> for its requirements.txt (reused if it exists)
@@ -66,6 +67,9 @@ cunit=safety-candidate-$instance
 # shellcheck disable=SC1091
 . "$lib/release.sh"
 
+user=$(instance_user "$instance") || exit 2
+home=$(instance_home "$user")
+
 # journald reads a leading <3> as priority err; keep a terminal readable.
 err() { if [ -t 2 ]; then echo "$*" >&2; else echo "<3>$*" >&2; fi; }
 
@@ -85,24 +89,25 @@ fi
 inject=$(tr -d '[:space:]' 2>/dev/null < "$state/$instance.inject_fail") || inject=
 [ -z "$inject" ] || echo "inject_fail is set to '$inject' for $instance"
 
-as_safety() {
-    runuser -u safety -- env -C "$rel" HOME=/srv/safety PYTHONDONTWRITEBYTECODE=1 "$@"
+as_user() {
+    runuser -u "$user" -- env -C "$rel" HOME="$home" PYTHONDONTWRITEBYTECODE=1 "$@"
 }
 
+echo "0/7 running $instance as $user"
 echo "1/7 release $sha"
-build_release "$target" "$sha" "$stage"
+build_release "$target" "$sha" "$stage" "$user"
 
 venv=$(readlink "$rel/.venv")
 echo "2/7 venv ${venv##*/}"
-ensure_venv "$target" "${venv##*/}" "$rel/requirements.txt"
+ensure_venv "$target" "${venv##*/}" "$rel/requirements.txt" "$user" "$home"
 
 echo "3/7 import check"
-as_safety .venv/bin/python -c "import safety.api.main, safety.migrate, safety.etl.run"
+as_user .venv/bin/python -c "import safety.api.main, safety.migrate, safety.etl.run"
 
 echo "4/7 migrate"
 # lock_timeout: a migration waiting behind a long query fails after 30s instead
 # of queueing every API request behind its own lock request.
-as_safety PGOPTIONS='-c lock_timeout=30s' .venv/bin/python -m safety.migrate
+as_user PGOPTIONS='-c lock_timeout=30s' .venv/bin/python -m safety.migrate
 
 echo "5/7 candidate on :$cport"
 stop_candidate() {
@@ -112,7 +117,7 @@ stop_candidate() {
 stop_candidate
 trap stop_candidate EXIT
 systemd-run --quiet --unit="$cunit" --collect -p Type=exec \
-    --uid=safety --gid=safety \
+    --uid="$user" --gid="$user" \
     -p EnvironmentFile="$target/.env" -p Environment=PYTHONDONTWRITEBYTECODE=1 \
     --working-directory="$rel" \
     -p NoNewPrivileges=true -p PrivateTmp=true -p ProtectSystem=full -p ProtectHome=true \

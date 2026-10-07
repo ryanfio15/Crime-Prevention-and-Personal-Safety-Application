@@ -44,6 +44,9 @@ target=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/$instance
 # shellcheck disable=SC1091
 . "$lib/release.sh"
 
+user=$(instance_user "$instance") || exit 2
+home=$(instance_home "$user")
+
 prepare() {
     if [ ! -d "$cache" ]; then
         git init --quiet --bare "$cache"
@@ -70,12 +73,12 @@ prepare() {
     stage=$(mktemp -d "$state/stage.XXXXXX")
     trap 'rm -rf "$stage"' EXIT
     git -C "$cache" archive "$sha" | tar -x -C "$stage"
-    build_release "$target" "$sha" "$stage"
+    build_release "$target" "$sha" "$stage" "$user"
 
     local rel=$target/releases/$sha venv
     venv=$(readlink "$rel/.venv")
-    ensure_venv "$target" "${venv##*/}" "$rel/requirements.txt"
-    runuser -u safety -- env -C "$rel" HOME=/srv/safety PYTHONDONTWRITEBYTECODE=1 \
+    ensure_venv "$target" "${venv##*/}" "$rel/requirements.txt" "$user" "$home"
+    runuser -u "$user" -- env -C "$rel" HOME="$home" PYTHONDONTWRITEBYTECODE=1 \
         .venv/bin/python -c "import safety.api.main, safety.migrate, safety.etl.run"
 
     [ -L "$target/current" ] || switch_current "$target" "$sha"
