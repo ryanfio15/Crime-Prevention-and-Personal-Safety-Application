@@ -7,7 +7,11 @@ name: ci
 
 on:
   push:
-    branches: [main, testing]
+    # remediation/** so review-loop branches are tested on every push, before
+    # anything is fast-forwarded to testing (which deploys dev). The deployer
+    # only reads check runs on the head of main/testing, so runs on other
+    # branches do not change what deploys.
+    branches: [main, testing, "remediation/**"]
   pull_request:
 
 permissions:
