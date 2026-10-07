@@ -123,6 +123,7 @@ prune_releases() {
 }
 
 # An ETL run imports the release under it and migrate can block on its locks.
+# safety-ops@ counts: it runs the same pipeline, often for longer.
 etl_running() {
-    systemctl is-active --quiet "safety-etl@$1" "safety-etl-hourly@$1"
+    systemctl is-active --quiet "safety-etl@$1" "safety-etl-hourly@$1" "safety-ops@$1"
 }

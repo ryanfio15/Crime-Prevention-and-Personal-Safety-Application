@@ -14,7 +14,8 @@ Group=safety
 WorkingDirectory=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/current
 # The release is read-only to safety (deploy/lib/release.sh).
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/current/.venv/bin/python -m safety.etl.run incremental --all --due-only --skip-hourly
+# Shares the per-instance ETL lock with safety-ops@ (see there).
+ExecStart=/usr/bin/flock -w 21600 /srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/data/.etl.lock /srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/current/.venv/bin/python -m safety.etl.run incremental --all --due-only --skip-hourly
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

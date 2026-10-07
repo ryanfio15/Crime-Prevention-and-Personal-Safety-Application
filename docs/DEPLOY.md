@@ -273,6 +273,19 @@ Both phases are safe to re-run.
 
 ## Operating the data
 
+**Data after a deploy.** Every successful deploy starts `safety-ops@<instance>`
+without waiting for it. It checks each *enabled* city for a missing backfill,
+census blocks, a stale or missing gold snapshot, or never-built time-of-day
+layers, and runs only what is missing -- so a deploy that changes the pipeline
+version rebuilds gold, and one that follows enabling a city loads it. With
+nothing missing it exits in seconds. Disabled cities are never loaded; enabling
+one stays a manual act (below). Deploys wait while it runs (as they do for any
+ETL run), so the first deploy after enabling a city can be held back until its
+backfill finishes. Watch it with `journalctl -u safety-ops@prod -f` or
+`deploy/logs.sh prod`. `safety-ops@`, `safety-etl@` and `safety-etl-hourly@`
+share a per-instance lock (`I/data/.etl.lock`), so they queue instead of
+overlapping.
+
 **Fresh data.** Handled by the `safety-etl@` timer every six hours and
 `safety-etl-hourly@` weekly. Most six-hourly runs find no city due and exit 0 —
 `--due-only` reads each source's cadence from `reference.source_registry`, so
