@@ -12,6 +12,7 @@ Run:  python -m uvicorn safety.api.main:app --reload
 from __future__ import annotations
 
 import concurrent.futures
+import gzip
 import json
 import logging
 import threading
@@ -96,7 +97,10 @@ if settings.enable_rate_limit:
 # repeated coordinate digits, and it compresses about ten to one. Without this
 # the finest cell size is only usable on a fast connection, which is the
 # opposite of what S2's mobile-first resident/commuter segment needs.
-app.add_middleware(GZipMiddleware, minimum_size=1024)
+# compresslevel=6 rather than starlette's default 9: level 9 costs several
+# times the CPU for a few per cent smaller output. /cells bypasses this
+# entirely -- its layers are cached already gzipped (cells(), below).
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
 
 
 _BUSY = {"detail": "The service is busy; retry shortly."}
@@ -137,7 +141,9 @@ Conn = Annotated[Any, Depends(get_conn)]
 # ---------------------------------------------------------------------------
 
 # Values are serialized payloads, not objects, so a hit costs no re-encoding and
-# the size of an entry is something this module can actually measure.
+# the size of an entry is something this module can actually measure. /cells
+# stores its layers gzip-compressed (cells()), so the byte budget and the
+# `cache.bytes` figure in /health count compressed bytes for those entries.
 #
 # An OrderedDict, used least-recently-used: the entry that has gone longest
 # without a read is the one evicted. With one city, clearing the whole cache on
@@ -147,7 +153,7 @@ Conn = Annotated[Any, Depends(get_conn)]
 # resolution 10, which is several times the size of Philadelphia's ~14 MB layer,
 # would evict every other city's layers on its way through. Evicting one entry
 # at a time is what stops a large city from repeatedly wiping the small ones.
-_cache: OrderedDict[tuple, tuple[str, str]] = OrderedDict()
+_cache: OrderedDict[tuple, tuple[str, str | bytes]] = OrderedDict()
 _cache_stats = {"hits": 0, "misses": 0, "bytes": 0, "evictions": 0}
 
 
@@ -182,7 +188,7 @@ _cache_lock = threading.Lock()
 _inflight: dict[tuple, concurrent.futures.Future] = {}
 
 
-def _store(key: tuple, stamp: str, value: str) -> None:
+def _store(key: tuple, stamp: str, value: str | bytes) -> None:
     """Admit `value` under `key`. The caller holds _cache_lock (not re-entrant:
     this must never take it itself)."""
     # Re-read under the lock: the entry seen before the producer ran may have
@@ -211,7 +217,7 @@ def _store(key: tuple, stamp: str, value: str) -> None:
     _cache_stats["bytes"] += len(value)
 
 
-def cached(conn, key: tuple, producer, source_id: str | None = None) -> str:
+def cached(conn, key: tuple, producer, source_id: str | None = None) -> str | bytes:
     stamp = _refresh_stamp(conn, source_id)
     flight_key = (key, stamp)
     with _cache_lock:
@@ -418,6 +424,7 @@ def _validate_hour(hour: int | None, res: int, window: str) -> None:
 
 @app.get(f"{API}/cells", tags=["cells"])
 def cells(
+    request: Request,
     conn: Conn,
     city: str = "phl",
     res: int = 8,
@@ -466,28 +473,42 @@ def cells(
     payload = cached(
         conn,
         key,
-        # Encoded inside the cache, not after it. At resolution 10 the document
-        # is ~14 MB and re-encoding it costs more than the query that built it.
-        lambda: json.dumps(
-            repo.cells_geojson(
-                conn,
-                source_id=city,
-                h3_res=res,
-                time_window=window,
-                category=category,
-                min_count=min_count,
-                hour=hour,
-                bbox=parsed_bbox,
-            ),
-            default=str,
+        # Encoded *and compressed* inside the cache, not after it. At resolution
+        # 10 the document is ~14 MB; re-encoding it cost more than the query that
+        # built it, and GZipMiddleware re-compressed it at level 9 on every hit.
+        # Stored as gzip bytes, a hit is a memory copy, and the cache's byte
+        # budget holds about ten times as many layers.
+        lambda: gzip.compress(
+            json.dumps(
+                repo.cells_geojson(
+                    conn,
+                    source_id=city,
+                    h3_res=res,
+                    time_window=window,
+                    category=category,
+                    min_count=min_count,
+                    hour=hour,
+                    bbox=parsed_bbox,
+                ),
+                default=str,
+            ).encode("utf-8"),
+            compresslevel=6,
         ),
         source_id=city,
     )
-    return Response(
-        content=payload,
-        media_type="application/geo+json",
-        headers={"Cache-Control": "public, max-age=60"},
-    )
+    headers = {"Cache-Control": "public, max-age=60", "Vary": "Accept-Encoding"}
+    # The same naive substring test starlette's GZipMiddleware uses: a client
+    # sending `gzip;q=0` would still get gzip, which no real browser does.
+    # GZipMiddleware and nginx (gzip_proxied) both pass a response that already
+    # carries Content-Encoding through untouched, so this is gzipped exactly once.
+    if "gzip" in request.headers.get("accept-encoding", "").lower():
+        return Response(
+            payload,
+            media_type="application/geo+json",
+            headers={**headers, "Content-Encoding": "gzip"},
+        )
+    # Rare: a client that cannot take gzip gets it inflated here, once per request.
+    return Response(gzip.decompress(payload), media_type="application/geo+json", headers=headers)
 
 
 @app.get(f"{API}/cells/ring", tags=["cells"])

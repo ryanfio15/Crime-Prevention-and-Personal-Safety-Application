@@ -60,9 +60,11 @@ class Settings(BaseSettings):
     # deployment configuration, not a property of the code.
     #
     # A count alone is not a bound on memory: one whole-city layer at resolution
-    # 10 is ~14 MB for Philadelphia and several times that for Los Angeles. The
-    # byte budget is what actually protects the container; the entry count just
-    # stops a long tail of small layers accumulating.
+    # 10 is ~14 MB of JSON for Philadelphia and several times that for Los
+    # Angeles. The byte budget is what actually protects the container; the
+    # entry count just stops a long tail of small layers accumulating. /cells
+    # layers are stored gzip-compressed (about ten to one), so the budget is
+    # counted in compressed bytes for them.
     cache_max_entries: int = 192
     cache_max_bytes: int = 256 * 1024 * 1024
 
