@@ -394,6 +394,72 @@ dumped nightly.
   priority of the `docker` CLI; the dump runs in the postgres backend at normal
   priority.
 
+**Database roles.** Both instances share one Postgres cluster (`safety_db`).
+Originally both connected as `safety`, the image's bootstrap superuser, so a dev
+bug or a dev migration could touch prod's database. Each instance now has its
+own role that owns its database and every application object in it:
+
+| Instance | Database | Role |
+|---|---|---|
+| prod | `safety` | `safety_prod` |
+| dev | `safety_dev` | `safety_dev` |
+
+Both are `NOSUPERUSER NOCREATEDB NOCREATEROLE`; the API, ETL, ops and migrate
+all use the instance's role (a separate read-only API role is possible later).
+`CONNECT` and `TEMPORARY` on each database are revoked from `PUBLIC` and granted
+to its role only.
+
+- *Switching an instance.* `sudo deploy/db-isolate.sh dev|prod` from a clean
+  checkout. It takes the deploy lock and the instance's ETL lock for its whole
+  run, saves the old `.env` to
+  `/var/lib/safety-deploy/env-backup/<instance>.env.pre-isolation` (root 0600 --
+  not beside the instance, because that copy holds the superuser password and
+  both instances run as OS user `safety`), creates the role with a random
+  password, hands every object over with `deploy/db/transfer-ownership.sql` (one
+  `ALTER ... OWNER` per object under `lock_timeout=2s`, retried on lock
+  timeouts), rewrites `POSTGRES_USER`/`POSTGRES_PASSWORD` in the `.env`, restarts
+  the API and smokes it, and rolls itself back if the smoke fails. Re-running it
+  is safe. CI runs the same transfer script against the same PostGIS image on
+  every push, then migrates, tests and serves as a non-superuser.
+- *No `REASSIGN OWNED`.* On the bootstrap superuser it errors, and it would
+  also move objects in the other instance's database. The transfer script
+  moves only this database's schemas, relations (each partition on its own),
+  routines and types, and leaves extensions, their schemas (`topology`, `tiger`,
+  `tiger_data`) and their members with `safety`.
+- *Break-glass.* `safety` is still the superuser, reachable over the container's
+  local socket: `sudo docker exec -it safety_db psql -U safety -d <db>`. **Any
+  DDL done that way must start with `SET ROLE safety_prod;` (or `safety_dev`)**,
+  otherwise the new objects are owned by `safety` and the app cannot use them.
+  A migration that needs `CREATE EXTENSION` or `ALTER EXTENSION ... UPDATE` has
+  to be applied by a human as `safety` (CI fails it first). Never set
+  `statement_timeout` or other settings on these roles with `ALTER ROLE ... SET`:
+  the ETL and migrate share the role and legitimately run for minutes.
+- *Backups and restores.* Unaffected: they use the container socket as `safety`
+  (see "Backups" for restoring after the switch).
+- *Rollback.* `sudo deploy/db-isolate.sh dev|prod --rollback` puts the saved
+  `.env` back, restarts and smokes the API, and re-grants `CONNECT, TEMPORARY`
+  to `PUBLIC`. Ownership stays with the role -- the superuser can use every
+  object whatever its owner -- which is why the old credentials work at once.
+  To reverse the ownership as well:
+  `sudo docker exec -i safety_db psql -U safety -d <db> -X -q -At -v from_role=<role> -v to_role=safety < deploy/db/transfer-ownership.sql`
+  then `ALTER DATABASE <db> OWNER TO safety`. Once the superuser's password has
+  been rotated (`/var/lib/safety-deploy/env-backup/superuser-rotated` exists) the
+  saved `.env` holds a dead password and `--rollback` refuses: copy it back by
+  hand with `POSTGRES_PASSWORD` set to the new password from
+  `/root/safety-db-superuser.pw`.
+- *Compose recreates the database container.* `docker-compose.yml` interpolates
+  `POSTGRES_USER`/`POSTGRES_PASSWORD` from the `.env` in the directory compose
+  runs from -- `prod/current`, whose `.env` also pins `COMPOSE_PROJECT_NAME`.
+  After prod is switched, those values differ from the ones the container was
+  created with, so the next `docker compose up` from `prod/current` *recreates*
+  `safety_db`: a restart for both instances. The data volume and the roles are
+  untouched (the image ignores `POSTGRES_*` on an initialised volume), but do it
+  at a quiet time. Never run `docker compose` from `dev`.
+- *Residual risk.* Both instances still run as the same OS user `safety`, so
+  code running on dev can read prod's `.env` and with it prod's credentials. The
+  roles stop accidental cross-environment access, not deliberately malicious dev
+  code; a separate OS user for dev is planned (finding N1).
+
 ---
 
 ## If something goes wrong
