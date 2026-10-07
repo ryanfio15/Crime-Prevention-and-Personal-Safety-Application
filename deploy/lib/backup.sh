@@ -20,6 +20,9 @@ set -euo pipefail
 
 dest=${SAFETY_BACKUP_DIR:-/var/backups/safety}
 container=safety_db
+# The restore check's scratch database. Global, not local to verify(): the EXIT
+# trap that drops it runs after verify() has returned.
+scratch=safety_restore_check
 # prod's database is `safety`, dev's is `safety_dev`.
 declare -A keep_days=([safety]=7 [safety_dev]=2)
 # Floor of free space left after a dump, so a backup never fills / under the
@@ -77,7 +80,7 @@ dump_one() {
 }
 
 verify() {
-    local latest scratch=safety_restore_check restored expected size started
+    local latest restored expected size started
     latest=$(newest safety)
     if [ -z "$latest" ] || [ ! -s "$latest.meta" ]; then
         echo "restore check: no prod dump with a .meta sidecar in $dest" >&2
