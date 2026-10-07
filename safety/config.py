@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     api_statement_timeout_ms: int = 15000
     api_pool_timeout_seconds: float = 10.0
 
+    # Strict-Transport-Security max-age (safety/api/security.py), sent only on
+    # https. One day to start (user decision 2026-10-07): long enough to matter,
+    # short enough that a certificate problem does not lock browsers out for
+    # long. Raise it once the headers have been stable for a while.
+    hsts_max_age_seconds: int = 86400
+
     # HTTP behaviour for source adapters.
     http_timeout_seconds: float = 120.0
     http_max_retries: int = 4

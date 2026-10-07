@@ -32,6 +32,7 @@ from psycopg_pool import ConnectionPool, PoolTimeout
 from safety import PIPELINE_VERSION
 from safety.api import repository as repo
 from safety.api.ratelimit import RateLimitMiddleware
+from safety.api.security import SecurityHeadersMiddleware
 from safety.config import REPO_ROOT, WEB_DIR, settings
 from safety.h3grid import RESOLUTIONS, cell_resolution, cells_for_point, grid_disk, is_valid_cell
 
@@ -102,6 +103,10 @@ if settings.enable_rate_limit:
 # times the CPU for a few per cent smaller output. /cells bypasses this
 # entirely -- its layers are cached already gzipped (cells(), below).
 app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
+
+# Added last, so it is outermost: the headers land on every response, the rate
+# limiter's 429s included (safety/api/security.py).
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 _BUSY = {"detail": "The service is busy; retry shortly."}
