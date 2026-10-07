@@ -32,6 +32,7 @@ SPAN_DAYS = 800
 N_ROWS = 400
 BOX = (-75.19, 39.94, -75.15, 39.97)  # west, south, east, north
 CATEGORIES = ("violent", "property", "quality_of_life", "other")
+AREA_SCHEME = "nscs_v1"
 
 
 def _crosswalk_rows(conn) -> dict[str, list[dict]]:
@@ -170,6 +171,13 @@ def built(db_conn):
     assert gold.data_anchor(conn, SOURCE) == ANCHOR
     result = gold.refresh_all(conn, SOURCE, PIPELINE_VERSION, include_hourly=True)
     windows = gold.resolve_windows(ANCHOR)
+    # The only *enabled* scheme is per-capita (reference/severity/schemes.csv),
+    # and with no census blocks loaded refresh_all logs it and skips it, so
+    # nothing above writes gold.cell_safety. Build the area-denominated scheme
+    # explicitly so the safety ranking's invariants are exercised too.
+    safety_rows, _ = gold.refresh_safety_layer(conn, SOURCE, windows, scheme_version=AREA_SCHEME)
+    conn.commit()
+    assert safety_rows > 0
     return {"conn": conn, "rows": rows, "windows": windows, "result": result}
 
 
