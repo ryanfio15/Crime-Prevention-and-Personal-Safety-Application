@@ -112,6 +112,7 @@ untouched.
 ## Running it
 
 ```bash
+# .env must exist with POSTGRES_PASSWORD set (cp .env.example .env; see PHASE1.md)
 docker compose up -d
 .venv/Scripts/python.exe -m safety.migrate            # applies 011, loads reference data
 

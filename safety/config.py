@@ -22,7 +22,10 @@ class Settings(BaseSettings):
 
     postgres_db: str = "safety"
     postgres_user: str = "safety"
-    postgres_password: str = "safety_dev_pw"
+    # No default (F20): a well-known password in code ends up in a deployment
+    # sooner or later. Required in the instance .env; `dsn` refuses to build
+    # without it, at connect time, so imports and DB-free tests still work.
+    postgres_password: str = ""
     # Literal IPv4, not "localhost". docker-compose.yml publishes the database
     # on 127.0.0.1 only, which is an IPv4 listener, while "localhost" resolves
     # to ::1 first on Windows and on most Linux distributions. A single
@@ -135,6 +138,10 @@ class Settings(BaseSettings):
 
     @property
     def dsn(self) -> str:
+        if not self.postgres_password:
+            raise RuntimeError(
+                "POSTGRES_PASSWORD is not set; put it in the instance .env (see .env.example)"
+            )
         # connect_timeout rides on the DSN so it applies to both plain
         # connections (safety/db.py) and the API's pool (safety/api/main.py).
         return (

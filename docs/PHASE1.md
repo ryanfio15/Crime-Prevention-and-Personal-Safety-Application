@@ -11,21 +11,24 @@ Section references below (§n) point at the design document.
 ## Quick start
 
 ```bash
-# 1. database  (Docker Desktop must be running)
-docker compose up -d
-
-# 2. python environment
-python -m venv .venv
-.venv/Scripts/python.exe -m pip install -r requirements.txt   # POSIX: .venv/bin/python
+# 1. settings: copy the template and set POSTGRES_PASSWORD in .env
+#    (required, no default; e.g. openssl rand -hex 32)
 cp .env.example .env
 
-# 3. schema + reference data
+# 2. database  (Docker Desktop must be running)
+docker compose up -d
+
+# 3. python environment
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install -r requirements.txt   # POSIX: .venv/bin/python
+
+# 4. schema + reference data
 .venv/Scripts/python.exe -m safety.migrate
 
-# 4. load 24 months of Philadelphia  (~3 min: 25 monthly pulls, ~320k records)
+# 5. load 24 months of Philadelphia  (~3 min: 25 monthly pulls, ~320k records)
 .venv/Scripts/python.exe -m safety.etl.run backfill --city phl
 
-# 5. serve
+# 6. serve
 .venv/Scripts/python.exe -m uvicorn safety.api.main:app --port 8000
 ```
 

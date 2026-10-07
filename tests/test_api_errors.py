@@ -71,3 +71,15 @@ def test_lifespan_builds_the_pool_with_both_timeouts(monkeypatch):
         pass
     assert captured["kwargs"]["options"] == f"-c statement_timeout={settings.api_statement_timeout_ms}"
     assert captured["timeout"] == settings.api_pool_timeout_seconds
+
+
+def test_dsn_requires_a_password(monkeypatch):
+    # F20: no default password; the dsn refuses to build without one.
+    import pytest
+
+    from safety.config import Settings
+
+    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
+    with pytest.raises(RuntimeError, match="POSTGRES_PASSWORD"):
+        Settings(_env_file=None, postgres_password="").dsn
+    assert ":x@" in Settings(_env_file=None, postgres_password="x").dsn

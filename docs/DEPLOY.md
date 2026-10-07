@@ -32,6 +32,7 @@ For running the project on your own machine, see the quick start in
 - **Deployer.** `safety-autodeploy@<instance>.timer` checks GitHub every minute.
 - **Configuration.** Each instance's `I/.env` names its database, port and data
   path; `safety/config.py` reads it. It is never replaced by a deploy.
+  `POSTGRES_PASSWORD` is required: there is no default in code or compose.
 
 ### Release layout
 
@@ -239,7 +240,8 @@ sudo -u safety env -C /srv/safety/Crime-Prevention-and-Personal-Safety-Applicati
 ## Setting up an instance
 
 On a fresh server, with nginx, the database container, the `safety` user, and
-`I/.env` and `I/data/` in place:
+`I/.env` (from `.env.example`, with `POSTGRES_PASSWORD` set: it has no default)
+and `I/data/` in place:
 
 1. `sudo deploy/install-deployer.sh --units` — the deployer, the state
    directory and every unit.
