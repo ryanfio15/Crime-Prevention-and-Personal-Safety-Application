@@ -16,10 +16,22 @@ if [ "$testing" = "$main" ]; then
     echo "main is already at testing (${testing:0:7}); nothing to promote"
     exit 0
 fi
+# A PR merged on GitHub leaves a merge commit on main that testing never gets,
+# after which main cannot fast-forward. Bring it into testing first; that push
+# deploys dev and runs CI, and the next promote goes through.
 if ! git merge-base --is-ancestor "$main" "$testing"; then
-    echo "origin/main (${main:0:7}) is not an ancestor of origin/testing (${testing:0:7})." >&2
-    echo "main has commits testing lacks; merge main into testing, push, and try again" >&2
-    exit 1
+    testing_wt=$(git worktree list --porcelain | awk '/^worktree /{wt=$2} /^branch refs\/heads\/testing$/{print wt}')
+    if [ -z "$testing_wt" ] || [ -n "$(git -C "$testing_wt" status --porcelain)" ] ||
+        [ "$(git -C "$testing_wt" rev-parse HEAD)" != "$testing" ]; then
+        echo "main has commits testing lacks, and the testing worktree is not a clean copy of origin/testing;" >&2
+        echo "merge origin/main into testing yourself, push, and promote again" >&2
+        exit 1
+    fi
+    echo "main has commits testing lacks (e.g. a PR merge); merging origin/main into testing first"
+    git -C "$testing_wt" merge --no-edit origin/main
+    git -C "$testing_wt" push origin testing
+    echo "pushed testing; once CI passes on it (about a minute), run deploy/promote.sh again"
+    exit 0
 fi
 
 conclusion=$(curl -fsS -H 'Accept: application/vnd.github+json' \
