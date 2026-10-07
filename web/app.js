@@ -380,25 +380,6 @@ const activityCategories = (res) => ACTIVITY_CATEGORIES[res] ?? null;
 const hourLabel = (hour) =>
   `${String(hour).padStart(2, "0")}:00–${String(hour + 1).padStart(2, "0")}:00`;
 
-/* Rating 2 in words. Same bands as safety/api/repository.py::delta_label --
-   wide on purpose, because an hourly percentile is far noisier than the
-   all-hours one it is compared against and narrow bands would dress that noise
-   up as movement. */
-const DELTA_BANDS = [
-  [-0.15, "Much worse here than usual"],
-  [-0.05, "Worse here than usual"],
-  [0.05, "Typical for this cell"],
-  [0.15, "Better here than usual"],
-];
-
-function deltaLabel(delta) {
-  if (delta === null || delta === undefined) return null;
-  for (const [threshold, label] of DELTA_BANDS) {
-    if (delta < threshold) return label;
-  }
-  return "Much better here than usual";
-}
-
 const CATEGORY_LABELS = {
   violent: "Violent",
   property: "Property",
@@ -638,8 +619,7 @@ async function loadLayer({ quiet = false } = {}) {
   }
 
   // The pointer can sit still across a layer swap, so mouseleave never fires
-  // and the tooltip would keep showing a value from the previous layer.
-  $("tooltip").hidden = true;
+  // and the hover outline would stay on a cell from the previous layer.
   if (state.hovered) {
     map.setFeatureState({ source: "cells", id: state.hovered }, { hover: false });
     state.hovered = null;
@@ -860,7 +840,7 @@ async function selectCell(h3) {
   renderHeadlineStat(detail);
 
   // The activity tier gave up its row to the time-of-day figure; it still
-  // reaches the reader through the tooltip and the table view.
+  // reaches the reader through the table view.
   $("d-rank").textContent = headline.city_rank
     ? `${nf.format(headline.city_rank)} of ${nf.format(headline.city_cell_total)}`
     : "—";
@@ -1470,8 +1450,6 @@ async function initMap() {
     },
   });
 
-  const tooltip = $("tooltip");
-
   map.on("mousemove", "cells-fill", (event) => {
     const feature = event.features?.[0];
     if (!feature) return;
@@ -1482,50 +1460,6 @@ async function initMap() {
     }
     state.hovered = feature.id;
     map.setFeatureState({ source: "cells", id: feature.id }, { hover: true });
-
-    const p = feature.properties;
-    tooltip.hidden = false;
-    tooltip.style.left = `${event.point.x}px`;
-    tooltip.style.top = `${event.point.y}px`;
-
-    const props = TRACK_PROPS[state.track];
-    const hourly = state.hour !== null;
-    // Both ratings, whenever both exist. The second is meaningless without the
-    // first, and the first alone invites reading a night-time rank as an
-    // absolute statement about the hour.
-    const second = hourly
-      ? `<small>${deltaLabel(p[props.delta]) ?? "Not ranked at this hour"}</small>`
-      : "";
-
-    if (state.scale === "safety") {
-      const pct = hourly ? props.hpct : props.pct;
-      const tier = hourly ? props.htier : props.tier;
-      const value = p[pct];
-      const reported = hourly ? p.hcount : p.count;
-      // The denominator, alongside the count it was divided by. A cell ranked
-      // badly on twelve incidents among two hundred people is a different
-      // statement from one ranked badly on twelve among twelve thousand, and
-      // the percentile alone hides which it is.
-      const among =
-        p.exposure === null || p.exposure === undefined
-          ? ""
-          : ` · among ${nf.format(p.exposure)} people`;
-      tooltip.innerHTML =
-        (value === null || value === undefined
-          ? `<b>No ${TRACK_LABELS[state.track]} offences reported</b>`
-          : `Safety: <b>${safetyLabel(value)}</b>`) +
-        `<small>${SAFETY_TIER_LABELS[p[tier]] ?? "—"} · ${TRACK_LABELS[state.track]}` +
-        (hourly ? ` · ${hourLabel(state.hour)}` : "") +
-        ` · ${nf.format(reported ?? 0)} reported incidents${among}</small>` +
-        second;
-      return;
-    }
-
-    tooltip.innerHTML =
-      `<b>${nf.format((hourly ? p.hcount : p.count) ?? 0)}</b> reported incidents` +
-      (hourly
-        ? `<small>${hourLabel(state.hour)} · ${nf.format(p.count)} across the whole day</small>`
-        : `<small>${TIER_LABELS[p.tier]} · ${nf.format(p.per_km2)} per km²</small>`);
   });
 
   map.on("mouseleave", "cells-fill", () => {
@@ -1534,7 +1468,6 @@ async function initMap() {
       map.setFeatureState({ source: "cells", id: state.hovered }, { hover: false });
       state.hovered = null;
     }
-    tooltip.hidden = true;
   });
 
   map.on("click", "cells-fill", (event) => {
