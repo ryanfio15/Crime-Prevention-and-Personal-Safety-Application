@@ -362,3 +362,5 @@ than migrating.
 
 **The `Dockerfile`** still builds a working image of the API and ETL for
 container hosts and local experiments; the home server does not use it.
+
+_Continuous deployment last verified end to end (push, CI gate, candidate, switch, rollback drills): 2026-10-07 (F5)._
