@@ -278,6 +278,20 @@ Both phases are safe to re-run.
 `--due-only` reads each source's cadence from `reference.source_registry`, so
 the timer only decides how often to ask.
 
+**Run history.** `deploy/logs.sh <instance>` prints every ETL pull and ops
+step from `etl.pull_run` and `etl.ops_run`, oldest first with any error under
+its row, then the journal output of the scheduled `safety-etl@` and
+`safety-etl-hourly@` runs. The history is the complete record (ops runs and
+anything started by hand never reach the journal); the journal has the full
+process output. It asks for your sudo password for the history step.
+
+```bash
+deploy/logs.sh prod                  # everything
+deploy/logs.sh dev --since 7d        # also 12h, 30m, 2026-10-01
+deploy/logs.sh prod --city chi --failed
+deploy/logs.sh prod -f               # then follow the journal live
+```
+
 **Turning on another city** is deliberately a manual act: it is the moment that
 city's numbers start being shown to people. A city is ready when it has an
 adapter, a reviewed crosswalk, a coverage boundary and a first backfill you have

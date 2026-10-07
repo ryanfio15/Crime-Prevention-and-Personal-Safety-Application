@@ -1,0 +1,351 @@
+crosswalk_version,source_id,raw_offense_code,raw_offense_text,raw_source_category,nibrs_code,nibrs_offense_name,nibrs_group,nibrs_crime_against,ucr_part,severity_bucket,product_category,mapping_confidence,effective_from,effective_to,notes
+aus_v1,aus,0100,CRASH/MURDER,,09B,Negligent Manslaughter,A,person,II,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0100,MURDER,,09A,Murder and Nonnegligent Manslaughter,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0101,CAPITAL MURDER,,09A,Murder and Nonnegligent Manslaughter,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0102,CRASH/MANSLAUGHTER,,09B,Negligent Manslaughter,A,person,II,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0102,MANSLAUGHTER,,09A,Murder and Nonnegligent Manslaughter,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0107,JUSTIFIED HOMICIDE,,09C,Justifiable Homicide,A,person,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0108,CRASH/INTOX MANSLAUGHTER,,09B,Negligent Manslaughter,A,person,II,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0300,AGG ROBBERY/DEADLY WEAPON,,120,Robbery,A,property,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0302,AGG ROBBERY BY ASSAULT,,120,Robbery,A,property,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0303,ROBBERY BY ASSAULT,,120,Robbery,A,property,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0305,AGG ROBBERY/DEADLY WEAPON,,120,Robbery,A,property,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0305,ROBBERY BY THREAT,,120,Robbery,A,property,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0402,AGG ASSAULT,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0402,AGGRAVATED ASSAULT-FAM/DATING VIO,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0403,AGG ASSAULT BY PUBLIC SERVANT,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0403,AGG ASSAULT ON PEACE OFFICER,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0403,AGG ASSAULT ON PUBLIC SERVANT,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0406,AGG ASLT W/MOTOR VEH FAM/DAT V,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0406,AGG ASSAULT WITH MOTOR VEH,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0407,ARSON WITH BODILY INJURY,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0408,DEADLY CONDUCT,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0408,DEADLY CONDUCT-FAM/DATING VIO,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0409,TAKE WEAPON FROM POLICE OFFICER,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0410,AGG ASLT STRANGLE/SUFFOCATE,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0411,AGG ASLT ENHANC STRANGL/SUFFOC,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0411,AGG ASLT STRANGLE/SUFFOCATE,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0500,BURG OF RES - FAM/DATING ASLT,,13B,Simple Assault,A,person,II,part_ii,violent,approximate,2021-09-01,,Truncated form of a description APD files as simple assault (13B).
+aus_v1,aus,0500,BURG OF RES - SEXUAL NATURE,,220,Burglary/Breaking and Entering,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0500,BURGLARY OF RESIDENCE,,220,Burglary/Breaking and Entering,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0500,BURGLARY OF RESIDENCE-FAM/DATING VIO,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0502,BURGLARY NON RESIDENCE,,220,Burglary/Breaking and Entering,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0504,BURGLARY OF SHED/DETACHED GARAGE/STORAGE UNIT,,220,Burglary/Breaking and Entering,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0600,THEFT,,23H,All Other Larceny,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0600,THEFT-NO SUSPECT/FOLLOWUP,,23H,All Other Larceny,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0601,BURGLARY OF VEH-NO SUSPECT/FU,,23F,Theft From Motor Vehicle,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0601,BURGLARY OF VEHICLE,,23F,Theft From Motor Vehicle,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0601,CRIMINAL MISCHIEF,,290,Destruction/Damage/Vandalism of Property,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0602,BURGLARY OF COIN-OP MACHINE,,23E,Theft From Coin-Operated Machine or Device,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0603,THEFT FROM AUTO,,23F,Theft From Motor Vehicle,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0604,THEFT OF AUTO PARTS,,23G,Theft of Motor Vehicle Parts or Accessories,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0605,POCKET PICKING,,23A,Pocket-picking,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0606,PURSE SNATCHING,,23B,Purse-snatching,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0607,THEFT BY SHOPLIFTING,,23C,Shoplifting,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0608,THEFT OF SERVICE,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0609,THEFT OF BICYCLE,,23H,All Other Larceny,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0610,THEFT FROM PERSON,,23A,Pocket-picking,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0612,THEFT OF HEAVY EQUIPMENT,,23H,All Other Larceny,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0613,THEFT OF TRAILER,,23H,All Other Larceny,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0614,THEFT OF LICENSE PLATE,,23G,Theft of Motor Vehicle Parts or Accessories,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0615,THEFT OF TELECOMMUNICATION SRV,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0616,TELECOMMUNICATION CRIMES/OTHER,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0617,THEFT FROM BUILDING,,23D,Theft From Building,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0619,THEFT OF METAL,,23H,All Other Larceny,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0620,THEFT CATALYTIC CONVERTER,,23G,Theft of Motor Vehicle Parts or Accessories,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0621,RENTAL CAR/FAIL TO RETURN,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0700,AUTO THEFT,,240,Motor Vehicle Theft,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0800,ARSON,,200,Arson,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0802,ARSON-CRIMINAL MISCHIEF,,200,Arson,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0900,ASSAULT WITH INJURY,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0900,ASSAULT WITH INJURY-FAM/DATING VIO,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0901,ASSAULT BY THREAT,,13C,Intimidation,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0901,ASSAULT BY THREAT-FAM/DATING VIO,,13C,Intimidation,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0902,ASSAULT  CONTACT-SEXUAL NATURE,,11D,Fondling,A,person,II,part_ii,violent,approximate,2021-09-01,,"Assault by contact of a sexual nature: fondling, not simple assault."
+aus_v1,aus,0902,ASSAULT BY CONTACT,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0902,ASSAULT BY CONTACT-FAM/DATING VIO,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0902,ASSAULT BY CONTACT-SEXUAL NATURE,,11D,Fondling,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0903,ASSAULT ON PEACE OFFICER,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0903,ASSAULT ON PUBLIC SERVANT,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0906,ASSAULT - SCHOOL PERSONNEL,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0909,FELONY ENHANCEMENT/ASSLT W/INJ,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0910,IMPROPER CONTACT-SEX ASLT VICT,,13C,Intimidation,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1000,FORGERY AND PASSING,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1001,FORGERY BY ALTERATION,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1002,POSSESSION OF FORGED WRITING,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1003,FORGERY BY MAKING,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1004,FORGERY OF IDENTIFICATION,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1005,CRED CARD ABUSE BY FORGERY,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1006,COUNTERFEITING,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1007,FRAUD DESTRUCTION OF A WRITING,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1008,FORGERY- CERTIFICATE OF TITLE,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1009,SECURING EXEC-DOC BY DECEPTION,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1010,FRAUD FILING FINANCE STATEMENT,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1099,FORGERY - OTHER,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1102,THEFT BY FALSE PRETEXT/BUNCO,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1103,CRED CARD ABUSE - EXPIR-CANCEL,,26B,Credit Card/Automated Teller Machine Fraud,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1104,BANK KITING,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1105,FALSE STATEMENT -OBTAIN CREDIT,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1106,CRED CARD ABUSE - OTHER,,26B,Credit Card/Automated Teller Machine Fraud,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1108,DEBIT CARD ABUSE,,26B,Credit Card/Automated Teller Machine Fraud,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1108,POSS OF FIREARM BY FELON,,520,Weapon Law Violations,A,society,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1109,BREACH OF COMPUTER SECURITY,,26G,Hacking/Computer Invasion,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1111,TRADEMARK COUNTERFEITING,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1112,FRAUD-CARD SKIMMER,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1198,PIGEON DROP,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1199,FRAUD - OTHER,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1200,THEFT BY EMBEZZLEMENT,,270,Embezzlement,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1201,MISAPPLY FIDUCIARY PROP,,23H,All Other Larceny,A,property,I,part_i_property,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1202,THEFT BY PUBLIC SERVANT,,270,Embezzlement,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1300,THEFT- APPROPRIATE STOLEN PROP,,280,Stolen Property Offenses,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1301,MONEY LAUNDERING,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1400,CRIMINAL MISCHIEF,,290,Destruction/Damage/Vandalism of Property,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1400,CRIMINAL MISCHIEF-NO SUSPECT,,290,Destruction/Damage/Vandalism of Property,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1401,RECKLESS DAMAGE,,290,Destruction/Damage/Vandalism of Property,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1402,GRAFFITI,,290,Destruction/Damage/Vandalism of Property,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1500,UNLAWFUL CARRYING WEAPON,,520,Weapon Law Violations,A,society,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1501,UCW LICENSE PREMISE,,520,Weapon Law Violations,A,society,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1502,POSS OF FIREARM BY FELON,,520,Weapon Law Violations,A,society,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1503,POSS OF PROHIBITED WEAPON,,520,Weapon Law Violations,A,society,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1504,WEAPON VIOL - OTHER,,520,Weapon Law Violations,A,society,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1507,UNLAWFUL CARRY-LIC HOLDER,,520,Weapon Law Violations,A,society,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1509,AIRPORT PLACES WEAPON PROHIBIT,,520,Weapon Law Violations,A,society,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1600,PROSTITUTION,,40A,Prostitution,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1601,PROMOTION OF PROSTITUTION,,40B,Assisting or Promoting Prostitution,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1602,AGG PROMOTION OF PROSTITUTION,,40B,Assisting or Promoting Prostitution,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1604,PURCHASING PROSTITUTION,,40C,Purchasing Prostitution,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1800,POSS CONTROLLED SUB/NARCOTIC,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1801,POSS CONTROLLED SUB/SYN NARC,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1802,POSS CONTROLLED SUB/OTHER,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1803,POSSESSION OF MARIJUANA,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1804,DEL CONTROLLED SUB/NARCOTIC,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1805,DEL CONTROLLED SUB/SYN NARC,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1806,DEL CONTROLLED SUB/OTHER,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1807,DEL MARIJUANA,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1808,OBTAIN CONTROLLED SUB BY FRAUD,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1810,POSS DANG DRUG,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1811,DEL OF DANG DRUG,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1812,OBTAIN DANG DRUG BY FRAUD,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1814,CONTROLLED SUB VIOL - OTHER,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1815,DANG DRUG VIOL - OTHER,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1818,POSS OF DRUG PARAPHERNALIA,,35B,Drug Equipment Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1819,MANF CONTROLLED SUB- SYN NARC,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1820,MANF CONTROLLED SUB - OTHER,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1823,DELIVERY OF PRESCRIPTION FORM,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1825,POSS SYNTHETIC MARIJUANA,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1826,DEL SYNTHETIC MARIJUANA,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1900,GAMBLING,,39A,Betting/Wagering,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,1902,KEEPING GAMBLING PLACE,,39B,Operating/Promoting/Assisting Gambling,A,society,II,part_ii,quality_of_life,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2012,INJURY TO ELDERLY PERSON,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2012,INJURY TO ELDERLY PERSON - SBI,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2012,INJURY TO ELDERLY PERSON-FAM/DATING VIO,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2013,INJURY DISABLED INDIVIDUAL,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2013,INJURY TO DISABLED PERSON-FAM/DATING VIO,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2406,DOC FIGHTING,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2600,OBSCENE DISPLAY - DISTRIBUTION,,370,Pornography/Obscene Material,A,society,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2601,OBSCENITY,,370,Pornography/Obscene Material,A,society,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2609,INVASIVE VISUAL RECORDING,,370,Pornography/Obscene Material,A,society,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2610,DISCLOSE/PROMO INTIMATE VISUAL,,370,Pornography/Obscene Material,A,society,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2611,SEXTING DEPICTING A MINOR,,370,Pornography/Obscene Material,A,society,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2612,ONLINE SOLICITATION OF A MINOR,,370,Pornography/Obscene Material,A,society,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2701,AIRPORT - BOMB THREAT,,13C,Intimidation,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2701,BOMB THREAT,,13C,Intimidation,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2702,BOMB THREAT - AIRCRAFT,,13C,Intimidation,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2703,HARASSMENT,,13C,Intimidation,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2704,TERRORISTIC THREAT,,13C,Intimidation,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2704,TERRORISTIC THREAT-FAM/DATING VIO,,13C,Intimidation,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2704,TERRORISTIC THREAT-MASS CASLTY,,13C,Intimidation,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2710,STALKING,,13C,Intimidation,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2718,THEFT BY EXTORTION,,210,Extortion/Blackmail,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2731,HARASSMENT OF A PUBLIC SERVANT,,13C,Intimidation,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2732,HARASSMENT ONLINE,,13C,Intimidation,A,person,II,part_ii,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2733,ONLINE IMPERSONATION,,26C,Impersonation,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2800,KIDNAPPING,,100,Kidnapping/Abduction,A,person,II,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2800,KIDNAPPING-FAM/DATING VIO,,100,Kidnapping/Abduction,A,person,II,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2801,AGG KIDNAPPING,,100,Kidnapping/Abduction,A,person,II,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2801,AGGRAVATED KIDNAPPING-FAM/DATING VIO,,100,Kidnapping/Abduction,A,person,II,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2805,UNLAWFUL RESTRAINT,,100,Kidnapping/Abduction,A,person,II,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2805,UNLAWFUL RESTRAINT-FAM/DATING VIO,,100,Kidnapping/Abduction,A,person,II,part_i_violent,violent,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2905,IMPERSONATING PUBLIC SERVANT,,26C,Impersonation,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,2908,FALSE ID AS A PEACE OFFICER,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,3102,BRIBERY,,510,Bribery,A,property,II,part_ii,property,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,3304,FIREARMS ON SCHOOL PROP,,520,Weapon Law Violations,A,society,II,part_ii,other,exact,2021-09-01,,APD's own NIBRS classification (i7fg-wrk5).
+aus_v1,aus,0100,*,,09A,Murder and Nonnegligent Manslaughter,A,person,I,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to. Others: 09B (3); 09A (253).
+aus_v1,aus,0101,*,,09A,Murder and Nonnegligent Manslaughter,A,person,I,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0102,*,,09B,Negligent Manslaughter,A,person,II,part_i_violent,violent,approximate,2021-09-01,,"Manslaughter; the paired descriptions split, so set by hand."
+aus_v1,aus,0107,*,,09C,Justifiable Homicide,A,person,II,part_ii,other,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0108,*,,09B,Negligent Manslaughter,A,person,II,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0300,*,,120,Robbery,A,property,I,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0302,*,,120,Robbery,A,property,I,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0303,*,,120,Robbery,A,property,I,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0305,*,,120,Robbery,A,property,I,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0402,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0403,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0406,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0407,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0408,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0409,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0410,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0411,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0500,*,,220,Burglary/Breaking and Entering,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to. Others: 13B (102); 220 (14374).
+aus_v1,aus,0502,*,,220,Burglary/Breaking and Entering,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0504,*,,220,Burglary/Breaking and Entering,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0600,*,,23H,All Other Larceny,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0601,*,,23F,Theft From Motor Vehicle,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to. Others: 290 (1); 23F (41390).
+aus_v1,aus,0602,*,,23E,Theft From Coin-Operated Machine or Device,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0603,*,,23F,Theft From Motor Vehicle,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0604,*,,23G,Theft of Motor Vehicle Parts or Accessories,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0605,*,,23A,Pocket-picking,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0606,*,,23B,Purse-snatching,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0607,*,,23C,Shoplifting,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0608,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0609,*,,23H,All Other Larceny,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0610,*,,23A,Pocket-picking,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0612,*,,23H,All Other Larceny,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0613,*,,23H,All Other Larceny,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0614,*,,23G,Theft of Motor Vehicle Parts or Accessories,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0615,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0616,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0617,*,,23D,Theft From Building,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0619,*,,23H,All Other Larceny,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0620,*,,23G,Theft of Motor Vehicle Parts or Accessories,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0621,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0700,*,,240,Motor Vehicle Theft,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0702,*,,240,Motor Vehicle Theft,A,property,I,part_i_property,property,approximate,2021-09-01,,"Unauthorized use of a vehicle: Texas joyriding, NIBRS motor vehicle theft."
+aus_v1,aus,0800,*,,200,Arson,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0802,*,,200,Arson,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0900,*,,13B,Simple Assault,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0901,*,,13C,Intimidation,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0902,*,,13B,Simple Assault,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to. Others: 11D (155); 13B (7020).
+aus_v1,aus,0903,*,,13B,Simple Assault,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0904,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2021-09-01,,"Reckless conduct (Texas deadly conduct, no injury); no Group A target."
+aus_v1,aus,0906,*,,13B,Simple Assault,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0909,*,,13B,Simple Assault,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,0910,*,,13C,Intimidation,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1000,*,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1001,*,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1002,*,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1003,*,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1004,*,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1005,*,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1006,*,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1007,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1008,*,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1009,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1010,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1099,*,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1100,*,,90A,Bad Checks,B,group_b,II,part_ii,property,approximate,2021-09-01,,Issuance of a bad check.
+aus_v1,aus,1101,*,,90A,Bad Checks,B,group_b,II,part_ii,property,approximate,2021-09-01,,"Theft by check: NIBRS files bad checks under 90A, not larceny."
+aus_v1,aus,1102,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1103,*,,26B,Credit Card/Automated Teller Machine Fraud,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1104,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1105,*,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1106,*,,26B,Credit Card/Automated Teller Machine Fraud,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1108,*,,26B,Credit Card/Automated Teller Machine Fraud,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to. Others: 520 (1); 26B (2405).
+aus_v1,aus,1109,*,,26G,Hacking/Computer Invasion,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1111,*,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1112,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1198,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1199,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1200,*,,270,Embezzlement,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1201,*,,23H,All Other Larceny,A,property,I,part_i_property,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1202,*,,270,Embezzlement,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1300,*,,280,Stolen Property Offenses,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1301,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1400,*,,290,Destruction/Damage/Vandalism of Property,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1401,*,,290,Destruction/Damage/Vandalism of Property,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1402,*,,290,Destruction/Damage/Vandalism of Property,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1500,*,,520,Weapon Law Violations,A,society,II,part_ii,other,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1501,*,,520,Weapon Law Violations,A,society,II,part_ii,other,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1502,*,,520,Weapon Law Violations,A,society,II,part_ii,other,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1503,*,,520,Weapon Law Violations,A,society,II,part_ii,other,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1504,*,,520,Weapon Law Violations,A,society,II,part_ii,other,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1507,*,,520,Weapon Law Violations,A,society,II,part_ii,other,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1509,*,,520,Weapon Law Violations,A,society,II,part_ii,other,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1600,*,,40A,Prostitution,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1601,*,,40B,Assisting or Promoting Prostitution,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1602,*,,40B,Assisting or Promoting Prostitution,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1604,*,,40C,Purchasing Prostitution,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1705,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2021-09-01,,Public lewdness: FBI guidance files indecent exposure under 90Z.
+aus_v1,aus,1800,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1801,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1802,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1803,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1804,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1805,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1806,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1807,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1808,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1810,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1811,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1812,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1814,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1815,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1818,*,,35B,Drug Equipment Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1819,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1820,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1823,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1825,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1826,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1900,*,,39A,Betting/Wagering,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,1902,*,,39B,Operating/Promoting/Assisting Gambling,A,society,II,part_ii,quality_of_life,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2001,*,,90F,"Family Offenses, Nonviolent",B,group_b,II,part_ii,other,approximate,2021-09-01,,Interference with child custody: nonviolent family offence.
+aus_v1,aus,2003,*,,90F,"Family Offenses, Nonviolent",B,group_b,II,part_ii,other,approximate,2021-09-01,,Criminal nonsupport: nonviolent family offence.
+aus_v1,aus,2012,*,,13B,Simple Assault,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to. Others: 13A (6); 13B (636).
+aus_v1,aus,2013,*,,13B,Simple Assault,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2100,*,,90D,Driving Under the Influence,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,DWI.
+aus_v1,aus,2102,*,,90D,Driving Under the Influence,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,"DWI, second offence."
+aus_v1,aus,2103,*,,90D,Driving Under the Influence,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,"DWI, drug recognition expert."
+aus_v1,aus,2105,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,approximate,2021-09-01,,Intoxication assault (DWI causing serious bodily injury).
+aus_v1,aus,2106,*,,90D,Driving Under the Influence,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,DUI under 21.
+aus_v1,aus,2107,*,,90D,Driving Under the Influence,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,"DUI, age 17 to 20."
+aus_v1,aus,2108,*,,90D,Driving Under the Influence,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,DWI with a child passenger.
+aus_v1,aus,2109,*,,90D,Driving Under the Influence,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Felony DWI.
+aus_v1,aus,2110,*,,90D,Driving Under the Influence,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Boating while intoxicated.
+aus_v1,aus,2111,*,,90D,Driving Under the Influence,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,"DWI, 0.15 BAC or above."
+aus_v1,aus,2200,*,,90G,Liquor Law Violations,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Possession of alcohol by a minor.
+aus_v1,aus,2202,*,,90G,Liquor Law Violations,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Sale of liquor without a permit.
+aus_v1,aus,2206,*,,90G,Liquor Law Violations,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Delivery of alcohol to a minor.
+aus_v1,aus,2208,*,,90G,Liquor Law Violations,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,"Liquor law violation, other."
+aus_v1,aus,2209,*,,90G,Liquor Law Violations,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,"Possession of alcohol, age 17 to 20."
+aus_v1,aus,2210,*,,90G,Liquor Law Violations,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Misrepresentation of age by a minor.
+aus_v1,aus,2300,*,,90E,Drunkenness,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Public intoxication.
+aus_v1,aus,2401,*,,90C,Disorderly Conduct,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Disorderly conduct: abusive language.
+aus_v1,aus,2402,*,,90C,Disorderly Conduct,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Disorderly conduct: offensive gesture.
+aus_v1,aus,2403,*,,90C,Disorderly Conduct,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Disorderly conduct: noxious odour.
+aus_v1,aus,2404,*,,90C,Disorderly Conduct,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Disorderly conduct: abuse or threat in public.
+aus_v1,aus,2405,*,,90C,Disorderly Conduct,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Disorderly conduct: unreasonable noise.
+aus_v1,aus,2406,*,,13B,Simple Assault,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2407,*,,90H,Peeping Tom,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Disorderly conduct: window peeping / voyeurism.
+aus_v1,aus,2408,*,,520,Weapon Law Violations,A,society,II,part_ii,other,approximate,2021-09-01,,Disorderly conduct: discharging a firearm in a public place.
+aus_v1,aus,2409,*,,520,Weapon Law Violations,A,society,II,part_ii,other,approximate,2021-09-01,,Disorderly conduct: displaying a firearm or deadly weapon in public.
+aus_v1,aus,2410,*,,520,Weapon Law Violations,A,society,II,part_ii,other,approximate,2021-09-01,,Disorderly conduct: discharging a firearm across a public road.
+aus_v1,aus,2411,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2021-09-01,,Disorderly conduct: exposure. Indecent exposure is 90Z.
+aus_v1,aus,2416,*,,90C,Disorderly Conduct,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Riot.
+aus_v1,aus,2417,*,,90H,Peeping Tom,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,"Disorderly conduct: window peeping, hotel."
+aus_v1,aus,2600,*,,370,Pornography/Obscene Material,A,society,II,part_ii,other,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2601,*,,370,Pornography/Obscene Material,A,society,II,part_ii,other,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2609,*,,370,Pornography/Obscene Material,A,society,II,part_ii,other,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2610,*,,370,Pornography/Obscene Material,A,society,II,part_ii,other,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2611,*,,370,Pornography/Obscene Material,A,society,II,part_ii,other,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2612,*,,370,Pornography/Obscene Material,A,society,II,part_ii,other,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2701,*,,13C,Intimidation,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2702,*,,13C,Intimidation,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2703,*,,13C,Intimidation,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2704,*,,13C,Intimidation,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2710,*,,13C,Intimidation,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2718,*,,210,Extortion/Blackmail,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2731,*,,13C,Intimidation,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2732,*,,13C,Intimidation,A,person,II,part_ii,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2733,*,,26C,Impersonation,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2800,*,,100,Kidnapping/Abduction,A,person,II,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2801,*,,100,Kidnapping/Abduction,A,person,II,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2805,*,,100,Kidnapping/Abduction,A,person,II,part_i_violent,violent,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2905,*,,26C,Impersonation,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,2908,*,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,3102,*,,510,Bribery,A,property,II,part_ii,property,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,3211,*,,90G,Liquor Law Violations,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,City ordinance: alcohol consumption.
+aus_v1,aus,3213,*,,90B,Curfew/Loitering/Vagrancy Violations,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,City ordinance: curfew.
+aus_v1,aus,3303,*,,90C,Disorderly Conduct,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Disruptive acts at a school.
+aus_v1,aus,3304,*,,520,Weapon Law Violations,A,society,II,part_ii,other,approximate,2021-09-01,,Fallback: the NIBRS code most of this code's paired descriptions map to.
+aus_v1,aus,3305,*,,90C,Disorderly Conduct,B,group_b,II,part_ii,quality_of_life,approximate,2021-09-01,,Disruption of classes.
