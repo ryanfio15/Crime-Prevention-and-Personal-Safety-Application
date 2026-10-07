@@ -385,7 +385,9 @@ dumped nightly.
   `safety-backup-verify.timer` (the 1st of each month, 03:15 UTC) restores the
   newest prod dump into a scratch database `safety_restore_check`, compares the
   migration count with the sidecar, checks `silver.incident` and
-  `gold.city_snapshot` are non-empty, and drops it. Both are installed by
+  `gold.city_snapshot` are non-empty, and drops it. The scratch database is
+  closed to `PUBLIC` (so to `safety_dev`/`safety_prod`) before the restore, as are
+  `postgres` and `template_postgis` on the host (N3). Both are installed by
   `sudo deploy/install-deployer.sh --units` and enabled with
   `sudo systemctl enable --now safety-backup.timer safety-backup-verify.timer`.
 - *Where.* `/var/backups/safety/<db>-<UTC timestamp>.dump` and `.dump.meta`,

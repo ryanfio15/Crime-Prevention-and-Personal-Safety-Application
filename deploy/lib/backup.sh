@@ -96,6 +96,10 @@ verify() {
     started=$SECONDS
     pg dropdb -U safety --if-exists "$scratch"
     pg createdb -U safety "$scratch"
+    # A new database grants CONNECT/TEMP to PUBLIC; this one holds a full copy of
+    # prod, so close it to the instance roles before restoring into it (N3). The
+    # superuser (container socket) still restores, checks and drops it.
+    pg psql -U safety -d postgres -X -q -v ON_ERROR_STOP=1 -c "REVOKE CONNECT, TEMPORARY ON DATABASE $scratch FROM PUBLIC"
     pg pg_restore -U safety -d "$scratch" --no-owner --exit-on-error < "$latest"
     restored=$(pg psql -U safety -d "$scratch" -X -Atc "SELECT count(*) FROM public.schema_migration")
     if [ "$restored" != "$expected" ]; then
