@@ -396,3 +396,21 @@ def test_refresh_is_idempotent(built):
     gold.refresh_all(conn, SOURCE, PIPELINE_VERSION, include_hourly=True)
     after = {tuple(r.values()) for r in _rows(conn, query, (SOURCE,))}
     assert before == after
+
+
+def test_hourly_per_capita_scheme_skipped_without_exposure(built):
+    # gold.py refresh_cell_hour_safety: a per-capita scheme calls _require_exposure
+    # over HOURLY_RESOLUTIONS before its DELETE, and refresh_hourly_layer skips the
+    # scheme on LookupError (P1). The fixture loads no census, so the per-capita
+    # scheme (the only enabled one) must have no hourly ranking at all, rather
+    # than one built from the prior alone with every cell tied.
+    n = _scalar(
+        built["conn"],
+        """
+        SELECT count(*) FROM gold.cell_hour_safety h
+        JOIN reference.severity_scheme s USING (scheme_version)
+        WHERE h.source_id = %s AND s.exposure_kind = 'ambient_population'
+        """,
+        (SOURCE,),
+    )
+    assert n == 0

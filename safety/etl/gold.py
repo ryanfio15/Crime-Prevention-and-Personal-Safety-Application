@@ -820,8 +820,16 @@ def unweighted_offenses(
     return rows[:limit]
 
 
-def _require_exposure(conn: psycopg.Connection, source_id: str, scheme: Scheme) -> None:
+def _require_exposure(
+    conn: psycopg.Connection,
+    source_id: str,
+    scheme: Scheme,
+    resolutions: tuple[int, ...] | None = None,
+) -> None:
     """Refuse to build a per-capita ranking with no population loaded.
+
+    `resolutions` defaults to the scheme's own; the hourly ranking passes
+    HOURLY_RESOLUTIONS, which it builds instead.
 
     The exposure join is a LEFT JOIN, so a missing gold.cell_exposure does not
     fail -- it quietly makes every denominator zero, at which point the prior
@@ -829,6 +837,7 @@ def _require_exposure(conn: psycopg.Connection, source_id: str, scheme: Scheme) 
     like a working build producing a uniform map, which is a far worse failure
     than an exception.
     """
+    wanted = tuple(resolutions or scheme.resolutions)
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -838,11 +847,11 @@ def _require_exposure(conn: psycopg.Connection, source_id: str, scheme: Scheme) 
             WHERE source_id = %s AND h3_res = ANY(%s)
             GROUP BY h3_res
             """,
-            (source_id, list(scheme.resolutions)),
+            (source_id, list(wanted)),
         )
         built = {r["h3_res"]: r for r in cur.fetchall()}
 
-    missing = [res for res in scheme.resolutions if res not in built]
+    missing = [res for res in wanted if res not in built]
     if missing:
         raise LookupError(
             f"scheme '{scheme.version}' divides by ambient population, but "
@@ -1124,6 +1133,11 @@ def refresh_cell_hour_safety(
     second rating is a comparison against the all-hours percentile, which this
     reads rather than recomputes.
     """
+    # Before the DELETE, so a per-capita scheme with no population is never
+    # rebuilt prior-only (every cell tied) -- the same guard as the all-hours
+    # ranking, over the resolutions this layer builds (P1).
+    if scheme.per_capita:
+        _require_exposure(conn, source_id, scheme, HOURLY_RESOLUTIONS)
     written = 0
     with conn.cursor() as cur:
         for res in HOURLY_RESOLUTIONS:
@@ -1316,7 +1330,20 @@ def refresh_hourly_layer(
 
     rows = 0
     for scheme in schemes:
-        rows += refresh_cell_hour_safety(conn, source_id, windows, scheme)
+        try:
+            rows += refresh_cell_hour_safety(conn, source_id, windows, scheme)
+        except LookupError as exc:
+            # A scheme that cannot be built is skipped, not fatal, exactly as in
+            # refresh_safety_layer: _require_exposure raises rather than producing
+            # a uniform ranking, but nothing else in the hourly layer depends on
+            # this scheme, so it must not abort the rest of the gold refresh.
+            log.error(
+                "cannot build the hourly ranking for scheme '%s' for %s, skipping it: %s",
+                scheme.version,
+                source_id,
+                exc,
+            )
+            continue
     profile_rows = refresh_cell_hour_profile(conn, source_id, windows)
     return rows, profile_rows, share
 
