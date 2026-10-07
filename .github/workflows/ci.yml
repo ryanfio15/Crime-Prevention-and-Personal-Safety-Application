@@ -69,6 +69,11 @@ jobs:
         run: python -m safety.migrate
       - name: Migrate again (idempotency)
         run: python -m safety.migrate
+      # Empty manifests, but it runs the query with every filter combination.
+      - name: Run log query
+        run: |
+          python -m safety.etl.run log
+          python -m safety.etl.run log --since 7d --city phl --failed
       # The same deploy/lib/smoke.sh the deployer runs against the candidate
       # and the live port, so a commit that would be rejected on the server is
       # red here first. "-": nothing is deployed, so no commit to match.

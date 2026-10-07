@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -1474,6 +1475,71 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_since(value: str) -> datetime:
+    """`7d`, `12h`, `30m`, or an ISO date/time (UTC when no offset is given)."""
+    match = re.fullmatch(r"(\d+)([dhm])", value)
+    if match:
+        amount, unit = int(match[1]), match[2]
+        delta = {"d": timedelta(days=amount), "h": timedelta(hours=amount), "m": timedelta(minutes=amount)}[unit]
+        return datetime.now(timezone.utc) - delta
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected 7d / 12h / 30m or an ISO date, got {value!r}")
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def cmd_log(args: argparse.Namespace) -> int:
+    """Every pull and every ops step, oldest first, in one timeline.
+
+    `status` answers "what does the pipeline look like now"; this answers "what
+    has it been doing". Both manifests hold the durable record -- the journal
+    only has what ran under systemd, and an ops run started by hand printed to
+    a terminal that is long gone.
+    """
+    params = {
+        "since": args.since,
+        "city": args.city,
+        "failed": args.failed,
+    }
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT * FROM (
+                SELECT started_at, 'pull' AS kind, source_id,
+                       mode || ' ' || dataset AS what, status, duration_seconds,
+                       format('fetched %%s, rejected %%s, upserted %%s',
+                              records_fetched, records_rejected, records_upserted) AS detail,
+                       error
+                FROM etl.pull_run
+                UNION ALL
+                SELECT started_at, 'ops', source_id, task, status, duration_seconds,
+                       reason, error
+                FROM etl.ops_run
+            ) runs
+            WHERE (%(since)s::timestamptz IS NULL OR started_at >= %(since)s)
+              AND (%(city)s::text IS NULL OR source_id = %(city)s)
+              AND (NOT %(failed)s OR status IN ('failed', 'blocked', 'running'))
+            ORDER BY started_at
+            """,
+            params,
+        )
+        rows = cur.fetchall()
+
+    for row in rows:
+        duration = "" if row["duration_seconds"] is None else f"{row['duration_seconds']:.0f}s"
+        print(
+            f"{row['started_at'].astimezone(timezone.utc):%Y-%m-%d %H:%M:%S}Z  "
+            f"{row['kind']:<4}  {row['source_id'] or '-':<6}  {row['what']:<24}  "
+            f"{row['status']:<11}  {duration:>6}  {row['detail'] or ''}"
+        )
+        if row["error"]:
+            for line in row["error"].rstrip().splitlines():
+                print(f"    {line}")
+    print(f"-- {len(rows)} run(s)", file=sys.stderr)
+    return 0
+
+
 def _require_enabled(config: SourceConfig) -> None:
     if not config.enabled:
         raise SystemExit(
@@ -1642,6 +1708,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="registry, recent pulls, data quality")
     status.set_defaults(func=cmd_status)
+
+    log_cmd = sub.add_parser("log", help="every pull and ops step, oldest first")
+    log_cmd.add_argument(
+        "--since", type=_parse_since, help="only runs started since 7d / 12h / 30m or an ISO date"
+    )
+    log_cmd.add_argument("--city", help="only this source_id")
+    log_cmd.add_argument(
+        "--failed", action="store_true", help="only failed, blocked or still-running runs"
+    )
+    log_cmd.set_defaults(func=cmd_log)
 
     return parser
 
