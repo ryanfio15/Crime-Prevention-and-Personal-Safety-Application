@@ -1,0 +1,22 @@
+# Monthly restore check (deploy/lib/backup.sh verify): restores the newest prod
+# dump into a scratch database inside safety_db, compares its migration count
+# with the dump's .meta sidecar, checks silver and gold are non-empty, and drops
+# the scratch database. A backup that has never been restored is a hope, not a
+# backup.
+
+[Unit]
+Description=Safety backup restore check
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/lib/safety-deploy/backup.sh verify
+# CLI priority only; the restore runs in the postgres backend.
+Nice=10
+IOSchedulingClass=idle
+ProtectSystem=full
+PrivateTmp=true
+NoNewPrivileges=true
+TimeoutStartSec=4h

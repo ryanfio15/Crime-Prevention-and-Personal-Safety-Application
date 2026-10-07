@@ -1,0 +1,23 @@
+# Nightly logical backup of both instance databases (deploy/lib/backup.sh dump):
+# pg_dump -Fc of `safety` (prod) and `safety_dev` into /var/backups/safety, each
+# archive checked with pg_restore -l, with a .meta sidecar and per-DB retention.
+# Installed by `sudo deploy/install-deployer.sh --units`; started by
+# safety-backup.timer, or by hand with `sudo systemctl start safety-backup`.
+
+[Unit]
+Description=Safety database backup (pg_dump of prod and dev)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/lib/safety-deploy/backup.sh dump
+# These only lower the priority of the docker CLI that streams the archive: the
+# dump itself runs inside the postgres backend at normal priority.
+Nice=10
+IOSchedulingClass=idle
+ProtectSystem=full
+PrivateTmp=true
+NoNewPrivileges=true
+TimeoutStartSec=3h

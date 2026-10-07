@@ -347,7 +347,52 @@ run `census` per city. The population half is decennial.
 
 **Backups.** The database volume is the only state that cannot be redeployed.
 The data can be rebuilt from the cities' public sources, but that takes hours
-with six cities and loses the record of past pulls.
+with six cities and loses the record of past pulls, so both databases are
+dumped nightly.
+
+- *What runs.* `safety-backup.timer` (02:15 UTC, up to 15 min random delay)
+  starts `safety-backup.service`, which runs `deploy/lib/backup.sh dump` as root
+  from `/usr/local/lib/safety-deploy/`: `pg_dump -Fc` of `safety` (prod) and
+  `safety_dev` through `docker exec safety_db` as the bootstrap superuser over
+  the container's local socket, `pg_restore -l` on each archive, then a `.meta`
+  sidecar recording the dump's `schema_migration` count.
+  `safety-backup-verify.timer` (the 1st of each month, 03:15 UTC) restores the
+  newest prod dump into a scratch database `safety_restore_check`, compares the
+  migration count with the sidecar, checks `silver.incident` and
+  `gold.city_snapshot` are non-empty, and drops it. Both are installed by
+  `sudo deploy/install-deployer.sh --units` and enabled with
+  `sudo systemctl enable --now safety-backup.timer safety-backup-verify.timer`.
+- *Where.* `/var/backups/safety/<db>-<UTC timestamp>.dump` and `.dump.meta`,
+  root 0700/0600. Same disk as the database: this covers a bad migration, a
+  mistaken `DELETE` or corruption, not losing the disk. There is no off-host
+  copy yet.
+- *Retention and the disk guard.* 7 days of prod dumps, 2 of dev, pruned only
+  after a successful dump of that database, so failures never delete the last
+  good copy. A dump refuses to start unless twice the previous dump of that
+  database plus 15 GB (`SAFETY_BACKUP_MIN_FREE_GB`) is free; the restore check
+  wants six times the archive plus 15 GB free on `/`, because it lands inside
+  the cluster volume. Both failures are a non-zero exit and an error in
+  `journalctl -u safety-backup` / `-u safety-backup-verify`.
+- *Restoring.* Restore as the superuser into a fresh database, then point the
+  instance at it or rename it into place with the API stopped:
+  ```bash
+  sudo docker exec safety_db createdb -U safety safety_restored
+  sudo docker exec -i safety_db pg_restore -U safety -d safety_restored --exit-on-error \
+      < /var/backups/safety/safety-<timestamp>.dump
+  ```
+  Once the instances use their own roles ("Database roles"), make sure the
+  instance's role (`safety_prod`/`safety_dev`) exists before restoring, so the
+  dump's `OWNER TO` statements land on it; a dump taken before that change is
+  owned by `safety` throughout, so run `deploy/db/transfer-ownership.sql` on the
+  restored database afterwards. `pg_restore --no-owner` instead leaves every
+  object owned by whoever ran the restore.
+- *Dump window.* `pg_dump` holds ACCESS SHARE on every table for its whole run.
+  A deploy whose migration needs ACCESS EXCLUSIVE during that window fails at
+  `lock_timeout=30s` (`deploy/lib/install.sh`) before switching: the live site
+  is untouched and a later autodeploy tick retries it. ETL `DELETE`/`INSERT`
+  is unaffected. `Nice=`/`IOSchedulingClass=` on the units only lower the
+  priority of the `docker` CLI; the dump runs in the postgres backend at normal
+  priority.
 
 ---
 
