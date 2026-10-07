@@ -11,8 +11,10 @@ Run:  python -m uvicorn safety.api.main:app --reload
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
+import threading
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
@@ -102,11 +104,13 @@ _BUSY = {"detail": "The service is busy; retry shortly."}
 
 @app.exception_handler(PoolTimeout)
 @app.exception_handler(QueryCanceled)
+@app.exception_handler(concurrent.futures.TimeoutError)
 async def _busy(request: Request, exc: Exception) -> JSONResponse:
     """Saturation and runaway queries are a "come back shortly", not a 500.
 
     PoolTimeout: no connection freed up within api_pool_timeout_seconds.
-    QueryCanceled: statement_timeout cancelled a query. Both are transient from
+    QueryCanceled: statement_timeout cancelled a query. TimeoutError: a request
+    waiting on another's identical cache miss gave up (cached()). All are transient from
     the client's side, so they get 503 with Retry-After; the smoke check treats a
     503 from /health as a failure, which is right.
     """
@@ -158,28 +162,42 @@ def _refresh_stamp(conn, source_id: str | None = None) -> str:
     return str(version.get("last_refreshed_at"))
 
 
-def cached(conn, key: tuple, producer, source_id: str | None = None) -> str:
-    stamp = _refresh_stamp(conn, source_id)
-    hit = _cache.get(key)
-    if hit is not None and hit[0] == stamp:
-        _cache.move_to_end(key)
-        _cache_stats["hits"] += 1
-        return hit[1]
+# Thread safety. The endpoints are plain `def`s, so Starlette runs them on its
+# threadpool and several can be inside cached() at once. Every read or write of
+# _cache, _cache_stats and _inflight happens under _cache_lock; the producer --
+# the database query -- runs outside it, so one slow layer never blocks hits on
+# the others.
+#
+# Single flight. Without it, N concurrent misses for the same layer (a refresh
+# landing while the map is busy, or one user's burst) ran the same multi-second
+# query N times. Now the first miss for a (key, stamp) is the leader and builds
+# it; the rest wait on its Future and share the result -- or its exception.
+#
+# Known trade-off: a follower waits while holding its own pooled connection (the
+# Conn dependency is acquired before the endpoint runs). A burst of more than
+# eight identical misses can therefore exhaust the pool for up to the leader's
+# runtime, and the excess gets the 503 from api_pool_timeout_seconds. That is
+# still strictly better than each of them running the same query.
+_cache_lock = threading.Lock()
+_inflight: dict[tuple, concurrent.futures.Future] = {}
 
-    _cache_stats["misses"] += 1
-    value = producer()
 
-    if hit is not None:
-        # A stale entry for this key: drop it before accounting for the new one,
-        # or `bytes` drifts upward by the size of every layer ever refreshed.
-        _cache_stats["bytes"] -= len(hit[1])
-        del _cache[key]
+def _store(key: tuple, stamp: str, value: str) -> None:
+    """Admit `value` under `key`. The caller holds _cache_lock (not re-entrant:
+    this must never take it itself)."""
+    # Re-read under the lock: the entry seen before the producer ran may have
+    # been replaced or evicted since. A stale entry for this key is dropped
+    # before accounting for the new one, or `bytes` drifts upward by the size of
+    # every layer ever refreshed.
+    stale = _cache.pop(key, None)
+    if stale is not None:
+        _cache_stats["bytes"] -= len(stale[1])
 
     # One entry alone can exceed the budget (a whole-city res-10 layer on a large
     # city). Serve it, but do not try to store it -- admitting it would evict
     # everything else and still not fit.
     if len(value) > settings.cache_max_bytes:
-        return value
+        return
 
     while _cache and (
         len(_cache) >= settings.cache_max_entries
@@ -191,6 +209,43 @@ def cached(conn, key: tuple, producer, source_id: str | None = None) -> str:
 
     _cache[key] = (stamp, value)
     _cache_stats["bytes"] += len(value)
+
+
+def cached(conn, key: tuple, producer, source_id: str | None = None) -> str:
+    stamp = _refresh_stamp(conn, source_id)
+    flight_key = (key, stamp)
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit is not None and hit[0] == stamp:
+            _cache.move_to_end(key)
+            _cache_stats["hits"] += 1
+            return hit[1]
+        pending = _inflight.get(flight_key)
+        leader = pending is None
+        if leader:
+            pending = _inflight[flight_key] = concurrent.futures.Future()
+
+    if not leader:
+        # Another request is already building this exact layer at this stamp;
+        # wait for it instead of building it again. Bounded a little past the
+        # leader's own statement_timeout; a TimeoutError here is answered 503.
+        with _cache_lock:
+            _cache_stats["hits"] += 1
+        return pending.result(timeout=settings.api_statement_timeout_ms / 1000 + 5)
+
+    try:
+        value = producer()
+    except BaseException as exc:
+        with _cache_lock:
+            _inflight.pop(flight_key, None)
+        pending.set_exception(exc)
+        raise
+
+    with _cache_lock:
+        _cache_stats["misses"] += 1
+        _store(key, stamp, value)
+        _inflight.pop(flight_key, None)
+    pending.set_result(value)
     return value
 
 
@@ -216,6 +271,11 @@ def _deployed_commit() -> str | None:
 DEPLOYED_COMMIT = _deployed_commit()
 
 
+def _cache_stats_snapshot() -> dict[str, int]:
+    with _cache_lock:
+        return dict(_cache_stats)
+
+
 @app.get(f"{API}/health", tags=["meta"])
 def health(conn: Conn) -> dict[str, Any]:
     version = repo.serving_version(conn)
@@ -226,7 +286,7 @@ def health(conn: Conn) -> dict[str, Any]:
         "data_as_of": version.get("data_as_of"),
         "last_refreshed_at": version.get("last_refreshed_at"),
         "incidents": version.get("incident_count"),
-        "cache": dict(_cache_stats),
+        "cache": _cache_stats_snapshot(),
     }
 
 
