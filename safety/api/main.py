@@ -274,6 +274,18 @@ def cached(
     return value
 
 
+def cached_json(conn, key: tuple, producer, source_id: str | None):
+    """Small JSON-able results through the same stamped cache; plain types only.
+
+    The round trip is lossless for the str/int/float rows it is used for.
+    Never pass datetimes through it: FastAPI renders those with a trailing Z,
+    json.dumps cannot render them at all.
+    """
+    return json.loads(
+        cached(conn, key, lambda: json.dumps(producer()).encode("utf-8"), source_id=source_id)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Health and metadata
 # ---------------------------------------------------------------------------
@@ -353,7 +365,16 @@ def categories(conn: Conn, city: str = "phl") -> dict[str, Any]:
 
 @app.get(f"{API}/quality", tags=["meta"])
 def quality(conn: Conn, city: str = "phl") -> dict[str, Any]:
-    return repo.data_quality(conn, city)
+    # The etl.* findings stay live; the two silver GROUP BYs are cached by the
+    # city's refresh stamp, so they are exactly as fresh as the map. Key order is
+    # unchanged: validation_issues, recent_pulls, coordinate_provenance,
+    # offense_mapping_confidence.
+    return {
+        **repo.data_quality(conn, city),
+        **cached_json(
+            conn, ("silver_mix", city), lambda: repo.silver_provenance_mix(conn, city), city
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -968,7 +989,8 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
     record = repo.get_city(conn, city)
     if record is None:
         raise HTTPException(404, f"no serving data for city '{city}'")
-    basis = repo.occurrence_basis(conn, city)
+    # A silver GROUP BY: cached by refresh stamp, like the /quality mixes.
+    basis = cached_json(conn, ("basis", city), lambda: repo.occurrence_basis(conn, city), city)
     return {
         "what_this_shows": (
             "Counts of crime incidents reported to and recorded by police, aggregated "

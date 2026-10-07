@@ -313,9 +313,12 @@ def categories(conn: psycopg.Connection, source_id: str) -> list[dict[str, Any]]
 # sentence.
 #
 # This reads silver, which the two rules at the top of this module otherwise
-# rule out. The exception is the same one `data_quality` already takes: these
-# are provenance questions asked once per session by a meta endpoint, not the
-# map read path, and there is no rollup that would answer them.
+# rule out. The exception is the same one `silver_provenance_mix` takes: these
+# are provenance questions asked by meta endpoints, not the map read path, and
+# there is no rollup that would answer them. Both are served through the API's
+# refresh-stamped cache (safety/api/main.py `cached_json`), so silver is scanned
+# once per city per ETL refresh rather than once per request: silver only
+# changes through an ETL run, and every successful one ends by bumping the stamp.
 _BASIS_MIX_SQL = """
 SELECT occurred_basis, count(*)::int AS n
 FROM silver.incident
@@ -366,9 +369,9 @@ def data_quality(conn: psycopg.Connection, source_id: str) -> dict[str, Any]:
         )
         issues = cur.fetchall()
 
-        # No bronze_uri: the host's filesystem layout is not public information.
-        # The ETL's replay paths (safety/etl/run.py) read it from etl.pull_run
-        # directly, never from here.
+        # The bronze snapshot path is deliberately not selected: the host's
+        # filesystem layout is not public information. The ETL's replay paths
+        # (safety/etl/run.py) read it from etl.pull_run directly, never from here.
         cur.execute(
             """
             SELECT pull_id, mode, status, records_fetched, records_rejected,
@@ -382,6 +385,18 @@ def data_quality(conn: psycopg.Connection, source_id: str) -> dict[str, Any]:
         )
         pulls = cur.fetchall()
 
+    # Live, not cached: both reads are on small, indexed etl tables, and a failed
+    # pull adds a pull_run row without a gold refresh to bump the stamp.
+    return {"validation_issues": issues, "recent_pulls": pulls}
+
+
+def silver_provenance_mix(conn: psycopg.Connection, source_id: str) -> dict[str, Any]:
+    """How this city's coordinates and offence mappings were obtained (S8.5).
+
+    Two GROUP BYs over the city's silver rows: cached by refresh stamp in the
+    API (see the note above occurrence_basis), never run per request.
+    """
+    with conn.cursor() as cur:
         cur.execute(
             """
             SELECT coordinate_source, count(*)::int AS n
@@ -402,12 +417,7 @@ def data_quality(conn: psycopg.Connection, source_id: str) -> dict[str, Any]:
         )
         mappings = cur.fetchall()
 
-    return {
-        "validation_issues": issues,
-        "recent_pulls": pulls,
-        "coordinate_provenance": coordinates,
-        "offense_mapping_confidence": mappings,
-    }
+    return {"coordinate_provenance": coordinates, "offense_mapping_confidence": mappings}
 
 
 # ---------------------------------------------------------------------------
