@@ -1,5 +1,5 @@
 /* Time windows are per city (gold.city_window, migration 018): every city has
-   30 days and 3/6/9 months, then cumulative years back to its own oldest stored
+   3, 6 and 9 months, then cumulative years back to its own oldest stored
    incident. The list arrives with the city record (/api/v1/cities/{id}); these
    helpers decide what the window control offers and what it says.
 
@@ -10,6 +10,8 @@
   /* The previous release's names and the windows they now are. Mirrors
      safety.api.repository.LEGACY_WINDOWS. */
   const LEGACY_WINDOWS = { last_90d: "last_3m", last_12m: "last_1y", last_24m: "last_2y" };
+  /* Forward only: a saved link to the retired 30-day window opens on 3 months. */
+  const ALIASES = { ...LEGACY_WINDOWS, last_30d: "last_3m" };
   const DEFAULT_WINDOW = "last_1y";
 
   /** The served window an id means, accepting the legacy names both ways. */
@@ -17,7 +19,7 @@
     if (!id || !windows) return null;
     const byId = new Map(windows.map((w) => [w.id, w]));
     if (byId.has(id)) return byId.get(id);
-    if (byId.has(LEGACY_WINDOWS[id])) return byId.get(LEGACY_WINDOWS[id]);
+    if (byId.has(ALIASES[id])) return byId.get(ALIASES[id]);
     const backward = Object.keys(LEGACY_WINDOWS).find((k) => LEGACY_WINDOWS[k] === id);
     return backward && byId.has(backward) ? byId.get(backward) : null;
   }

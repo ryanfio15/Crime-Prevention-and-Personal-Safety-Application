@@ -22,7 +22,7 @@ def test_leap_day_anchor():
     # _shift_years maps 29 Feb to 28 Feb, then the window starts the day after.
     assert w["last_1y"].start == date(2023, 3, 1)
     assert w["last_2y"].start == date(2022, 3, 1)
-    assert w["last_30d"].start == anchor - timedelta(days=29)
+    assert "last_30d" not in w
     assert w["last_3m"].start == date(2023, 11, 30)
 
 
@@ -43,9 +43,7 @@ def test_one_and_two_years_match_the_old_12_and_24_months():
 
 
 def test_no_floor_gives_the_two_year_list():
-    assert _names(date(2025, 6, 30)) == [
-        "last_30d", "last_3m", "last_6m", "last_9m", "last_1y", "last_2y"
-    ]
+    assert _names(date(2025, 6, 30)) == ["last_3m", "last_6m", "last_9m", "last_1y", "last_2y"]
 
 
 def test_every_window_ends_on_the_anchor_and_they_nest():
@@ -59,7 +57,7 @@ def test_every_window_ends_on_the_anchor_and_they_nest():
 def test_years_run_back_to_the_floor():
     anchor = date(2026, 10, 7)
     names = _names(anchor, date(2001, 1, 1))
-    assert names[:6] == ["last_30d", "last_3m", "last_6m", "last_9m", "last_1y", "last_2y"]
+    assert names[:5] == ["last_3m", "last_6m", "last_9m", "last_1y", "last_2y"]
     assert names[-1] == "last_26y"
     oldest = gold.resolve_windows(anchor, date(2001, 1, 1))[-1]
     assert oldest.partial and oldest.data_start == date(2001, 1, 1)
@@ -81,17 +79,18 @@ def test_a_real_partial_year_is_offered():
 
 
 def test_short_history_stops_early_and_marks_partial():
-    w = gold.resolve_windows(date(2026, 10, 7), date(2026, 8, 20))
-    assert [x.name for x in w] == ["last_30d", "last_3m"]
-    assert w[1].partial and w[1].data_start == date(2026, 8, 20)
-    # Less than thirty days of data: only the 30-day window.
-    assert _names(date(2026, 10, 7), date(2026, 9, 20)) == ["last_30d"]
+    w = gold.resolve_windows(date(2026, 10, 7), date(2026, 5, 20))
+    assert [x.name for x in w] == ["last_3m", "last_6m"]
+    assert w[1].partial and w[1].data_start == date(2026, 5, 20)
+    # Less than three months of data: the 3-month window alone, partial.
+    w = gold.resolve_windows(date(2026, 10, 7), date(2026, 9, 20))
+    assert [x.name for x in w] == ["last_3m"] and w[0].partial
 
 
 def test_window_names_match_the_pattern():
     for w in gold.resolve_windows(date(2026, 10, 7), date(1930, 1, 1)):
         assert gold.WINDOW_PATTERN.match(w.name), w.name
-    assert len(gold.resolve_windows(date(2026, 10, 7), date(1900, 1, 1))) == 4 + gold.MAX_WINDOW_YEARS
+    assert len(gold.resolve_windows(date(2026, 10, 7), date(1900, 1, 1))) == 3 + gold.MAX_WINDOW_YEARS
 
 
 def test_months_before():
@@ -147,7 +146,7 @@ def _check_buckets(anchor, floor):
     windows, rows = _bucket_dates(anchor, floor)
     for w in windows:
         limit = gold.window_bucket_limit(w.name)
-        picked = {d for d, bucket, in_30d in rows if (in_30d if limit is None else bucket < limit)}
+        picked = {d for d, bucket in rows if bucket < limit}
         expected = {w.start + timedelta(days=i) for i in range((w.end - w.start).days + 1)}
         assert picked == expected, (anchor, w.name)
 
@@ -172,7 +171,6 @@ def test_every_day_of_a_leap_year_as_anchor():
 
 
 def test_bucket_limits():
-    assert gold.window_bucket_limit("last_30d") is None
     assert gold.window_bucket_limit("last_3m") == 3
     assert gold.window_bucket_limit("last_9m") == 9
     assert gold.window_bucket_limit("last_1y") == 12

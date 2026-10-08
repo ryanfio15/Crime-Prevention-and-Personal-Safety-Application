@@ -416,7 +416,7 @@ def _resolve_window(conn, city: str | None, window: str) -> dict[str, Any]:
     if repo.canonical_window(window) is None:
         raise HTTPException(
             400,
-            "window must be last_30d, last_3m, last_6m, last_9m or last_<N>y "
+            "window must be last_3m, last_6m, last_9m or last_<N>y "
             "(see /api/v1/cities for each city's list)",
         )
     windows = city_windows(conn, city) if city else []

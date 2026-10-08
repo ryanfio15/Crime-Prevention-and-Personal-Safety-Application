@@ -24,19 +24,21 @@ const w = (id, span, extra = {}) => ({
 });
 
 const CHICAGO = [
-  w("last_30d", 30), w("last_3m", 92), w("last_6m", 184), w("last_9m", 276),
+  w("last_3m", 92), w("last_6m", 184), w("last_9m", 276),
   w("last_1y", 365), w("last_2y", 730), w("last_10y", 3652), w("last_20y", 7305),
 ];
 const AUSTIN = [
-  w("last_30d", 30), w("last_3m", 92), w("last_6m", 184), w("last_9m", 276),
+  w("last_3m", 92), w("last_6m", 184), w("last_9m", 276),
   w("last_1y", 365), w("last_2y", 730), w("last_5y", 1826),
 ];
-const LEGACY = [w("last_30d", 30), w("last_90d", 90), w("last_12m", 365), w("last_24m", 730)];
+const LEGACY = [w("last_90d", 90), w("last_12m", 365), w("last_24m", 730)];
 
 test("legacy names resolve both ways", () => {
   assert.equal(findWindow(CHICAGO, "last_12m").id, "last_1y");
   assert.equal(findWindow(LEGACY, "last_1y").id, "last_12m");
   assert.equal(findWindow(CHICAGO, "last_99y"), null);
+  assert.equal(findWindow(CHICAGO, "last_30d").id, "last_3m");
+  assert.equal(findWindow(LEGACY, "last_3m").id, "last_90d");
   assert.equal(findWindow(null, "last_1y"), null);
 });
 
@@ -51,7 +53,7 @@ test("a longer window falls back to the new city's longest shorter one", () => {
 
 test("no span known falls back to the default, then the first", () => {
   assert.equal(pickWindow(AUSTIN, "last_20y", undefined, "last_1y").id, "last_1y");
-  assert.equal(pickWindow([w("last_30d", 30)], "last_20y", undefined, "last_1y").id, "last_30d");
+  assert.equal(pickWindow([w("last_3m", 92)], "last_20y", undefined, "last_1y").id, "last_3m");
   assert.equal(pickWindow([], "last_1y", 365, "last_1y"), null);
 });
 

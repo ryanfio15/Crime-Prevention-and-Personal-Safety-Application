@@ -20,8 +20,10 @@ Layout mirrors the layered architecture in the design doc (S5):
 # window now honours a per-source floor. Rows written before this carry
 # phase1.0.0 and keep it until they are reprocessed, which is the point of
 # recording it rather than assuming it.
-# phase2.1.0: gold windows are per city (30 days, 3/6/9 months, then years back
-# to the oldest stored incident) and the old fixed four are renamed. Bumping it
-# is also what makes the post-deploy `safety.ops` run rebuild every city's gold
-# under the new names (ops._gold_reason).
-PIPELINE_VERSION = "phase2.1.0"
+# phase2.1.0: gold windows are per city (3/6/9 months, then years back to the
+# oldest stored incident) and the old fixed four are renamed. Bumping it is also
+# what makes the post-deploy `safety.ops` run rebuild every city's gold under
+# the new names (ops._gold_reason).
+# phase2.2.0: the 30-day window is retired, and the oldest window follows how
+# far back the pulls reached rather than the oldest (possibly cold-case) date.
+PIPELINE_VERSION = "phase2.2.0"

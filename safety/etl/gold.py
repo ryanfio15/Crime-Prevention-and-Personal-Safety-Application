@@ -34,11 +34,12 @@ from safety.h3grid import (
 log = logging.getLogger(__name__)
 
 # S5/S9.3: the windows the product needs, precomputed. Not a fixed list any more:
-# every city gets the four short windows, then cumulative years back to its
+# every city gets the three short windows, then cumulative years back to its
 # oldest stored incident (resolve_windows), so a city with twenty years of
-# history offers twenty more choices than one with two.
-SHORT_WINDOWS = ("last_30d", "last_3m", "last_6m", "last_9m")
-WINDOW_PATTERN = re.compile(r"^last_(30d|[369]m|[1-9][0-9]?y)$")
+# history offers twenty more choices than one with two. Three months is the
+# shortest by the owner's choice (2026-10-08); 30 days was dropped.
+SHORT_WINDOWS = ("last_3m", "last_6m", "last_9m")
+WINDOW_PATTERN = re.compile(r"^last_([369]m|[1-9][0-9]?y)$")
 MAX_WINDOW_YEARS = 99
 
 # The names the previous release wrote, and the window each is now a copy of.
@@ -187,7 +188,6 @@ class Window:
 
 def _window_candidates(anchor: date):
     """Every window name in order, with its start date, up to MAX_WINDOW_YEARS."""
-    yield "last_30d", anchor - timedelta(days=29)
     for months in (3, 6, 9):
         yield f"last_{months}m", _shift_months(anchor, months) + timedelta(days=1)
     for years in range(1, MAX_WINDOW_YEARS + 1):
@@ -195,7 +195,7 @@ def _window_candidates(anchor: date):
 
 
 def resolve_windows(anchor: date, history_floor: date | None = None) -> list[Window]:
-    """The windows a city is built for: 30 days, 3/6/9 months, then years.
+    """The windows a city is built for: 3, 6 and 9 months, then years.
 
     Windows are anchored to the newest reported date, not to today. Anchoring to
     `now` would silently present a source's publication lag as an absence of
@@ -489,8 +489,7 @@ def _h3_column(res: int) -> str:
 # incident per window. Instead each layer reads silver once into a temp table
 # keyed by *bucket*: one bucket per month for the first year back from the
 # anchor, then one per year. Every window is a whole number of buckets
-# (window_bucket_limit), so its counts are a sum over buckets < limit, and the
-# 30-day window, which is not month-aligned, rides on its own flag.
+# (window_bucket_limit), so its counts are a sum over buckets < limit.
 #
 # Month m back from the anchor is (_shift_months(anchor, m + 1),
 # _shift_months(anchor, m)], so "the last K months" -- which starts the day after
@@ -503,10 +502,8 @@ def _h3_column(res: int) -> str:
 PREAGGREGATE = True
 
 
-def window_months(name: str) -> int | None:
-    """K for last_Km, 12N for last_Ny, None for last_30d."""
-    if name == "last_30d":
-        return None
+def window_months(name: str) -> int:
+    """K for last_Km, 12N for last_Ny."""
     count = int(name[5:-1])
     return count * 12 if name.endswith("y") else count
 
@@ -515,23 +512,19 @@ def _bucket(month_index: int) -> int:
     return month_index if month_index < 12 else 11 + month_index // 12
 
 
-def window_bucket_limit(name: str) -> int | None:
-    """The window is buckets [0, limit); None for last_30d (its own flag)."""
+def window_bucket_limit(name: str) -> int:
+    """The window is buckets [0, limit)."""
     months = window_months(name)
-    if months is None:
-        return None
     return months if months <= 12 else 11 + months // 12
 
 
 def _in_window(window: Window) -> str:
-    """SQL predicate over an aggregate's bucket / in_30d columns."""
-    limit = window_bucket_limit(window.name)
-    return "in_30d" if limit is None else f"bucket < {int(limit)}"
+    """SQL predicate over an aggregate's bucket column."""
+    return f"bucket < {int(window_bucket_limit(window.name))}"
 
 
-def period_rows(anchor: date, oldest: date) -> list[tuple[date, int, bool]]:
-    """(date, bucket, in the last 30 days) for every date from `oldest` to `anchor`."""
-    thirty = anchor - timedelta(days=29)
+def period_rows(anchor: date, oldest: date) -> list[tuple[date, int]]:
+    """(date, bucket) for every date from `oldest` to `anchor`."""
     rows = []
     month = 0
     lower = _shift_months(anchor, 1)
@@ -540,13 +533,13 @@ def period_rows(anchor: date, oldest: date) -> list[tuple[date, int, bool]]:
         while day <= lower:
             month += 1
             lower = _shift_months(anchor, month + 1)
-        rows.append((day, _bucket(month), day >= thirty))
+        rows.append((day, _bucket(month)))
         day -= timedelta(days=1)
     return rows
 
 
 def _create_period_table(cur: psycopg.Cursor, windows: list[Window]) -> None:
-    """_period(d, bucket, in_30d) for every date the windows cover.
+    """_period(d, bucket) for every date the windows cover.
 
     About 9,500 rows for 26 years. Dates outside every window have no row, so
     the inner join to it drops them exactly as BETWEEN start AND end did.
@@ -554,10 +547,10 @@ def _create_period_table(cur: psycopg.Cursor, windows: list[Window]) -> None:
     rows = period_rows(windows[0].end, min(w.start for w in windows))
     cur.execute("DROP TABLE IF EXISTS _period")
     cur.execute(
-        "CREATE TEMP TABLE _period (d date PRIMARY KEY, bucket smallint NOT NULL, "
-        "in_30d boolean NOT NULL) ON COMMIT DROP"
+        "CREATE TEMP TABLE _period (d date PRIMARY KEY, bucket smallint NOT NULL) "
+        "ON COMMIT DROP"
     )
-    with cur.copy("COPY _period (d, bucket, in_30d) FROM STDIN") as copy:
+    with cur.copy("COPY _period (d, bucket) FROM STDIN") as copy:
         for row in rows:
             copy.write_row(row)
     cur.execute("ANALYZE _period")
@@ -572,10 +565,7 @@ def _res_bucket_cap(windows: list[Window], resolutions, builds) -> str:
     """SQL limiting each resolution to the buckets its in-scope windows read."""
     cases = []
     for res in resolutions:
-        limits = [
-            # last_30d can reach into month 1 when month 0 is February-short.
-            window_bucket_limit(w.name) or 2 for w in windows if builds(res, w.name)
-        ]
+        limits = [window_bucket_limit(w.name) for w in windows if builds(res, w.name)]
         cases.append(f"WHEN {int(res)} THEN {max(limits) if limits else 0}")
     return f"x.bucket < CASE res.h3_res {' '.join(cases)} END"
 
@@ -588,14 +578,14 @@ def _build_activity_aggregate(
         f"""
         CREATE TEMP TABLE _activity_agg ON COMMIT DROP AS
         SELECT
-            res.h3_res, res.h3_index, x.bucket, x.in_30d,
+            res.h3_res, res.h3_index, x.bucket,
             count(*)                                                    AS c_all,
             count(*) FILTER (WHERE x.product_category = 'violent')         AS c_violent,
             count(*) FILTER (WHERE x.product_category = 'property')        AS c_property,
             count(*) FILTER (WHERE x.product_category = 'quality_of_life') AS c_quality_of_life,
             count(*) FILTER (WHERE x.product_category = 'other')           AS c_other
         FROM (
-            SELECT i.h3_r8, i.h3_r9, i.h3_r10, i.product_category, p.bucket, p.in_30d
+            SELECT i.h3_r8, i.h3_r9, i.h3_r10, i.product_category, p.bucket
             FROM silver.incident i
             JOIN _period p ON p.d = i.occurred_local_date
             WHERE i.source_id = %s
@@ -603,7 +593,7 @@ def _build_activity_aggregate(
         CROSS JOIN LATERAL (VALUES {_res_rows(RESOLUTIONS)}) AS res(h3_res, h3_index)
         WHERE res.h3_index IS NOT NULL
           AND {_res_bucket_cap(windows, RESOLUTIONS, activity_builds)}
-        GROUP BY 1, 2, 3, 4
+        GROUP BY 1, 2, 3
         """,
         (source_id,),
     )
@@ -620,7 +610,7 @@ def _build_safety_aggregate(
         f"""
         CREATE TEMP TABLE _safety_agg ON COMMIT DROP AS
         SELECT
-            res.h3_res, res.h3_index, x.bucket, x.in_30d,
+            res.h3_res, res.h3_index, x.bucket,
             count(*) FILTER (WHERE x.product_category =  'violent') AS n_violent,
             count(*) FILTER (WHERE x.product_category <> 'violent') AS n_non_violent,
             COALESCE(sum(x.weight) FILTER (WHERE x.product_category =  'violent'), 0)
@@ -628,7 +618,7 @@ def _build_safety_aggregate(
             COALESCE(sum(x.weight) FILTER (WHERE x.product_category <> 'violent'), 0)
                 AS w_non_violent
         FROM (
-            SELECT i.h3_r8, i.h3_r9, i.h3_r10, i.product_category, p.bucket, p.in_30d,
+            SELECT i.h3_r8, i.h3_r9, i.h3_r10, i.product_category, p.bucket,
                    COALESCE(w.weight, 1.0) AS weight
             FROM silver.incident i
             JOIN _period p ON p.d = i.occurred_local_date
@@ -637,7 +627,7 @@ def _build_safety_aggregate(
         ) x
         CROSS JOIN LATERAL (VALUES {_res_rows(scheme.resolutions)}) AS res(h3_res, h3_index)
         WHERE res.h3_index IS NOT NULL
-        GROUP BY 1, 2, 3, 4
+        GROUP BY 1, 2, 3
         """,
         {"source_id": source_id, "scheme": scheme.version},
     )
@@ -650,13 +640,13 @@ def _build_mix_aggregate(cur: psycopg.Cursor, source_id: str, windows: list[Wind
         f"""
         CREATE TEMP TABLE _mix_agg ON COMMIT DROP AS
         SELECT
-            res.h3_res, res.h3_index, x.bucket, x.in_30d, x.raw_offense_text,
+            res.h3_res, res.h3_index, x.bucket, x.raw_offense_text,
             min(x.nibrs_code)       AS nibrs_code,
             min(x.product_category) AS product_category,
             count(*)                AS n
         FROM (
             SELECT i.h3_r8, i.h3_r9, i.h3_r10, i.raw_offense_text, i.nibrs_code,
-                   i.product_category, p.bucket, p.in_30d
+                   i.product_category, p.bucket
             FROM silver.incident i
             JOIN _period p ON p.d = i.occurred_local_date
             WHERE i.source_id = %s AND i.raw_offense_text IS NOT NULL
@@ -664,7 +654,7 @@ def _build_mix_aggregate(cur: psycopg.Cursor, source_id: str, windows: list[Wind
         CROSS JOIN LATERAL (VALUES {_res_rows(RESOLUTIONS)}) AS res(h3_res, h3_index)
         WHERE res.h3_index IS NOT NULL
           AND {_res_bucket_cap(windows, RESOLUTIONS, activity_builds)}
-        GROUP BY 1, 2, 3, 4, 5
+        GROUP BY 1, 2, 3, 4
         """,
         (source_id,),
     )

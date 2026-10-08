@@ -1818,7 +1818,7 @@ def _window_name(value: str) -> str:
     value = gold.LEGACY_WINDOWS.get(value, value)
     if not gold.WINDOW_PATTERN.match(value):
         raise argparse.ArgumentTypeError(
-            f"'{value}' is not a window: use last_30d, last_3m, last_6m, last_9m or last_<N>y"
+            f"'{value}' is not a window: use last_3m, last_6m, last_9m or last_<N>y"
         )
     return value
 
@@ -1980,7 +1980,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--window",
         default="last_1y",
         type=_window_name,
-        help="last_30d, last_3m, last_6m, last_9m or last_<N>y",
+        help="last_3m, last_6m, last_9m or last_<N>y",
     )
     compare_cmd.add_argument("--track", default="violent", choices=gold.TRACKS)
     compare_cmd.set_defaults(func=cmd_safety_compare)

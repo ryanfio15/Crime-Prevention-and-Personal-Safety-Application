@@ -421,10 +421,10 @@ def test_hourly_per_capita_scheme_skipped_without_exposure(built):
 
 
 def test_fixture_spans_the_two_year_window_list(built):
-    # 800 days of history: the four short windows, one and two years, and no
+    # 800 days of history: the three short windows, one and two years, and no
     # third year (70 days past last_2y is under PARTIAL_WINDOW_MIN_SHARE).
     assert [w.name for w in built["windows"]] == [
-        "last_30d", "last_3m", "last_6m", "last_9m", "last_1y", "last_2y"
+        "last_3m", "last_6m", "last_9m", "last_1y", "last_2y"
     ]
 
 

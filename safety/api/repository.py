@@ -19,13 +19,16 @@ import psycopg
 # Whitelists. These bound every value that reaches SQL through anything other
 # than a bound parameter.
 VALID_RESOLUTIONS = (8, 9, 10)
-# Window names are per city now (gold.city_window): 30 days, 3/6/9 months, then
+# Window names are per city now (gold.city_window): 3/6/9 months, then
 # last_<N>y back to the city's oldest stored incident. The pattern bounds what
 # can reach SQL; city_windows() says which a given city actually has.
-WINDOW_PATTERN = re.compile(r"^last_(30d|[369]m|[1-9][0-9]?y)$")
+WINDOW_PATTERN = re.compile(r"^last_([369]m|[1-9][0-9]?y)$")
 DEFAULT_WINDOW = "last_1y"
 # The previous release's names, as aliases (mirrors gold.LEGACY_WINDOWS).
 LEGACY_WINDOWS = {"last_90d": "last_3m", "last_12m": "last_1y", "last_24m": "last_2y"}
+# Requests only: a saved link to the retired 30-day window opens on the shortest
+# one there is. Not a gold copy, since no window spans the same dates.
+ALIASES = {**LEGACY_WINDOWS, "last_30d": "last_3m"}
 VALID_CATEGORIES = ("all", "violent", "property", "quality_of_life", "other")
 VALID_HOURS = tuple(range(24))
 
@@ -84,16 +87,15 @@ def category_breakdown_built(h3_res: int) -> bool:
 
 
 def window_label(name: str) -> str:
-    """'Last 30 days', 'Last 3 months', 'Last year', 'Last 7 years'."""
+    """'Last 3 months', 'Last 12 months', 'Last 7 years'."""
     legacy = {
+        "last_30d": "Last 30 days",
         "last_90d": "Last 90 days",
         "last_12m": "Last 12 months",
         "last_24m": "Last 24 months",
     }
     if name in legacy:
         return legacy[name]
-    if name == "last_30d":
-        return "Last 30 days"
     count, unit = int(name[5:-1]), name[-1]
     if unit == "m":
         return f"Last {count} months"
@@ -103,15 +105,14 @@ def window_label(name: str) -> str:
 
 def canonical_window(name: str) -> str | None:
     """The current name for a requested window, or None if it is not one."""
-    name = LEGACY_WINDOWS.get(name, name)
+    name = ALIASES.get(name, name)
     return name if WINDOW_PATTERN.match(name) else None
 
 
-# The four windows every city had before per-city windows (migration 018). A
-# city whose gold has not been rebuilt since is still served these, under these
-# names, until its next refresh writes gold.city_window.
+# The windows every city had before per-city windows (migration 018), less the
+# retired 30 days. A city whose gold has not been rebuilt since is still served
+# these, under these names, until its next refresh writes gold.city_window.
 _LEGACY_LIST = (
-    ("last_30d", 30, False, False),
     ("last_90d", 90, False, False),
     ("last_12m", 365, True, True),
     ("last_24m", 730, False, True),
@@ -121,7 +122,7 @@ _LEGACY_LIST = (
 # default list rather than any one city's.
 WINDOW_LABELS = {
     name: window_label(name)
-    for name in ("last_30d", "last_3m", "last_6m", "last_9m", "last_1y", "last_2y")
+    for name in ("last_3m", "last_6m", "last_9m", "last_1y", "last_2y")
 }
 
 CATEGORY_LABELS = {
@@ -240,13 +241,13 @@ def match_window(requested: str, windows: list[dict[str, Any]]) -> dict[str, Any
     """The served window a request means, or None.
 
     Accepts the current names and the legacy ones in either direction: a link
-    saved as last_12m finds last_1y, and while a city still holds only the
+    saved as last_12m finds last_1y (and last_30d the 3-month window), and while a city still holds only the
     legacy windows, last_1y finds last_12m.
     """
     by_id = {w["id"]: w for w in windows}
     if requested in by_id:
         return by_id[requested]
-    forward = LEGACY_WINDOWS.get(requested)
+    forward = ALIASES.get(requested)
     if forward in by_id:
         return by_id[forward]
     backward = {v: k for k, v in LEGACY_WINDOWS.items()}.get(requested)

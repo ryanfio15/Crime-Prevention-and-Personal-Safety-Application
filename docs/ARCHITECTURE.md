@@ -191,7 +191,7 @@ ingestion `run.py:360-558`, and the gold rebuild `safety/etl/gold.py:1698-1779`.
 
 ### Time windows
 
-Every city gets `last_30d`, `last_3m`, `last_6m`, `last_9m`, then `last_1y`, `last_2y`, … `last_<N>y`. The list
+Every city gets `last_3m`, `last_6m`, `last_9m`, then `last_1y`, `last_2y`, … `last_<N>y`. The list
 stops at the first window that reaches the city's oldest stored date (`gold.resolve_windows`):
 
 - **Anchor.** Windows end on the city's newest incident date, so a publication lag is not shown as a quiet period.
@@ -212,12 +212,13 @@ stops at the first window that reaches the city's oldest stored date (`gold.reso
 - **Legacy names.** Until a later contract migration, gold also writes `last_90d`, `last_12m` and `last_24m` as copies of
   `last_3m`, `last_1y` and `last_2y` (`GOLD_LEGACY_WINDOWS`), so the previous release still has a map after a
   rollback. The API accepts the old names as aliases, and a city not rebuilt since migration 018 is served its four
-  legacy windows.
+  legacy windows. The 30-day window was retired on 2026-10-08 (the owner wants 3 months as the shortest); a saved
+  `last_30d` link opens on `last_3m`.
 
 **How gold builds many windows cheaply.** Each layer reads silver once into a temp aggregate keyed by *bucket*: one
 per month for the first year back from the anchor, then one per year. Every window start falls on a bucket edge
 (`tests/test_windows.py` checks this for every day of a leap year as the anchor), so a window is a sum over
-`bucket < limit`; `last_30d` uses its own flag. The original per-window SQL is kept behind `gold.PREAGGREGATE = False`,
+`bucket < limit`. The original per-window SQL is kept behind `gold.PREAGGREGATE = False`,
 and a CI database test checks that both give the same layers. `refresh_all` reports per-phase timings.
 
 **History depth.** The backfill loads 24 months. Older years come from the history load

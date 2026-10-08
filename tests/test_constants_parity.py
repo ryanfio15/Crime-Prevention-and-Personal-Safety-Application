@@ -47,7 +47,6 @@ def test_default_and_hourly_window_are_built_for_a_two_year_city():
 @pytest.mark.parametrize(
     ("name", "label"),
     [
-        ("last_30d", "Last 30 days"),
         ("last_3m", "Last 3 months"),
         ("last_1y", "Last 12 months"),
         ("last_2y", "Last 2 years"),
@@ -59,11 +58,14 @@ def test_window_labels(name, label):
 
 
 def test_aliases_resolve_both_ways():
-    new = [{"id": n} for n in ("last_30d", "last_3m", "last_1y", "last_2y")]
-    old = [{"id": n} for n in ("last_30d", "last_90d", "last_12m", "last_24m")]
+    new = [{"id": n} for n in ("last_3m", "last_1y", "last_2y")]
+    old = [{"id": n} for n in ("last_90d", "last_12m", "last_24m")]
     assert repo.match_window("last_12m", new)["id"] == "last_1y"
     assert repo.match_window("last_1y", old)["id"] == "last_12m"
     assert repo.match_window("last_5y", new) is None
+    # The retired 30-day window: old links open on 3 months, in either list.
+    assert repo.match_window("last_30d", new)["id"] == "last_3m"
+    assert repo.canonical_window("last_30d") == "last_3m"
 
 
 @pytest.mark.parametrize("res", [8, 9, 10])

@@ -21,7 +21,6 @@ def _window(name, hourly=False, res10=False):
 
 
 WINDOWS = [
-    _window("last_30d"),
     _window("last_3m"),
     _window("last_1y", hourly=True, res10=True),
     _window("last_2y", res10=True),
@@ -184,3 +183,9 @@ def test_city_with_no_windows_checks_the_pattern_only(calls, monkeypatch):
     r = TestClient(main.app).get("/api/v1/cells?city=nowhere&res=8&window=last_7y")
     assert r.status_code == 200
     assert calls[0]["time_window"] == "last_7y"
+
+
+def test_retired_30_day_link_opens_on_3_months(calls):
+    r = TestClient(main.app).get(URL.replace("last_12m", "last_30d"))
+    assert r.status_code == 200
+    assert calls[0]["time_window"] == "last_3m"

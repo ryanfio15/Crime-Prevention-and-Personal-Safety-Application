@@ -27,7 +27,7 @@ than others nearby, and researchers who want a documented API (see [docs/DESIGN.
 
 **What it shows.**
 - For each H3 cell, a percentile and tier of reported incidents compared with other cells in the same city, over
-  windows of 30 days, 3, 6 and 9 months, then 1, 2, 3 … years back to the oldest incident stored for that city
+  windows of 3, 6 and 9 months, then 1, 2, 3 … years back to the oldest incident stored for that city
   (each city has its own list; see [ARCHITECTURE.md → Windows](docs/ARCHITECTURE.md#time-windows)).
 - A severity-weighted "safety" ranking per 1,000 residents plus jobs.
 - Time-of-day profiles.
