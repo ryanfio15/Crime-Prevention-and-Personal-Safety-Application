@@ -150,6 +150,16 @@ prune_releases() {
 
 # An ETL run imports the release under it and migrate can block on its locks.
 # safety-ops@ counts: it runs the same pipeline, often for longer.
+#
+# These are Type=oneshot units, which systemd reports as "activating" for the
+# whole of their run, not "active" -- so `is-active --quiet` alone (exit 0 only
+# for "active") never saw a running job, and deploys went straight past them.
 etl_running() {
-    systemctl is-active --quiet "safety-etl@$1" "safety-etl-hourly@$1" "safety-ops@$1"
+    local unit
+    for unit in "safety-etl@$1" "safety-etl-hourly@$1" "safety-ops@$1"; do
+        case $(systemctl is-active "$unit" 2>/dev/null) in
+            active | activating | deactivating | reloading) return 0 ;;
+        esac
+    done
+    return 1
 }

@@ -106,10 +106,15 @@ exec 8>"$state/deploy.lock"
 log "waiting for the deploy lock"
 flock -w 900 8 || die "the deploy lock has been held for 15 minutes; try again later"
 
-if systemctl is-active --quiet "safety-etl@$instance" "safety-etl-hourly@$instance" "safety-ops@$instance"; then
-    echo "os-isolate[$instance]: ETL running on $instance; try again later" >&2
-    exit 75
-fi
+# Oneshot units report "activating" while they run, which `is-active --quiet`
+# does not count as running (see etl_running in deploy/lib/release.sh).
+for unit in "safety-etl@$instance" "safety-etl-hourly@$instance" "safety-ops@$instance"; do
+    case $(systemctl is-active "$unit" 2>/dev/null) in
+        active | activating | deactivating | reloading)
+            echo "os-isolate[$instance]: ETL running on $instance; try again later" >&2
+            exit 75 ;;
+    esac
+done
 # A unit queued behind the ETL lock would already have exec'd as the old uid,
 # so stop the timers first; the ones that were active are restarted on exit.
 stopped=()
