@@ -282,9 +282,8 @@ def test_incidents_are_conserved_per_window(built):
     # (build_cell_universe unions occupied cells in), so none are dropped.
     conn, rows = built["conn"], built["rows"]
     for res in gold.RESOLUTIONS:
-        scope_windows, _ = gold.activity_scope(res)
         for window in built["windows"]:
-            if window.name not in scope_windows:
+            if not gold.activity_builds(res, window.name):
                 continue
             expected = sum(1 for r in rows if window.start <= r["date"] <= window.end)
             got = _scalar(
