@@ -225,7 +225,9 @@ times larger (step 1 gives the estimate).
    runlocked safety.etl.run history --city phl --max-slices 1
    ```
    Re-run `history-gate`: the bytes per row are now the real ones for older data.
-3. **Let ops finish it.** `sudo systemctl enable --now safety-ops@dev.timer`. Each hourly run loads slices for up to
+3. **Let ops finish it.** The timer is a new unit file, so install it once from an up-to-date checkout, then enable it
+   per instance: `sudo deploy/install-deployer.sh --units`, then `sudo systemctl enable --now safety-ops@dev.timer`.
+   Each hourly run loads slices for up to
    `OPS_HISTORY_MINUTES` (25) and stops, so the six-hourly pull and deploys never wait long. Watch it with
    `run safety.etl.run log --city phl --since 1d` or `journalctl -u safety-ops@dev -f`. When a city's history is
    complete, its last run rebuilds gold; until then the six-hourly pull's own refresh picks up each new year.
