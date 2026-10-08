@@ -172,6 +172,21 @@ Other rollbacks:
   or pushing again.
 - Applied files are immutable. Editing one makes every later migrate refuse to run, with a checksum error.
 
+### The window rename (migration 018) and its contract step
+
+Migration 018 replaced the four fixed windows with per-city ones (`last_3m`, `last_1y`, `last_2y`, … instead of
+`last_90d`, `last_12m`, `last_24m`). It is the expand half of an expand/contract change:
+
+- **After the deploy.** `PIPELINE_VERSION` moved to `phase2.1.0`, so the `safety-ops@` run that every deploy starts
+  rebuilds gold for every city under the new names, time-of-day layer included. That takes a while on six cities, and
+  the next deploy waits for it. Until a city is rebuilt, the API serves it the old four windows; the map works either
+  way.
+- **Rollback safety.** While `GOLD_LEGACY_WINDOWS` is on (the default), every refresh also writes the old names as
+  copies, so the previous release still finds a map.
+- **Contract, later.** Once prod has run the new release for a while with no rollback, a follow-up migration deletes
+  the legacy rows and tightens the window CHECKs, and `GOLD_LEGACY_WINDOWS` goes. The API keeps accepting the old
+  names as aliases one release longer, for bookmarked links.
+
 ---
 
 ## From-zero setup

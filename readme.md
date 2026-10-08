@@ -27,7 +27,8 @@ than others nearby, and researchers who want a documented API (see [docs/DESIGN.
 
 **What it shows.**
 - For each H3 cell, a percentile and tier of reported incidents compared with other cells in the same city, over
-  windows of 30 days, 90 days, 12 months and 24 months.
+  windows of 30 days, 3, 6 and 9 months, then 1, 2, 3 … years back to the oldest incident stored for that city
+  (each city has its own list; see [ARCHITECTURE.md → Windows](docs/ARCHITECTURE.md#time-windows)).
 - A severity-weighted "safety" ranking per 1,000 residents plus jobs.
 - Time-of-day profiles.
 
@@ -111,7 +112,7 @@ safety/                     Python package
                             gold, safety, hourly, safety-compare, enable, weights, status, log
   etl/adapters/             one adapter per city (Carto, Socrata, Esri ArcGIS)
   etl/bronze.py · transform.py · validate.py · gold.py · census.py · boundary.py · withdrawn.py
-db/migrations/              001–017 forward-only SQL migrations
+db/migrations/              001–018 forward-only SQL migrations
 reference/crosswalk/        per-city offense code → NIBRS/UCR/category CSVs (loaded on every migrate)
 reference/severity/         severity schemes and weights
 web/                        index.html, app.js, html.js (escape-by-default templating), styles.css
@@ -179,6 +180,9 @@ and systemd and python-dotenv parse anything fancier differently.
 | `SOCRATA_APP_TOKEN` | *(empty)* | — | `etl/adapters/socrata.py` | Optional `X-App-Token` for chi, sea and lax; raises the quota. Not used by Austin, despite the comment in `config.py` |
 | `OPS_CITY` · `OPS_FORCE` · `OPS_DRY_RUN` | empty · false · false | — | `safety/ops.py` | Steer `safety.ops`; CLI flags win |
 | `OPS_RETRY_COOLDOWN_HOURS` | `6` | — | `safety/ops.py` | How long a failed ops step is left alone |
+| `OPS_HISTORY_MINUTES` | `25` | — | `safety/ops.py` | How long one ops run spends on the history load before it stops starting slices |
+| `SAFETY_MAX_WINDOW_YEARS` | *(unset)* | — | `etl/gold.py` | Fallback for disk: windows longer than this many years get counts but no safety ranking |
+| `GOLD_LEGACY_WINDOWS` | `true` | — | `etl/gold.py` | Also write `last_90d`/`last_12m`/`last_24m` for the previous release; turned off with the contract migration |
 | `WITHDRAWN_RECONCILE` | `report` | — | `etl/run.py` | `off` / `report` / `delete` for rows that vanish upstream. Prod stays `report` |
 | `WITHDRAWN_RETENTION_DAYS` | `90` | — | `etl/run.py` | Archive retention for deleted rows |
 
@@ -234,6 +238,8 @@ docker compose ps                                      # wait for "healthy"
 - Hot reload: `--reload` restarts on Python changes, and `web/` is served from disk with no build step.
 - A smaller load with `--months` is never widened later by `incremental` or `ops`. Run `backfill` again without
   `--months` to get the full 24 months.
+- Older years come from the separate history load (`safety.etl.run history --city <id> --force`), described in
+  [OPERATIONS.md → Loading a city's full history](docs/OPERATIONS.md#loading-a-citys-full-history).
 - `docs/PHASE1.md` uses Windows paths (`.venv/Scripts/python.exe`); use `.venv/bin/python` on macOS and Linux.
 
 ### Tests and lint
@@ -310,7 +316,7 @@ Diagram, all 14 routes and the dependency table: [ARCHITECTURE.md → Networking
     cluster.
   - Bronze raw files: `I/data/bronze`, never pruned.
   - An in-process API cache.
-- **Migrations**: `python -m safety.migrate`, 17 checksummed forward-only files under an advisory lock. Every run also
+- **Migrations**: `python -m safety.migrate`, 18 checksummed forward-only files under an advisory lock. Every run also
   reloads the crosswalk and severity CSVs.
 - **Backups**: a nightly `pg_dump` of both databases to `/var/backups/safety` (7 days prod, 2 days dev), plus a monthly
   test restore of prod, which has not yet run. **Same disk, unencrypted, no off-host copy.** Bronze and `.env` files are

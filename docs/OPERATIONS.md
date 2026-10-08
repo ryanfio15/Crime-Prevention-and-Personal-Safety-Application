@@ -23,7 +23,7 @@ All schedules are systemd timers. The host clock is UTC. The ETL timers have no 
 | `safety-backup` | daily 02:15 UTC + up to 15 min | `backup.sh dump` (both databases) |
 | `safety-backup-verify` | 1st of the month, 03:15 UTC | `backup.sh verify` (test restore of prod). **Has not run yet**; first run 2026-11-01 |
 | `certbot.timer` (distro) | twice daily | `certbot -q renew` |
-| `safety-ops@<i>` | no timer; started after every successful deploy | `safety.ops` |
+| `safety-ops@<i>` | started after every successful deploy; also hourly at :20 UTC once `safety-ops@<i>.timer` is enabled by hand | `safety.ops` (loads history in runs of up to 25 min) |
 
 ETL, hourly and ops share the lock `I/data/.etl.lock` (`flock -w 21600`), so they queue rather than overlap. A deploy
 is deferred (exit 75) while any of them runs. Missed runs catch up at boot (`Persistent=true`).
@@ -202,6 +202,50 @@ Scaling is vertical only. The cache and rate limiter are per process, and prod a
 | Certificates | Automatic. Check with `sudo certbot certificates`. A hostname change means editing both `deploy/nginx/*.conf`, re-running certbot, then committing the live file back |
 
 `run` and `runlocked` are the helpers defined in [Health and run history](#health-and-run-history).
+
+### Loading a city's full history
+
+The backfill keeps 24 months. The history load walks a city back to `reference.source_registry.history_start_date`
+(Chicago 2001, Philadelphia 2006, DC and Seattle 2008), one pull per slice of 6 months (Chicago 3), newest first.
+Each loaded year adds a window to that city's list on the next gold refresh. It is off until switched on per city and
+per instance, and **dev goes first**: prod and dev share one disk, and the full history makes each database several
+times larger (step 1 gives the estimate).
+
+1. **Measure before loading** (read-only; dev shown):
+   ```bash
+   sudo -u safety-dev env -C /srv/safety/Crime-Prevention-and-Personal-Safety-Application/dev/current \
+       PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/storage.py history-gate
+   ```
+   It projects silver, bronze and gold growth per city from today's bytes per row, times 2 instances, against free
+   space on `/`, and fails if less than 20 GB would be left.
+2. **Load one slice of one city on dev, and measure again** (`runlocked` as defined above, with `-u safety-dev` and
+   `…/dev/current`):
+   ```bash
+   run safety.etl.run enable --city phl --history
+   runlocked safety.etl.run history --city phl --max-slices 1
+   ```
+   Re-run `history-gate`: the bytes per row are now the real ones for older data.
+3. **Let ops finish it.** `sudo systemctl enable --now safety-ops@dev.timer`. Each hourly run loads slices for up to
+   `OPS_HISTORY_MINUTES` (25) and stops, so the six-hourly pull and deploys never wait long. Watch it with
+   `run safety.etl.run log --city phl --since 1d` or `journalctl -u safety-ops@dev -f`. When a city's history is
+   complete, its last run rebuilds gold; until then the six-hourly pull's own refresh picks up each new year.
+4. **Check the cost of a refresh.** Every gold refresh logs `gold refresh for <city> took {...}` with per-phase
+   seconds (also in the `timings_seconds` field of `gold`'s JSON output). If one city's refresh holds the ETL lock
+   for more than about 15 minutes, use the fallback below.
+5. **Then the next city**, smallest first: phl, sea, dc, chi. Run `history-gate` between cities.
+6. **Prod**, the same way, one city at a time, after dev has run the full set for a few days.
+
+**Fallback if it does not fit.** Set `SAFETY_MAX_WINDOW_YEARS=2` in `I/.env` (as the instance user). Windows longer
+than two years then keep their incident counts but are built without the safety ranking, and the map says so. The next
+gold refresh applies it (`runlocked safety.etl.run gold --city <id> --skip-hourly` for one city now). To give the space
+back as well, run `scripts/storage.py compact` in a quiet window.
+
+**Turning it off.** `run safety.etl.run enable --city <id> --history --off` stops further loading. Rows already
+loaded stay. Removing them means deleting that city's older `silver.incident_<id>_<year>` partitions by hand and
+rebuilding gold.
+
+**Seattle** before May 2019 and **DC** in 2008 were recorded differently from today. Their windows carry that caveat
+(`reference.source_series_caveat`); Seattle's older rows are mapped through crosswalk rows marked `approximate`.
 
 ### First steps when the site is down
 

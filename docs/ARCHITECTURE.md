@@ -176,21 +176,63 @@ ingestion `run.py:360-558`, and the gold rebuild `safety/etl/gold.py:1698-1779`.
 |---|---|---|
 | **Bronze** | Files: `I/data/bronze/source_id=<id>/dataset=<ds>/pull_date=<YYYY-MM-DD>/pull_<NNNNNN>/{manifest.json,*.gz}` | Raw responses, gzipped byte-for-byte. Used for audit and `reprocess`. **Never pruned, never backed up.** |
 | **Silver** | `silver.incident`, partitioned LIST(`source_id`) then RANGE(`occurred_year`); partitions created on demand | One normalized row per incident, with H3 r8/r9/r10, offense class mapped through the crosswalk, and local hour |
-| **Gold** | `gold.*`: `cell_geometry`, `cell_activity`, `cell_safety`, `cell_hour_safety`, `cell_hour_profile`, `cell_monthly`, `cell_offense_mix`, `cell_exposure`, `cell_neighbor`, `city_snapshot` | Per-city, per-cell rollups. **The only tables the map reads.** Rebuilt delete-then-insert; these are ordinary tables, not materialized views |
-| Reference | `reference.*`: `source_registry`, `offense_crosswalk`, `city_boundary`, `severity_scheme`, `offense_severity_weight`, `census_block` | Per-city config, the `enabled` flags, crosswalks loaded from `reference/crosswalk/*.csv` on every migrate |
+| **Gold** | `gold.*`: `cell_geometry`, `cell_activity`, `cell_safety`, `cell_hour_safety`, `cell_hour_profile`, `cell_monthly`, `cell_offense_mix`, `cell_exposure`, `cell_neighbor`, `city_snapshot`, `city_window` | Per-city, per-cell rollups, and the windows each city is built for. **The only tables the map reads.** Rebuilt delete-then-insert; these are ordinary tables, not materialized views |
+| Reference | `reference.*`: `source_registry`, `offense_crosswalk`, `city_boundary`, `severity_scheme`, `offense_severity_weight`, `census_block`, `source_series_caveat` | Per-city config, the `enabled` and `history_*` settings, recording-change caveats, crosswalks loaded from `reference/crosswalk/*.csv` on every migrate |
 | Bookkeeping | `etl.*`: `pull_run`, `validation_issue`, `staging_incident` (UNLOGGED), `ops_run`, `withdrawn_incident` | Pull history, data-quality issues, the ops retry ledger, and a 90-day archive of rows withdrawn upstream |
 | Migrations | `public.schema_migration(filename, applied_at, checksum)` | Applied files with SHA-256 checksums |
 
 **Glossary**
-- **Cell**: one H3 hexagon. r8 ≈ 0.74 km² (main map layer), r9 ≈ 0.105 km², r10 ≈ 0.015 km² (only for `last_12m`/`last_24m` × `all`).
-- **Window**: `last_30d`, `last_90d`, `last_12m` or `last_24m`, counted back from the newest incident date for that city, not from today.
+- **Cell**: one H3 hexagon. r8 ≈ 0.74 km² (main map layer), r9 ≈ 0.105 km², r10 ≈ 0.015 km² (only for `last_1y`/`last_2y` × `all`).
+- **Window**: a cumulative period counted back from the newest incident date for that city, not from today. See
+  [Time windows](#time-windows).
 - **Crosswalk**: maps each raw offense code and text to NIBRS/UCR and to the product's own category. Unmapped offenses are kept and flagged.
 - **Severity scheme**: the safety ranking settings. `nscs_v2_percapita` (per 1,000 residents + jobs) is enabled; `nscs_v1` is disabled (`reference/severity/schemes.csv`).
 - **"Hourly" layer**: hour-of-day buckets (0–23), rebuilt **weekly**.
 
+### Time windows
+
+Every city gets `last_30d`, `last_3m`, `last_6m`, `last_9m`, then `last_1y`, `last_2y`, … `last_<N>y`. The list
+stops at the first window that reaches the city's oldest stored date (`gold.resolve_windows`):
+
+- **Anchor.** Windows end on the city's newest incident date, so a publication lag is not shown as a quiet period.
+- **Floor.** The oldest date is the oldest incident in silver, but never earlier than
+  `source_registry.history_start_date`, so one misdated record cannot add decades of windows.
+- **Partial oldest window.** If the history starts inside the last window, that window is marked `partial` with its
+  real `data_start` ("Last 3 years (partial)", "Data from Jan 2008"). It is dropped if it would add less than a
+  quarter of a step's data, so a 24-month backfill does not produce a "last 3 years" holding two years and a week.
+- **What is built per window** is recorded in `gold.city_window` (written in the same transaction as the layers) and
+  returned by `/api/v1/cities`:
+  - counts and the safety ranking: every window (unless `SAFETY_MAX_WINDOW_YEARS` is set, the fallback for disk);
+  - the time-of-day layer: `last_1y` only;
+  - resolution 10: `last_1y` and `last_2y`, category `all` only.
+- **Caveats.** `reference.source_series_caveat` lists periods recorded differently from today (Seattle before
+  May 2019, DC in 2008). A window that reaches into one carries its caveat text, shown under the window control.
+- **Legacy names.** Until a later contract migration, gold also writes `last_90d`, `last_12m` and `last_24m` as copies of
+  `last_3m`, `last_1y` and `last_2y` (`GOLD_LEGACY_WINDOWS`), so the previous release still has a map after a
+  rollback. The API accepts the old names as aliases, and a city not rebuilt since migration 018 is served its four
+  legacy windows.
+
+**How gold builds many windows cheaply.** Each layer reads silver once into a temp aggregate keyed by *bucket*: one
+per month for the first year back from the anchor, then one per year. Every window start falls on a bucket edge
+(`tests/test_windows.py` checks this for every day of a leap year as the anchor), so a window is a sum over
+`bucket < limit`; `last_30d` uses its own flag. The original per-window SQL is kept behind `gold.PREAGGREGATE = False`,
+and a CI database test checks that both give the same layers. `refresh_all` reports per-phase timings.
+
+**History depth.** The backfill loads 24 months. Older years come from the history load
+([OPERATIONS.md](OPERATIONS.md#loading-a-citys-full-history)), back to:
+
+| City | `history_start_date` | Source |
+|---|---|---|
+| Chicago | 2001-01-01 | same dataset, same IUCR codes |
+| Philadelphia | 2006-01-01 | same dataset, same UCR codes |
+| Washington DC | 2008-01-01 | same yearly layers; 2008 does not separate theft from vehicles |
+| Seattle | 2008-01-01 | same dataset; before May 2019 SPD converted older records to NIBRS codes (crosswalk rows marked `approximate`) |
+| Austin | 2021-10-01 | the CrimeViewer services begin 2021-09-23; older Austin data has no coordinates |
+| Los Angeles | 2024-10-01 | unchanged for now: older LAPD data is in other datasets with their own codes |
+
 ### Migrations
 
-There are 17 forward-only SQL files in `db/migrations/`, run by `python -m safety.migrate`:
+There are 18 forward-only SQL files in `db/migrations/`, run by `python -m safety.migrate`:
 - Each file is applied once, in its own transaction.
 - An edited file that was already applied makes migrate refuse to run.
 - A Postgres advisory lock serializes concurrent runs, waiting up to `MIGRATE_LOCK_WAIT_SECONDS` (600 s).
@@ -264,11 +306,11 @@ All routes are `GET` with no authentication. nginx limits `/api/v1/cells` to 2 r
 |---|---|---|
 | `/api/v1/health` | — | `status`, deployed `commit`, `pipeline_version`, data timestamps, `incidents`, cache stats |
 | `/api/v1/version` | `city` | Refresh stamp that browsers poll |
-| `/api/v1/cities` | — | Cities that have a snapshot |
-| `/api/v1/cities/{source_id}` | — | One city's metadata; 404 if unknown |
+| `/api/v1/cities` | — | Cities that have a snapshot, each with its `windows` list and `default_window` |
+| `/api/v1/cities/{source_id}` | — | One city's metadata and windows; 404 if unknown |
 | `/api/v1/categories` | `city`=phl | Categories, tiers, windows and resolutions |
 | `/api/v1/quality` | `city`=phl | Validation issues, recent pulls, provenance mix |
-| `/api/v1/cells` | `city`=phl, `res`=8, `window`=last_12m, `category`=all, `min_count`=0, `hour`, `measure`, `bbox` | Whole-city GeoJSON layer |
+| `/api/v1/cells` | `city`=phl, `res`=8, `window`=last_1y, `category`=all, `min_count`=0, `hour`, `measure`, `bbox` | Whole-city GeoJSON layer. A window the city does not have is a 400; legacy names are aliases |
 | `/api/v1/cells/ring` | `h3` (required), `k`=1 (0–6) | A cell and its neighbours |
 | `/api/v1/cells/lookup` | `lat`, `lng` (required), `res`=8 | Point → cell detail |
 | `/api/v1/cells/{h3_index}` | `window`, `hour` | One cell's detail |

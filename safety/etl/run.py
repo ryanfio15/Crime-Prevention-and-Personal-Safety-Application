@@ -960,8 +960,7 @@ def cmd_history(args: argparse.Namespace) -> int:
             print(
                 f"history is not enabled for {config.source_id} on this instance. "
                 "Turn it on with:\n"
-                "  UPDATE reference.source_registry SET history_enabled = true "
-                f"WHERE source_id = '{config.source_id}';\n"
+                f"  python -m safety.etl.run enable --city {config.source_id} --history\n"
                 "or pass --force for a one-off run.",
                 file=sys.stderr,
             )
@@ -1581,6 +1580,32 @@ def cmd_enable(args: argparse.Namespace) -> int:
         config = SourceConfig.load(conn, args.city)
         target = not args.off
 
+        if args.history:
+            # Per instance, since prod and dev keep separate registries: dev
+            # loads and measures first (docs/OPERATIONS.md).
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE reference.source_registry
+                       SET history_enabled = %s, updated_at = now()
+                     WHERE source_id = %s
+                    """,
+                    (target, config.source_id),
+                )
+            conn.commit()
+            state = "on" if target else "off"
+            print(
+                f"history load {state} for {config.source_id} ({config.city_name}), back to "
+                f"{config.history_start_date or 'its backfill floor'}."
+            )
+            if target:
+                print(
+                    "safety.ops loads it in time-boxed runs (the hourly safety-ops@ timer, or "
+                    "after a deploy), or now with:\n"
+                    f"  python -m safety.etl.run history --city {config.source_id}"
+                )
+            return 0
+
         if target and not args.force:
             problems = _readiness(conn, config)
             if problems:
@@ -1966,6 +1991,11 @@ def build_parser() -> argparse.ArgumentParser:
     enable_cmd.add_argument("--city", required=True)
     enable_cmd.add_argument(
         "--off", action="store_true", help="disable instead of enabling"
+    )
+    enable_cmd.add_argument(
+        "--history",
+        action="store_true",
+        help="switch the full-history load on (or with --off, off) instead of the city",
     )
     enable_cmd.add_argument(
         "--force",
