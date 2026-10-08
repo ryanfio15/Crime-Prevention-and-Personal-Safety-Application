@@ -9,6 +9,7 @@ that a shell here mangles.
     python scripts/storage.py baseline          # capture, BEFORE safety.migrate
     python scripts/storage.py gate              # prove Philadelphia did not move
     python scripts/storage.py compact           # hand freed pages back to the OS
+    python scripts/storage.py history-gate      # will the full history fit?
 
 `sizes` and `gate` are read-only. `baseline` writes one table. `compact` takes an
 ACCESS EXCLUSIVE lock per table -- see its own warning.
@@ -18,7 +19,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import sys
+from datetime import date
 from pathlib import Path
 
 import psycopg
@@ -29,6 +32,7 @@ import psycopg
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from safety.db import connect, wait_for_db  # noqa: E402
+from safety.etl import gold  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -291,11 +295,131 @@ def cmd_compact(conn: psycopg.Connection) -> int:
     return 0
 
 
+_CITY_SILVER_SQL = """
+SELECT
+    r.source_id,
+    r.history_start_date,
+    r.history_enabled,
+    COALESCE((
+        SELECT sum(pg_total_relation_size(t.relid))
+        FROM pg_partition_tree(to_regclass('silver.incident_' || r.source_id)) t
+    ), 0)::bigint AS silver_bytes,
+    COALESCE((
+        SELECT sum(c.reltuples) FILTER (WHERE c.reltuples > 0)
+        FROM pg_partition_tree(to_regclass('silver.incident_' || r.source_id)) t
+        JOIN pg_class c ON c.oid = t.relid
+        WHERE t.isleaf
+    ), 0)::bigint AS silver_rows,
+    (SELECT min(occurred_local_date) FROM silver.incident i WHERE i.source_id = r.source_id)
+        AS oldest,
+    (SELECT max(occurred_local_date) FROM silver.incident i WHERE i.source_id = r.source_id)
+        AS newest,
+    (SELECT sum(bronze_bytes)::double precision / NULLIF(sum(records_fetched), 0)
+       FROM etl.pull_run p
+      WHERE p.source_id = r.source_id AND p.status = 'succeeded'
+        AND p.mode IN ('backfill', 'incremental', 'history')) AS bronze_per_record,
+    (SELECT count(*) FROM gold.city_window w WHERE w.source_id = r.source_id) AS windows_now
+FROM reference.source_registry r
+WHERE r.enabled
+ORDER BY r.source_id
+"""
+
+# The gold tables whose size grows with the number of windows. The hourly
+# layer and the monthly series do not: one window, and a two-year span.
+_WINDOWED_GOLD = ("gold.cell_activity", "gold.cell_safety", "gold.cell_offense_mix")
+
+GIB = 1024**3
+
+
+def cmd_history_gate(conn: psycopg.Connection, args: argparse.Namespace) -> int:
+    """Project the disk the full history needs, from what is stored now.
+
+    Per city: silver bytes per row and rows per day measured from what the
+    city already holds, extended back to registry.history_start_date; bronze
+    from the bytes per record of its completed pulls; gold from its share of
+    the windowed gold tables, scaled by how many windows it will have. Then
+    times `--instances` (prod and dev share the disk and each holds its own
+    copy), against the free space on `--path`. Read-only.
+
+    A projection, not a measurement -- run it again after loading one year per
+    city on dev, when the bytes per row are the real ones for older data.
+    """
+    with conn.cursor() as cur:
+        cities = cur.execute(_CITY_SILVER_SQL).fetchall()
+        gold_bytes = {
+            name: cur.execute(
+                "SELECT pg_total_relation_size(%s::regclass) AS b", (name,)
+            ).fetchone()["b"]
+            for name in _WINDOWED_GOLD
+        }
+        gold_rows = {
+            r["source_id"]: r["n"]
+            for r in cur.execute(
+                "SELECT source_id, count(*) AS n FROM gold.cell_activity GROUP BY 1"
+            ).fetchall()
+        }
+        db_bytes = cur.execute(
+            "SELECT pg_database_size(current_database()) AS b"
+        ).fetchone()["b"]
+    conn.rollback()
+
+    windowed_total = sum(gold_bytes.values())
+    all_gold_rows = sum(gold_rows.values()) or 1
+
+    print(
+        f"{'city':<5} {'from':>10} {'loaded from':>11} {'add rows':>11} "
+        f"{'silver':>8} {'bronze':>8} {'gold':>8} {'windows':>9}"
+    )
+    print("-" * 78)
+    total = 0.0
+    for c in cities:
+        start = c["history_start_date"]
+        if start is None or c["oldest"] is None or not c["silver_rows"]:
+            continue
+        days_held = max((c["newest"] - c["oldest"]).days, 1)
+        per_day = c["silver_rows"] / days_held
+        missing_days = max((c["oldest"] - start).days, 0)
+        add_rows = per_day * missing_days
+        silver = add_rows * (c["silver_bytes"] / c["silver_rows"])
+        bronze = add_rows * (c["bronze_per_record"] or 0)
+
+        windows_now = c["windows_now"] or 4
+        windows_then = len(gold.resolve_windows(c["newest"], start))
+        share = gold_rows.get(c["source_id"], 0) / all_gold_rows
+        gold_add = windowed_total * share * max(windows_then / windows_now - 1, 0)
+
+        city_total = silver + bronze + gold_add
+        total += city_total
+        print(
+            f"{c['source_id']:<5} {start!s:>10} {c['oldest']!s:>11} {add_rows:>11,.0f} "
+            f"{silver / GIB:>7.1f}G {bronze / GIB:>7.1f}G {gold_add / GIB:>7.1f}G "
+            f"{windows_now:>4}->{windows_then:<4}"
+            + ("" if c["history_enabled"] else "  (history not enabled)")
+        )
+
+    free = shutil.disk_usage(args.path).free
+    need = total * args.instances
+    after = free - need
+    print("-" * 78)
+    print(f"one instance needs      {total / GIB:8.1f} GB more")
+    print(f"x {args.instances} instance(s)         {need / GIB:8.1f} GB")
+    print(f"free on {args.path:<15} {free / GIB:8.1f} GB")
+    print(f"free afterwards         {after / GIB:8.1f} GB (gate: {args.min_free_gb:g} GB)")
+    print(
+        f"this database now       {db_bytes / GIB:8.1f} GB; dumps grow with it, and "
+        "safety-backup wants twice the last dump plus 15 GB free"
+    )
+    ok = after >= args.min_free_gb * GIB
+    print("PASS" if ok else "FAIL: load less history, or set SAFETY_MAX_WINDOW_YEARS (counts only for long windows)")
+    return 0 if ok else 1
+
+
 _COMMANDS = {
     "sizes": cmd_sizes,
     "baseline": cmd_baseline,
     "gate": cmd_gate,
     "compact": cmd_compact,
+    "history-gate": cmd_history_gate,
 }
 
 
@@ -303,10 +427,21 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)-7s %(message)s")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("command", choices=sorted(_COMMANDS))
+    parser.add_argument(
+        "--instances", type=int, default=2, help="history-gate: instances sharing the disk (2)"
+    )
+    parser.add_argument(
+        "--path", default="/", help="history-gate: filesystem holding the database (/)"
+    )
+    parser.add_argument(
+        "--min-free-gb", type=float, default=20.0, help="history-gate: free space to keep (20)"
+    )
     args = parser.parse_args(argv)
 
     wait_for_db()
     with connect() as conn:
+        if args.command == "history-gate":
+            return cmd_history_gate(conn, args)
         return _COMMANDS[args.command](conn)
 
 

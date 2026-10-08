@@ -56,7 +56,7 @@ from safety.etl import census, gold, transform, validate, withdrawn
 from safety.etl.adapters import ADAPTERS, SourceConfig, get_adapter
 from safety.etl.adapters.base import NormalizedIncident, RawChunk, SourceAdapter
 from safety.etl.bronze import LocalBronzeStore, build_manifest
-from safety.etl.windows import backfill_window
+from safety.etl.windows import backfill_window, months_before
 from safety.config import settings
 
 log = logging.getLogger("safety.etl")
@@ -860,6 +860,159 @@ def cmd_incremental(args: argparse.Namespace) -> int:
             outcome.update(stats)
     print(json.dumps(outcome, indent=2, default=str))
     return 0
+
+
+# ---------------------------------------------------------------------------
+# History: a city's full published record, a slice at a time
+# ---------------------------------------------------------------------------
+#
+# The backfill loads a trailing 24 months; `history` walks back from the oldest
+# date already covered to registry.history_start_date (migration 018), one
+# slice per pull. Slices keep memory bounded -- _ingest holds a whole pull in
+# memory before validating it -- and make the load resumable for free: coverage
+# is read back from etl.pull_run each run, so a failed or interrupted slice is
+# simply the next one tried. A slice that finds nothing (`no_new_data`, a year
+# the dataset does not reach) still counts as covered.
+#
+# History pulls never touch the watermark (_mark_source_success takes the max),
+# never reconcile withdrawn records, and are their own mode, so they neither
+# count as the cadence's "last looked" nor skew a backfill's volume median.
+
+# Months per slice. Chicago publishes up to ~46,000 incidents a month in the
+# early 2000s; three months of that is ~140,000 records in memory at once.
+HISTORY_SLICE_MONTHS = {"chi": 3}
+DEFAULT_HISTORY_SLICE_MONTHS = 6
+
+_HISTORY_MODES = ("backfill", "incremental", "history")
+
+_COVERED_FROM_SQL = """
+SELECT min(window_start) AS covered_from
+FROM etl.pull_run
+WHERE source_id = %s
+  AND mode   = ANY(%s)
+  AND status = ANY(%s)
+  AND window_start IS NOT NULL
+"""
+
+
+def history_covered_from(conn: psycopg.Connection, source_id: str) -> datetime | None:
+    """The oldest date any completed incident or history pull asked for."""
+    with conn.cursor() as cur:
+        cur.execute(
+            _COVERED_FROM_SQL,
+            (source_id, list(_HISTORY_MODES), list(_COMPLETED_STATUSES)),
+        )
+        row = cur.fetchone()
+    return row["covered_from"] if row else None
+
+
+def history_slices(
+    covered_from: datetime, floor: date, slice_months: int
+) -> list[tuple[datetime, datetime]]:
+    """Fetch windows from `covered_from` back to `floor`, newest first.
+
+    Newest first so the city's window list grows a year at a time as the load
+    proceeds, rather than with a hole in the middle. Padded a day each side,
+    as backfill_window is: chunk boundaries are UTC and the sources report
+    local dates, and re-reading a day is an upsert.
+    """
+    floor_ts = datetime(floor.year, floor.month, floor.day, tzinfo=timezone.utc)
+    slices = []
+    cursor = covered_from
+    while cursor > floor_ts:
+        # cursor + 1 day: after the padding the cursor sits on the last day of a
+        # month, and months_before counts that month as one of the n, which
+        # would quietly stretch every slice after the first by a month.
+        start = months_before(cursor + timedelta(days=1), slice_months)
+        since = max(floor_ts, start - timedelta(days=1))
+        slices.append((since, cursor + timedelta(days=1)))
+        cursor = since
+    return slices
+
+
+def history_remaining(
+    conn: psycopg.Connection, config: SourceConfig, slice_months: int | None = None
+) -> list[tuple[datetime, datetime]]:
+    if config.history_start_date is None:
+        return []
+    covered = history_covered_from(conn, config.source_id)
+    if covered is None:
+        return []
+    months = slice_months or HISTORY_SLICE_MONTHS.get(
+        config.source_id, DEFAULT_HISTORY_SLICE_MONTHS
+    )
+    return history_slices(covered, config.history_start_date, months)
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    """Load older slices of a city's published history until a budget runs out.
+
+    Refuses unless the registry says this instance may (history_enabled), so a
+    deploy or a stray `--all` cannot start a twenty-year load on its own. Gold is
+    rebuilt once at the end, and only if this run finished the city's history:
+    until then the six-hourly incremental's own refresh picks up each new year,
+    and rebuilding thirty windows after every slice would be most of the cost.
+    """
+    with connect() as conn:
+        config = SourceConfig.load(conn, args.city)
+        _require_enabled(config)
+        if not config.history_enabled and not args.force:
+            print(
+                f"history is not enabled for {config.source_id} on this instance. "
+                "Turn it on with:\n"
+                "  UPDATE reference.source_registry SET history_enabled = true "
+                f"WHERE source_id = '{config.source_id}';\n"
+                "or pass --force for a one-off run.",
+                file=sys.stderr,
+            )
+            return 1
+        if history_covered_from(conn, config.source_id) is None:
+            print(
+                f"{config.source_id} has no completed backfill yet; run "
+                f"`backfill --city {config.source_id}` first.",
+                file=sys.stderr,
+            )
+            return 1
+
+        remaining = history_remaining(conn, config, args.slice_months)
+        deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes else None
+        outcomes: list[dict[str, Any]] = []
+        for since, until in remaining[: args.max_slices or None]:
+            if deadline is not None and outcomes and time.monotonic() > deadline:
+                break
+            if outcomes and args.pause_seconds:
+                time.sleep(args.pause_seconds)
+            outcome = _ingest(conn, config, mode="history", since=since, until=until)
+            outcomes.append(
+                {
+                    "since": since.date().isoformat(),
+                    "until": until.date().isoformat(),
+                    "status": outcome["status"],
+                    "upserted": outcome.get("upserted", 0),
+                }
+            )
+            if outcome["status"] not in _COMPLETED_STATUSES:
+                # A blocked slice is a data problem worth a human; do not walk
+                # past it into older years and leave a hole behind.
+                break
+
+        left = history_remaining(conn, config, args.slice_months)
+        summary: dict[str, Any] = {
+            "city": config.source_id,
+            "history_start_date": str(config.history_start_date),
+            "slices_run": outcomes,
+            "slices_left": len(left),
+            "covered_from": str(history_covered_from(conn, config.source_id)),
+        }
+        if not left and outcomes and not args.no_gold:
+            summary.update(
+                gold.refresh_all(
+                    conn, config.source_id, PIPELINE_VERSION, include_hourly=False
+                )
+            )
+    print(json.dumps(summary, indent=2, default=str))
+    blocked = [o for o in outcomes if o["status"] not in _COMPLETED_STATUSES]
+    return 1 if blocked else 0
 
 
 def cmd_reprocess(args: argparse.Namespace) -> int:
@@ -1759,6 +1912,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_all_flag(hourly_cmd)
     hourly_cmd.set_defaults(func=_fannable(cmd_hourly))
+
+    history_cmd = sub.add_parser(
+        "history",
+        help="load older slices of a city's published history (registry history_start_date)",
+    )
+    history_cmd.add_argument("--city", required=True)
+    history_cmd.add_argument(
+        "--slice-months",
+        type=int,
+        default=None,
+        help=f"months per pull (default {DEFAULT_HISTORY_SLICE_MONTHS}; chi 3)",
+    )
+    history_cmd.add_argument(
+        "--max-slices", type=int, default=None, help="stop after this many pulls"
+    )
+    history_cmd.add_argument(
+        "--max-minutes",
+        type=float,
+        default=None,
+        help="start no new pull after this long (the one running finishes)",
+    )
+    history_cmd.add_argument(
+        "--pause-seconds", type=float, default=5.0, help="between pulls, for the portal's sake"
+    )
+    history_cmd.add_argument(
+        "--no-gold", action="store_true", help="never rebuild gold, even when the history is complete"
+    )
+    history_cmd.add_argument(
+        "--force", action="store_true", help="run even though history_enabled is false"
+    )
+    history_cmd.set_defaults(func=cmd_history)
 
     compare_cmd = sub.add_parser(
         "safety-compare", help="diff two severity schemes on the same data"

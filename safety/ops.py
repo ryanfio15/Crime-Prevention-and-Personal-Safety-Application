@@ -68,6 +68,7 @@ from safety.db import connect, wait_for_db
 from safety.etl import gold
 from safety.etl.run import (
     _COMPLETED_STATUSES,
+    _HISTORY_MODES,
     _INCIDENT_MODES,
     build_parser,
     enabled_sources,
@@ -153,9 +154,21 @@ SELECT
         WHERE i.source_id = %(source_id)s AND i.occurred_local_hour IS NOT NULL
     ) AS has_clock_hours,
     g.last_refreshed_at AS gold_refreshed_at,
-    g.pipeline_version  AS gold_pipeline_version
+    g.pipeline_version  AS gold_pipeline_version,
+    -- The history load (safety.etl.run history, migration 018): how far back
+    -- completed pulls reach, against how far back this instance should.
+    r.history_enabled,
+    r.history_start_date,
+    (
+        SELECT min(p.window_start)
+        FROM etl.pull_run p
+        WHERE p.source_id = %(source_id)s
+          AND p.mode   = ANY(%(history_modes)s)
+          AND p.status = ANY(%(statuses)s)
+    ) AS covered_from
 FROM (SELECT 1) _
 LEFT JOIN gold.city_snapshot g ON g.source_id = %(source_id)s
+LEFT JOIN reference.source_registry r ON r.source_id = %(source_id)s
 """
 
 
@@ -168,6 +181,7 @@ def _city_state(conn: psycopg.Connection, source_id: str) -> dict:
                 "modes": list(_INCIDENT_MODES),
                 "statuses": list(_COMPLETED_STATUSES),
                 "hourly_windows": list(gold.HOURLY_WINDOWS),
+                "history_modes": list(_HISTORY_MODES),
             },
         )
         return cur.fetchone()
@@ -284,7 +298,38 @@ def plan_from_state(state: dict, source_id: str) -> list[Step]:
             )
         )
 
+    # Last, and never in the run that does the first backfill: history extends
+    # back from what that backfill covered, so it needs it on record first.
+    if (reason := _history_reason(state)) and not needs_backfill:
+        steps.append(
+            Step(
+                task="history",
+                city=source_id,
+                reason=reason,
+                argv=(
+                    "history",
+                    "--city",
+                    source_id,
+                    "--max-minutes",
+                    f"{settings.ops_history_minutes:g}",
+                ),
+            )
+        )
+
     return steps
+
+
+def _history_reason(state: dict) -> str | None:
+    """Why this city's history load has more to do, or None."""
+    if not state.get("history_enabled") or state.get("history_start_date") is None:
+        return None
+    covered = state.get("covered_from")
+    if covered is None or covered.date() <= state["history_start_date"]:
+        return None
+    return (
+        f"history is loaded back to {covered:%Y-%m-%d}; this instance keeps it "
+        f"from {state['history_start_date']:%Y-%m-%d}"
+    )
 
 
 def advisories(state: dict) -> list[str]:
@@ -391,6 +436,13 @@ def _cooldown_block(conn: psycopg.Connection, step: Step, cooldown_hours: float)
             f"failed {last['hours_ago']:.1f}h ago and the {cooldown_hours:g}h cooldown "
             f"has not elapsed ({first}); --force or OPS_FORCE=1 to retry now"
         )
+
+    # The history load is planned until it reaches its start date and each run
+    # stops on a time budget, so "succeeded and still needed" is its normal
+    # state between runs rather than a sign it is stuck: it moved the coverage
+    # date, and the next run carries on from there.
+    if step.task == "history" and last["status"] == "succeeded":
+        return None
 
     # Succeeded inside the cooldown, yet the data still says the step is needed.
     # Worth saying out loud rather than retrying: a step that reports success

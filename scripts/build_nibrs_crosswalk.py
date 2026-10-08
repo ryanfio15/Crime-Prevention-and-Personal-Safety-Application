@@ -113,11 +113,31 @@ _LOCAL: dict[str, dict[str, tuple[str, str]]] = {
 
 _CITIES = {
     # source_id: (crosswalk_version, effective_from)
-    # Seattle's RMS moved to NIBRS in May 2019; the registry floors backfill at
-    # 2019-06-01 so nothing earlier reaches this crosswalk.
+    # Seattle's RMS moved to NIBRS in May 2019. Records from before it are
+    # published too, already converted to NIBRS codes by SPD; see _EARLIER.
     "sea": ("sea_v1", "2019-05-01"),
     # LAPD's NIBRS datasets begin with the March 2024 RMS cut-over.
     "lax": ("lax_v1", "2024-03-01"),
+}
+
+# Earlier periods a source publishes under the same codes, each a separate set
+# of rows so the crosswalk can say how far to trust them (S7.3). Seattle's
+# 2008 to April 2019 records came from the previous records system and were
+# converted to NIBRS codes by SPD; the codes match, the recording practice
+# behind them does not (reference.source_series_caveat, migration 018), so they
+# are approximate rather than exact. 62 codes, 949,633 offenses, all but '-'
+# and '999' (0.2%) covered by the rows below (checked against the live dataset
+# on 2026-10-08).
+_EARLIER: dict[str, list[tuple[str, str, str]]] = {
+    "sea": [
+        (
+            "2008-01-01",
+            "2019-05-01",
+            "Pre-May-2019 SPD record converted to NIBRS by SPD; same code, older "
+            "recording practice. Category from scripts/build_nibrs_crosswalk.py.",
+        ),
+    ],
+    "lax": [],
 }
 
 _FIELDNAMES = (
@@ -132,7 +152,14 @@ def build_rows(source_id: str) -> list[dict[str, str]]:
     version, effective_from = _CITIES[source_id]
     rows: list[dict[str, str]] = []
 
-    def row(raw_code: str, nibrs: str, confidence: str, note: str) -> dict[str, str]:
+    def row(
+        raw_code: str,
+        nibrs: str,
+        confidence: str,
+        note: str,
+        start: str = effective_from,
+        end: str = "",
+    ) -> dict[str, str]:
         name, group, against, ucr, bucket, product = _NIBRS[nibrs]
         return {
             "crosswalk_version": version, "source_id": source_id,
@@ -141,8 +168,8 @@ def build_rows(source_id: str) -> list[dict[str, str]]:
             "nibrs_offense_name": name, "nibrs_group": group,
             "nibrs_crime_against": against, "ucr_part": ucr,
             "severity_bucket": bucket, "product_category": product,
-            "mapping_confidence": confidence, "effective_from": effective_from,
-            "effective_to": "", "notes": note,
+            "mapping_confidence": confidence, "effective_from": start,
+            "effective_to": end, "notes": note,
         }
 
     for code in _NIBRS:
@@ -150,6 +177,11 @@ def build_rows(source_id: str) -> list[dict[str, str]]:
                         "Source publishes the NIBRS code; category from scripts/build_nibrs_crosswalk.py."))
     for raw_code, (nibrs, note) in _LOCAL[source_id].items():
         rows.append(row(raw_code, nibrs, "approximate", note))
+    for start, end, note in _EARLIER[source_id]:
+        for code in _NIBRS:
+            rows.append(row(code, code, "approximate", note, start, end))
+        for raw_code, (nibrs, local_note) in _LOCAL[source_id].items():
+            rows.append(row(raw_code, nibrs, "approximate", f"{local_note} {note}", start, end))
     return rows
 
 

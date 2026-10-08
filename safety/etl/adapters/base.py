@@ -53,6 +53,10 @@ class SourceConfig:
     occurrence_basis_note: str | None
     denominator_examples_note: str | None
     enabled: bool
+    # How far back `safety.etl.run history` loads the city's published record
+    # (migration 018), and whether it may run on this instance at all.
+    history_start_date: date | None = None
+    history_enabled: bool = False
 
     @classmethod
     def load(cls, conn: psycopg.Connection, source_id: str) -> SourceConfig:

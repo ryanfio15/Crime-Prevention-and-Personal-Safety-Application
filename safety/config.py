@@ -120,6 +120,11 @@ class Settings(BaseSettings):
     # attempt on every unrelated code change. Six hours is below the ETL's own
     # six-hourly tick, so a genuine outage is still retried promptly.
     ops_retry_cooldown_hours: float = 6.0
+    # How long one `safety.ops` run spends loading city history (the `history`
+    # step) before it stops starting new slices. Keeps the ETL lock short enough
+    # that the six-hourly pull and deploys are never held up for long; the
+    # hourly safety-ops@.timer picks up where the last run stopped.
+    ops_history_minutes: float = 25.0
 
     # Bound on a single connection attempt. Without it libpq waits out the OS
     # TCP timeout, which only matters when a host accepts the packets and never
