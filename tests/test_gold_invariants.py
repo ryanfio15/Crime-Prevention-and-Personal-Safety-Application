@@ -579,3 +579,33 @@ def test_preaggregated_gold_matches_the_per_window_sql(built, monkeypatch):
     # A rounding difference can only reorder cells whose smoothed rates were
     # equal to the last bit; anything more than a handful is a real bug.
     assert differing <= len(direct[1]) * 0.01, differing
+
+
+def test_floor_follows_pull_coverage_not_stray_old_dates(built):
+    # gold.history_floor: a source filtered on report date publishes cold cases
+    # with old occurrence dates. The window list must reach back as far as the
+    # pulls did, not to the oldest stray date. The fixture's own pull records no
+    # window, so until one does the floor is the oldest incident.
+    conn = built["conn"]
+    oldest = min(r["date"] for r in built["rows"])
+    assert gold.history_floor(conn, SOURCE) == oldest
+    covered = ANCHOR - timedelta(days=300)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO etl.pull_run (source_id, dataset, mode, status, pipeline_version,
+                                      window_start, window_end)
+            VALUES (%s, 'test-fixture', 'backfill', 'succeeded', %s, %s, %s)
+            RETURNING pull_id
+            """,
+            (SOURCE, PIPELINE_VERSION, covered, ANCHOR),
+        )
+        pull_id = cur.fetchone()["pull_id"]
+    try:
+        assert gold.history_floor(conn, SOURCE) == covered
+        names = [w.name for w in gold.city_windows(conn, SOURCE, ANCHOR)]
+        assert names[-1] == "last_1y", names
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM etl.pull_run WHERE pull_id = %s", (pull_id,))
+        conn.commit()

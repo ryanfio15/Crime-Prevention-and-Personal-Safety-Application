@@ -195,8 +195,10 @@ Every city gets `last_30d`, `last_3m`, `last_6m`, `last_9m`, then `last_1y`, `la
 stops at the first window that reaches the city's oldest stored date (`gold.resolve_windows`):
 
 - **Anchor.** Windows end on the city's newest incident date, so a publication lag is not shown as a quiet period.
-- **Floor.** The oldest date is the oldest incident in silver, but never earlier than
-  `source_registry.history_start_date`, so one misdated record cannot add decades of windows.
+- **Floor.** The oldest date is how far back the city's completed pulls reached (`etl.pull_run.window_start`), never
+  earlier than `source_registry.history_start_date`. Not the oldest incident: DC's pulls filter on report date, so
+  recently reported cold cases carry occurrence dates back to 2008, and those alone would otherwise offer "the last
+  19 years".
 - **Partial oldest window.** If the history starts inside the last window, that window is marked `partial` with its
   real `data_start` ("Last 3 years (partial)", "Data from Jan 2008"). It is dropped if it would add less than a
   quarter of a step's data, so a 24-month backfill does not produce a "last 3 years" holding two years and a week.

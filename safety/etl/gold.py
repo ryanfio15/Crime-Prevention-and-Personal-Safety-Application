@@ -252,15 +252,28 @@ def _shift_months(value: date, months: int) -> date:
 def history_floor(conn: psycopg.Connection, source_id: str) -> date | None:
     """The oldest date the window list has to reach for this city.
 
-    The oldest stored incident, but never before the registry's configured
-    floor: a single record published with a 1901 date would otherwise add a
-    century of windows over nothing.
+    How far back the city's completed pulls asked for, not the oldest incident:
+    a source filtered on report date (DC) publishes cold cases with occurrence
+    dates decades back, and a handful of those would otherwise offer "the last
+    19 years" over two years of data. Falls back to the oldest incident only
+    where no pull recorded its window (a hand-loaded fixture). Never earlier
+    than the registry's floor either, so one record published with a 1901 date
+    cannot add a century of windows.
     """
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT GREATEST(
-                       (SELECT min(occurred_local_date) FROM silver.incident WHERE source_id = %(s)s),
+                       COALESCE(
+                           (SELECT min(p.window_start)::date
+                              FROM etl.pull_run p
+                             WHERE p.source_id = %(s)s
+                               AND p.mode   IN ('backfill', 'incremental', 'history')
+                               AND p.status IN ('succeeded', 'no_new_data')
+                               AND p.window_start IS NOT NULL),
+                           (SELECT min(occurred_local_date) FROM silver.incident
+                             WHERE source_id = %(s)s)
+                       ),
                        COALESCE(r.history_start_date, r.backfill_start_date)
                    ) AS floor
             FROM (SELECT 1) _
