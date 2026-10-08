@@ -1,6 +1,6 @@
 # Phase 2 — Philadelphia to six cities
 
-Implements roadmap Phase 2 from [`readme.md`](../readme.md) §14: the remaining
+Implements roadmap Phase 2 from [`DESIGN.md`](DESIGN.md) §14: the remaining
 five adapters and crosswalks, built on Phase 1's pipeline as the template, and
 exercising the three API paradigms and the cadence differences to confirm the
 source-registry/adapter split actually isolates city-specific quirks as §11
@@ -131,7 +131,7 @@ the block trim needs it.
 
 Three flags make one scheduled job cover six sources on five cadences. The
 deployed configuration is the first line below every few hours plus the second
-weekly — see [`DEPLOY.md`](DEPLOY.md) and `deploy/systemd/` for the timers.
+weekly — see [`DEPLOYMENT.md`](DEPLOYMENT.md) and `deploy/systemd/` for the timers.
 
 ```bash
 python -m safety.etl.run incremental --all --due-only --skip-hourly

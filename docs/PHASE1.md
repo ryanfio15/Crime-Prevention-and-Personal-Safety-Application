@@ -1,6 +1,6 @@
 # Phase 1 — Philadelphia pipeline proof of concept
 
-Implements roadmap Phase 1 from [`readme.md`](../readme.md) §14: the full
+Implements roadmap Phase 1 from [`DESIGN.md`](DESIGN.md) §14: the full
 bronze → silver → gold pipeline validated end to end against one source, plus a
 serving layer and a temporary front end so the result is visible.
 
@@ -35,7 +35,7 @@ python -m venv .venv
 Then open **http://127.0.0.1:8000/**.
 
 For the server deployment (two instances, continuous deployment from GitHub),
-see [`DEPLOY.md`](DEPLOY.md).
+see [`DEPLOYMENT.md`](DEPLOYMENT.md).
 
 ### Other pipeline commands
 
