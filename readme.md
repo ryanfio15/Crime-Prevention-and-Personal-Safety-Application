@@ -53,7 +53,7 @@ flowchart LR
   E -->|HTTPS| P[(City portals, census.gov)]
   E --> F[(bronze files I/data)]
   E --> D
-  G[GitHub ci check] -.-> AD[safety-autodeploy@ root timer] --> A
+  G[GitHub ci check] -.-> AD["safety-autodeploy@ root timer"] --> A
 ```
 
 | Component | Tech | Responsibility | Port | Depends on |
