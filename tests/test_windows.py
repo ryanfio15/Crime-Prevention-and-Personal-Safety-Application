@@ -135,3 +135,46 @@ def test_backfill_floor_older_than_window_is_ignored(monkeypatch):
     config = SimpleNamespace(source_id="sea", backfill_start_date=date(2019, 5, 1))
     since, _ = windows.backfill_window(6, config)
     assert since == datetime(2024, 10, 31, tzinfo=timezone.utc)
+
+
+def _bucket_dates(anchor, floor):
+    windows = gold.resolve_windows(anchor, floor)
+    rows = gold.period_rows(anchor, min(w.start for w in windows))
+    return windows, rows
+
+
+def _check_buckets(anchor, floor):
+    windows, rows = _bucket_dates(anchor, floor)
+    for w in windows:
+        limit = gold.window_bucket_limit(w.name)
+        picked = {d for d, bucket, in_30d in rows if (in_30d if limit is None else bucket < limit)}
+        expected = {w.start + timedelta(days=i) for i in range((w.end - w.start).days + 1)}
+        assert picked == expected, (anchor, w.name)
+
+
+def test_every_window_is_exactly_its_buckets_on_every_kind_of_anchor():
+    # Month ends, 29 February, the 30th and 31st, and ordinary days: the
+    # pre-aggregated gold path sums buckets < limit instead of filtering silver
+    # by BETWEEN start AND end, so the two have to select the same dates.
+    anchors = [
+        date(2024, 2, 29), date(2025, 2, 28), date(2025, 3, 1), date(2025, 3, 30),
+        date(2025, 3, 31), date(2025, 5, 31), date(2025, 6, 30), date(2025, 12, 31),
+        date(2026, 1, 1), date(2026, 10, 7), date(2028, 2, 29),
+    ]
+    for anchor in anchors:
+        _check_buckets(anchor, date(2001, 1, 1))
+
+
+def test_every_day_of_a_leap_year_as_anchor():
+    start = date(2024, 1, 1)
+    for i in range(366):
+        _check_buckets(start + timedelta(days=i), start - timedelta(days=365 * 6))
+
+
+def test_bucket_limits():
+    assert gold.window_bucket_limit("last_30d") is None
+    assert gold.window_bucket_limit("last_3m") == 3
+    assert gold.window_bucket_limit("last_9m") == 9
+    assert gold.window_bucket_limit("last_1y") == 12
+    assert gold.window_bucket_limit("last_2y") == 13
+    assert gold.window_bucket_limit("last_26y") == 37

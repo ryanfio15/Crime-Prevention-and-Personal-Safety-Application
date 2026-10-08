@@ -498,3 +498,84 @@ def test_legacy_names_are_exact_copies(built, table):
         new_n, new_digest = fingerprint(current)
         assert new_n > 0, (table, current)
         assert (old_n, old_digest) == (new_n, new_digest), (table, legacy)
+
+
+# ---------------------------------------------------------------- pre-aggregation
+
+
+def _layer_snapshot(conn):
+    activity = {
+        (r["h3_index"], r["time_window"], r["category"]): r
+        for r in _rows(
+            conn,
+            """
+            SELECT h3_index, time_window, category, incident_count, percentile, activity_tier
+            FROM gold.cell_activity WHERE source_id = %s
+            """,
+            (SOURCE,),
+        )
+    }
+    safety = {
+        (r["h3_index"], r["time_window"], r["track"], r["scheme_version"]): r
+        for r in _rows(
+            conn,
+            """
+            SELECT h3_index, time_window, track, scheme_version, incident_count,
+                   weighted_total, smoothed_per_km2, safety_percentile
+            FROM gold.cell_safety WHERE source_id = %s
+            """,
+            (SOURCE,),
+        )
+    }
+    mix = {
+        (r["h3_index"], r["time_window"], r["rank"]): r
+        for r in _rows(
+            conn,
+            """
+            SELECT h3_index, time_window, rank, raw_offense_text, incident_count
+            FROM gold.cell_offense_mix WHERE source_id = %s
+            """,
+            (SOURCE,),
+        )
+    }
+    return activity, safety, mix
+
+
+def _rebuild(conn, preaggregate, monkeypatch):
+    monkeypatch.setattr(gold, "PREAGGREGATE", preaggregate)
+    gold.refresh_all(conn, SOURCE, PIPELINE_VERSION, include_hourly=True)
+    windows = gold.city_windows(conn, SOURCE, ANCHOR)
+    gold.refresh_safety_layer(conn, SOURCE, windows, scheme_version=AREA_SCHEME)
+    conn.commit()
+    return _layer_snapshot(conn)
+
+
+def test_preaggregated_gold_matches_the_per_window_sql(built, monkeypatch):
+    # gold.PREAGGREGATE: each layer reads silver once into bucket aggregates and
+    # sums buckets per window, instead of rescanning silver per window. The two
+    # must agree: counts and the offense mix exactly, the severity-weighted
+    # sums to float rounding (they are summed in a different order).
+    conn = built["conn"]
+    direct = _rebuild(conn, False, monkeypatch)
+    pre = _rebuild(conn, True, monkeypatch)
+
+    for name, a, b in zip(("activity", "safety", "mix"), direct, pre):
+        assert a.keys() == b.keys(), name
+        assert a, name
+
+    for key, row in direct[0].items():
+        assert row == pre[0][key], key
+    assert direct[2] == pre[2]
+
+    differing = 0
+    for key, row in direct[1].items():
+        other = pre[1][key]
+        assert row["incident_count"] == other["incident_count"], key
+        assert abs(row["weighted_total"] - other["weighted_total"]) <= 1e-9 * max(
+            1.0, abs(row["weighted_total"])
+        ), key
+        if abs(row["safety_percentile"] - other["safety_percentile"]) > 1e-12:
+            differing += 1
+    # A rounding difference can only reorder cells whose smoothed rates were
+    # equal to the last bit; anything more than a handful is a real bug.
+    assert differing <= len(direct[1]) * 0.01, differing

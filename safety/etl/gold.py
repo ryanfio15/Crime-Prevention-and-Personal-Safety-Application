@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
@@ -467,11 +468,203 @@ def _h3_column(res: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Period aggregates: read silver once per layer, not once per window
+# ---------------------------------------------------------------------------
+#
+# With windows back to 2001 a city has thirty of them, and each layer used to
+# rescan silver for every one -- with the severity-weight lookup run per
+# incident per window. Instead each layer reads silver once into a temp table
+# keyed by *bucket*: one bucket per month for the first year back from the
+# anchor, then one per year. Every window is a whole number of buckets
+# (window_bucket_limit), so its counts are a sum over buckets < limit, and the
+# 30-day window, which is not month-aligned, rides on its own flag.
+#
+# Month m back from the anchor is (_shift_months(anchor, m + 1),
+# _shift_months(anchor, m)], so "the last K months" -- which starts the day after
+# _shift_months(anchor, K) -- is exactly months 0..K-1. last_Ny is 12N months,
+# and _shift_years agrees with _shift_months(12N) on every date, 29 February
+# included, so the year windows line up too.
+
+# Off only to compare against the original per-window SQL (tests, or a
+# suspected discrepancy): the results are identical, the cost is not.
+PREAGGREGATE = True
+
+
+def window_months(name: str) -> int | None:
+    """K for last_Km, 12N for last_Ny, None for last_30d."""
+    if name == "last_30d":
+        return None
+    count = int(name[5:-1])
+    return count * 12 if name.endswith("y") else count
+
+
+def _bucket(month_index: int) -> int:
+    return month_index if month_index < 12 else 11 + month_index // 12
+
+
+def window_bucket_limit(name: str) -> int | None:
+    """The window is buckets [0, limit); None for last_30d (its own flag)."""
+    months = window_months(name)
+    if months is None:
+        return None
+    return months if months <= 12 else 11 + months // 12
+
+
+def _in_window(window: Window) -> str:
+    """SQL predicate over an aggregate's bucket / in_30d columns."""
+    limit = window_bucket_limit(window.name)
+    return "in_30d" if limit is None else f"bucket < {int(limit)}"
+
+
+def period_rows(anchor: date, oldest: date) -> list[tuple[date, int, bool]]:
+    """(date, bucket, in the last 30 days) for every date from `oldest` to `anchor`."""
+    thirty = anchor - timedelta(days=29)
+    rows = []
+    month = 0
+    lower = _shift_months(anchor, 1)
+    day = anchor
+    while day >= oldest:
+        while day <= lower:
+            month += 1
+            lower = _shift_months(anchor, month + 1)
+        rows.append((day, _bucket(month), day >= thirty))
+        day -= timedelta(days=1)
+    return rows
+
+
+def _create_period_table(cur: psycopg.Cursor, windows: list[Window]) -> None:
+    """_period(d, bucket, in_30d) for every date the windows cover.
+
+    About 9,500 rows for 26 years. Dates outside every window have no row, so
+    the inner join to it drops them exactly as BETWEEN start AND end did.
+    """
+    rows = period_rows(windows[0].end, min(w.start for w in windows))
+    cur.execute("DROP TABLE IF EXISTS _period")
+    cur.execute(
+        "CREATE TEMP TABLE _period (d date PRIMARY KEY, bucket smallint NOT NULL, "
+        "in_30d boolean NOT NULL) ON COMMIT DROP"
+    )
+    with cur.copy("COPY _period (d, bucket, in_30d) FROM STDIN") as copy:
+        for row in rows:
+            copy.write_row(row)
+    cur.execute("ANALYZE _period")
+
+
+def _res_rows(resolutions) -> str:
+    """VALUES rows expanding one incident into one row per resolution."""
+    return ", ".join(f"({int(res)}, x.{_h3_column(res)})" for res in resolutions)
+
+
+def _res_bucket_cap(windows: list[Window], resolutions, builds) -> str:
+    """SQL limiting each resolution to the buckets its in-scope windows read."""
+    cases = []
+    for res in resolutions:
+        limits = [
+            # last_30d can reach into month 1 when month 0 is February-short.
+            window_bucket_limit(w.name) or 2 for w in windows if builds(res, w.name)
+        ]
+        cases.append(f"WHEN {int(res)} THEN {max(limits) if limits else 0}")
+    return f"x.bucket < CASE res.h3_res {' '.join(cases)} END"
+
+
+def _build_activity_aggregate(
+    cur: psycopg.Cursor, source_id: str, windows: list[Window]
+) -> None:
+    cur.execute("DROP TABLE IF EXISTS _activity_agg")
+    cur.execute(
+        f"""
+        CREATE TEMP TABLE _activity_agg ON COMMIT DROP AS
+        SELECT
+            res.h3_res, res.h3_index, x.bucket, x.in_30d,
+            count(*)                                                    AS c_all,
+            count(*) FILTER (WHERE x.product_category = 'violent')         AS c_violent,
+            count(*) FILTER (WHERE x.product_category = 'property')        AS c_property,
+            count(*) FILTER (WHERE x.product_category = 'quality_of_life') AS c_quality_of_life,
+            count(*) FILTER (WHERE x.product_category = 'other')           AS c_other
+        FROM (
+            SELECT i.h3_r8, i.h3_r9, i.h3_r10, i.product_category, p.bucket, p.in_30d
+            FROM silver.incident i
+            JOIN _period p ON p.d = i.occurred_local_date
+            WHERE i.source_id = %s
+        ) x
+        CROSS JOIN LATERAL (VALUES {_res_rows(RESOLUTIONS)}) AS res(h3_res, h3_index)
+        WHERE res.h3_index IS NOT NULL
+          AND {_res_bucket_cap(windows, RESOLUTIONS, activity_builds)}
+        GROUP BY 1, 2, 3, 4
+        """,
+        (source_id,),
+    )
+    cur.execute("ANALYZE _activity_agg")
+
+
+def _build_safety_aggregate(
+    cur: psycopg.Cursor, source_id: str, scheme: Scheme
+) -> None:
+    """Severity-weighted sums per bucket for one scheme: the weight lookup runs
+    once per incident here instead of once per incident per window."""
+    cur.execute("DROP TABLE IF EXISTS _safety_agg")
+    cur.execute(
+        f"""
+        CREATE TEMP TABLE _safety_agg ON COMMIT DROP AS
+        SELECT
+            res.h3_res, res.h3_index, x.bucket, x.in_30d,
+            count(*) FILTER (WHERE x.product_category =  'violent') AS n_violent,
+            count(*) FILTER (WHERE x.product_category <> 'violent') AS n_non_violent,
+            COALESCE(sum(x.weight) FILTER (WHERE x.product_category =  'violent'), 0)
+                AS w_violent,
+            COALESCE(sum(x.weight) FILTER (WHERE x.product_category <> 'violent'), 0)
+                AS w_non_violent
+        FROM (
+            SELECT i.h3_r8, i.h3_r9, i.h3_r10, i.product_category, p.bucket, p.in_30d,
+                   COALESCE(w.weight, 1.0) AS weight
+            FROM silver.incident i
+            JOIN _period p ON p.d = i.occurred_local_date
+            {_WEIGHT_LOOKUP}
+            WHERE i.source_id = %(source_id)s
+        ) x
+        CROSS JOIN LATERAL (VALUES {_res_rows(scheme.resolutions)}) AS res(h3_res, h3_index)
+        WHERE res.h3_index IS NOT NULL
+        GROUP BY 1, 2, 3, 4
+        """,
+        {"source_id": source_id, "scheme": scheme.version},
+    )
+    cur.execute("ANALYZE _safety_agg")
+
+
+def _build_mix_aggregate(cur: psycopg.Cursor, source_id: str, windows: list[Window]) -> None:
+    cur.execute("DROP TABLE IF EXISTS _mix_agg")
+    cur.execute(
+        f"""
+        CREATE TEMP TABLE _mix_agg ON COMMIT DROP AS
+        SELECT
+            res.h3_res, res.h3_index, x.bucket, x.in_30d, x.raw_offense_text,
+            min(x.nibrs_code)       AS nibrs_code,
+            min(x.product_category) AS product_category,
+            count(*)                AS n
+        FROM (
+            SELECT i.h3_r8, i.h3_r9, i.h3_r10, i.raw_offense_text, i.nibrs_code,
+                   i.product_category, p.bucket, p.in_30d
+            FROM silver.incident i
+            JOIN _period p ON p.d = i.occurred_local_date
+            WHERE i.source_id = %s AND i.raw_offense_text IS NOT NULL
+        ) x
+        CROSS JOIN LATERAL (VALUES {_res_rows(RESOLUTIONS)}) AS res(h3_res, h3_index)
+        WHERE res.h3_index IS NOT NULL
+          AND {_res_bucket_cap(windows, RESOLUTIONS, activity_builds)}
+        GROUP BY 1, 2, 3, 4, 5
+        """,
+        (source_id,),
+    )
+    cur.execute("ANALYZE _mix_agg")
+
+
+# ---------------------------------------------------------------------------
 # Cell activity: one pass per (resolution, window), all categories at once
 # ---------------------------------------------------------------------------
 
-_ACTIVITY_SQL = """
-WITH counts AS (
+# Per-window counts read straight from silver: the original form, kept as the
+# reference the pre-aggregated one is tested against (PREAGGREGATE).
+_ACTIVITY_COUNTS_DIRECT = """
     SELECT
         {h3_column} AS h3_index,
         count(*)                                                        AS c_all,
@@ -483,6 +676,25 @@ WITH counts AS (
     WHERE source_id = %(source_id)s
       AND occurred_local_date BETWEEN %(window_start)s AND %(window_end)s
     GROUP BY 1
+"""
+
+# The same counts summed from _activity_agg (_build_activity_aggregate).
+_ACTIVITY_COUNTS_AGG = """
+    SELECT
+        h3_index,
+        sum(c_all)             AS c_all,
+        sum(c_violent)         AS c_violent,
+        sum(c_property)        AS c_property,
+        sum(c_quality_of_life) AS c_quality_of_life,
+        sum(c_other)           AS c_other
+    FROM _activity_agg
+    WHERE h3_res = %(h3_res)s AND {in_window}
+    GROUP BY 1
+"""
+
+_ACTIVITY_SQL = """
+WITH counts AS (
+{counts}
 ),
 universe AS (
     SELECT h3_index, area_km2
@@ -561,6 +773,9 @@ def refresh_cell_activity(
     """Rebuild gold.cell_activity for every resolution/window/category in scope."""
     written = 0
     with conn.cursor() as cur:
+        if PREAGGREGATE:
+            _create_period_table(cur, windows)
+            _build_activity_aggregate(cur, source_id, windows)
         for res in RESOLUTIONS:
             h3_column = _h3_column(res)
             scope_windows, scope_categories = activity_scope(res)
@@ -588,8 +803,13 @@ def refresh_cell_activity(
             for window in windows:
                 if not activity_builds(res, window.name):
                     continue
+                counts = (
+                    _ACTIVITY_COUNTS_AGG.format(in_window=_in_window(window))
+                    if PREAGGREGATE
+                    else _ACTIVITY_COUNTS_DIRECT.format(h3_column=h3_column)
+                )
                 cur.execute(
-                    _ACTIVITY_SQL.format(h3_column=h3_column),
+                    _ACTIVITY_SQL.format(counts=counts),
                     {
                         "source_id": source_id,
                         "h3_res": res,
@@ -720,8 +940,7 @@ _WEIGHT_LOOKUP = """
     ) w ON true
 """
 
-_SAFETY_SQL = """
-WITH weighted AS (
+_SAFETY_WEIGHTED_DIRECT = """
     SELECT
         i.{h3_column} AS h3_index,
         count(*) FILTER (WHERE i.product_category =  'violent') AS n_violent,
@@ -735,6 +954,23 @@ WITH weighted AS (
     WHERE i.source_id = %(source_id)s
       AND i.occurred_local_date BETWEEN %(window_start)s AND %(window_end)s
     GROUP BY 1
+"""
+
+_SAFETY_WEIGHTED_AGG = """
+    SELECT
+        h3_index,
+        sum(n_violent)     AS n_violent,
+        sum(n_non_violent) AS n_non_violent,
+        sum(w_violent)     AS w_violent,
+        sum(w_non_violent) AS w_non_violent
+    FROM _safety_agg
+    WHERE h3_res = %(h3_res)s AND {in_window}
+    GROUP BY 1
+"""
+
+_SAFETY_SQL = """
+WITH weighted AS (
+{weighted}
 ),
 universe AS (
     -- Area and exposure travel together from here down. The ranking divides by
@@ -1002,11 +1238,11 @@ def refresh_cell_safety(
         _require_exposure(conn, source_id, scheme)
     written = 0
     with conn.cursor() as cur:
+        if PREAGGREGATE:
+            _create_period_table(cur, windows)
+            _build_safety_aggregate(cur, source_id, scheme)
         for res in scheme.resolutions:
             h3_column = _h3_column(res)
-            sql = _SAFETY_SQL.format(
-                h3_column=h3_column, weight_lookup=_WEIGHT_LOOKUP
-            )
             # Delete-then-insert inside the caller's transaction, so readers keep
             # seeing the previous ranking until commit. Every window at once, as
             # in refresh_cell_activity.
@@ -1020,8 +1256,15 @@ def refresh_cell_safety(
             for window in windows:
                 if not safety_builds(window.name):
                     continue
+                weighted = (
+                    _SAFETY_WEIGHTED_AGG.format(in_window=_in_window(window))
+                    if PREAGGREGATE
+                    else _SAFETY_WEIGHTED_DIRECT.format(
+                        h3_column=h3_column, weight_lookup=_WEIGHT_LOOKUP
+                    )
+                )
                 cur.execute(
-                    sql,
+                    _SAFETY_SQL.format(weighted=weighted),
                     {
                         "source_id": source_id,
                         "h3_res": res,
@@ -1493,8 +1736,7 @@ GROUP BY GROUPING SETS (
 )
 """
 
-_OFFENSE_MIX_SQL = """
-WITH ranked AS (
+_OFFENSE_MIX_RANKED_DIRECT = """
     SELECT
         {h3_column}          AS h3_index,
         raw_offense_text,
@@ -1510,6 +1752,27 @@ WITH ranked AS (
       AND occurred_local_date BETWEEN %(window_start)s AND %(window_end)s
       AND raw_offense_text IS NOT NULL
     GROUP BY 1, 2
+"""
+
+_OFFENSE_MIX_RANKED_AGG = """
+    SELECT
+        h3_index,
+        raw_offense_text,
+        min(nibrs_code)       AS nibrs_code,
+        min(product_category) AS product_category,
+        sum(n)                AS n,
+        row_number() OVER (
+            PARTITION BY h3_index
+            ORDER BY sum(n) DESC, raw_offense_text
+        ) AS rn
+    FROM _mix_agg
+    WHERE h3_res = %(h3_res)s AND {in_window}
+    GROUP BY 1, 2
+"""
+
+_OFFENSE_MIX_SQL = """
+WITH ranked AS (
+{ranked}
 )
 INSERT INTO gold.cell_offense_mix (
     source_id, h3_index, h3_res, time_window, rank,
@@ -1536,6 +1799,9 @@ def refresh_cell_detail(
     mix_rows = 0
 
     with conn.cursor() as cur:
+        if PREAGGREGATE:
+            _create_period_table(cur, windows)
+            _build_mix_aggregate(cur, source_id, windows)
         for res in RESOLUTIONS:
             h3_column = _h3_column(res)
 
@@ -1559,8 +1825,17 @@ def refresh_cell_detail(
                 (source_id, res),
             )
             for window in windows:
+                # The detail panel at resolution 10 only ever asks for the
+                # windows the map is built for there.
+                if not activity_builds(res, window.name):
+                    continue
+                ranked = (
+                    _OFFENSE_MIX_RANKED_AGG.format(in_window=_in_window(window))
+                    if PREAGGREGATE
+                    else _OFFENSE_MIX_RANKED_DIRECT.format(h3_column=h3_column)
+                )
                 cur.execute(
-                    _OFFENSE_MIX_SQL.format(h3_column=h3_column),
+                    _OFFENSE_MIX_SQL.format(ranked=ranked),
                     {
                         "source_id": source_id,
                         "h3_res": res,
@@ -1932,6 +2207,15 @@ def refresh_all(
     all-hours percentile it is compared against does get rebuilt here, so the two
     are briefly derived from different windows of data.
     """
+    timings: dict[str, float] = {}
+    clock = time.monotonic()
+
+    def lap(phase: str) -> None:
+        nonlocal clock
+        now = time.monotonic()
+        timings[phase] = round(now - clock, 2)
+        clock = now
+
     anchor = data_anchor(conn, source_id)
     if anchor is None:
         raise LookupError(f"no silver rows for '{source_id}'; nothing to roll up")
@@ -1943,6 +2227,7 @@ def refresh_all(
         anchor,
         ", ".join(f"{w.name}[{w.start}..{w.end}]" for w in windows),
     )
+    lap("cell_universe")
 
     # Exposure is keyed on the cell universe, so it has to follow it and precede
     # anything that divides by it. Skipped, with a warning, when no census data
@@ -1950,9 +2235,12 @@ def refresh_all(
     # and refusing here would make the census pull a hard prerequisite of every
     # gold refresh rather than of the per-capita ranking specifically.
     exposure_cells = refresh_cell_exposure(conn, source_id)
+    lap("exposure")
 
     activity_rows = refresh_cell_activity(conn, source_id, windows)
+    lap("activity")
     safety_rows, coverage = refresh_safety_layer(conn, source_id, windows)
+    lap("safety")
 
     hour_rows: int | None = None
     hour_profile_rows: int | None = None
@@ -1963,6 +2251,7 @@ def refresh_all(
         hour_rows, hour_profile_rows, hour_share = refresh_hourly_layer(
             conn, source_id, windows
         )
+        lap("hourly")
     else:
         # Said out loud. A silently stale layer is the failure mode this whole
         # module is written against, and hour_known_share passing as None below
@@ -1975,12 +2264,15 @@ def refresh_all(
         )
 
     monthly_rows, mix_rows = refresh_cell_detail(conn, source_id, windows)
+    lap("detail")
     write_city_windows(conn, source_id, windows)
     write_legacy_windows(
         conn, source_id, ALL_HOURS_TABLES + (HOURLY_TABLES if include_hourly else ())
     )
     refresh_city_snapshot(conn, source_id, pipeline_version, coverage, hour_share)
     conn.commit()
+    lap("snapshot_and_commit")
+    log.info("gold refresh for %s took %s", source_id, timings)
 
     return {
         "cells_r8": cells.get(8, 0),
@@ -1998,4 +2290,5 @@ def refresh_all(
         "cell_monthly_rows": monthly_rows,
         "cell_offense_mix_rows": mix_rows,
         "windows": [w.name for w in windows],
+        "timings_seconds": timings,
     }
