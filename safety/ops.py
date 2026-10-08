@@ -401,7 +401,7 @@ def _gold_reason(state: dict, census_pending: bool) -> str | None:
 
 
 _LAST_ATTEMPT_SQL = """
-SELECT status, started_at, error,
+SELECT status, started_at, error, pipeline_version,
        EXTRACT(EPOCH FROM (now() - started_at)) / 3600.0 AS hours_ago
 FROM etl.ops_run
 WHERE task = %s AND source_id IS NOT DISTINCT FROM %s
@@ -442,6 +442,13 @@ def _cooldown_block(conn: psycopg.Connection, step: Step, cooldown_hours: float)
     # state between runs rather than a sign it is stuck: it moved the coverage
     # date, and the next run carries on from there.
     if step.task == "history" and last["status"] == "succeeded":
+        return None
+
+    # A success under an older pipeline says nothing about this one. Two
+    # releases that each bump PIPELINE_VERSION within the cooldown otherwise
+    # leave the second rebuild refused as a loop, and gold serving the first
+    # release's output for hours.
+    if last["status"] == "succeeded" and last["pipeline_version"] != PIPELINE_VERSION:
         return None
 
     # Succeeded inside the cooldown, yet the data still says the step is needed.

@@ -78,3 +78,53 @@ def test_history_waits_for_the_first_backfill():
 def test_history_runs_after_a_gold_rebuild_in_the_same_plan():
     stale = _state(gold_pipeline_version="phase2.0.0")
     assert [s.task for s in ops.plan_from_state(stale, "sea")] == ["gold", "history"]
+
+
+class _Cursor:
+    def __init__(self, row):
+        self.row = row
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, *args):
+        pass
+
+    def fetchone(self):
+        return self.row
+
+
+class _Conn:
+    def __init__(self, row):
+        self.row = row
+
+    def cursor(self):
+        return _Cursor(self.row)
+
+
+def _last(status, version, hours=1.0):
+    return {"status": status, "started_at": None, "error": None,
+            "pipeline_version": version, "hours_ago": hours}
+
+
+GOLD = ops.Step(task="gold", city="phl", reason="x", argv=("gold", "--city", "phl"))
+HISTORY = ops.Step(task="history", city="phl", reason="x", argv=("history", "--city", "phl"))
+
+
+def test_success_under_this_pipeline_still_blocks_a_repeat():
+    assert ops._cooldown_block(_Conn(_last("succeeded", PIPELINE_VERSION)), GOLD, 6) is not None
+
+
+def test_success_under_an_older_pipeline_does_not_block():
+    assert ops._cooldown_block(_Conn(_last("succeeded", "phase0.0.0")), GOLD, 6) is None
+
+
+def test_a_recent_failure_still_blocks_whatever_the_version():
+    assert ops._cooldown_block(_Conn(_last("failed", "phase0.0.0")), GOLD, 6) is not None
+
+
+def test_history_success_never_blocks():
+    assert ops._cooldown_block(_Conn(_last("succeeded", PIPELINE_VERSION)), HISTORY, 6) is None
