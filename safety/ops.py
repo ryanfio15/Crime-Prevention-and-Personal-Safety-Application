@@ -65,6 +65,7 @@ import psycopg
 from safety import PIPELINE_VERSION
 from safety.config import settings
 from safety.db import connect, wait_for_db
+from safety.etl import gold
 from safety.etl.run import (
     _COMPLETED_STATUSES,
     _INCIDENT_MODES,
@@ -131,8 +132,13 @@ SELECT
     EXISTS (
         SELECT 1 FROM reference.census_block c WHERE c.source_id = %(source_id)s
     ) AS has_census,
+    -- Under the window name the current code builds (gold.HOURLY_WINDOWS), so
+    -- rows the previous release wrote under its own name do not count: after the
+    -- window rename the post-deploy run rebuilds the layer instead of leaving
+    -- the time-of-day view empty until the weekly job.
     EXISTS (
-        SELECT 1 FROM gold.cell_hour_safety h WHERE h.source_id = %(source_id)s
+        SELECT 1 FROM gold.cell_hour_safety h
+        WHERE h.source_id = %(source_id)s AND h.time_window = ANY(%(hourly_windows)s)
     ) AS has_hourly,
     -- Whether the time-of-day layers are *buildable*, which is a separate
     -- question from whether they exist. gold.refresh_hourly_layer omits every
@@ -161,6 +167,7 @@ def _city_state(conn: psycopg.Connection, source_id: str) -> dict:
                 "source_id": source_id,
                 "modes": list(_INCIDENT_MODES),
                 "statuses": list(_COMPLETED_STATUSES),
+                "hourly_windows": list(gold.HOURLY_WINDOWS),
             },
         )
         return cur.fetchone()

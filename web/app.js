@@ -347,11 +347,11 @@ const TRACK_PROPS = {
   },
 };
 
-/* Mirrors safety.etl.gold.HOURLY_RESOLUTIONS / HOURLY_WINDOWS. The API rejects
-   anything outside this with a reason; the client knows the same bounds so it
-   can disable the control up front rather than let a request fail. */
+/* Mirrors safety.etl.gold.HOURLY_RESOLUTIONS. The API rejects anything outside
+   this with a reason; the client knows the same bounds so it can disable the
+   control up front rather than let a request fail. Which *windows* carry the
+   hourly layer comes with each city's window list (windows.js). */
 const HOURLY_RESOLUTIONS = [8, 9];
-const HOURLY_WINDOWS = ["last_12m"];
 
 /* Mirrors safety.etl.gold.SAFETY_RESOLUTIONS. The safety ranking divides by
    ambient population apportioned from census blocks, and a res-10 cell is
@@ -360,19 +360,21 @@ const HOURLY_WINDOWS = ["last_12m"];
    back to the count ramp rather than going blank. */
 const SAFETY_RESOLUTIONS = [8, 9];
 
-/* Mirrors safety.etl.gold.ACTIVITY_WINDOWS / ACTIVITY_CATEGORIES. The activity
-   layer is dense -- one row per cell per window per category, since a cell with
-   no reported incidents is still part of the distribution it is ranked against
-   -- so resolution 10 is built for the two widest windows and the combined
-   category only. At ~0.015 km² a single category over 30 days leaves nearly
-   every cell on zero, tied with every other, and a percentile over a field of
-   ties is not a reading. Same bounds on the server, which answers the rest with
-   the reason; the client knows them so the controls can say so first. */
-const ACTIVITY_WINDOWS = { 10: ["last_12m", "last_24m"] };
+/* Mirrors safety.etl.gold.ACTIVITY_CATEGORIES. The activity layer is dense --
+   one row per cell per window per category, since a cell with no reported
+   incidents is still part of the distribution it is ranked against -- so
+   resolution 10 is built for the combined category only, and for the one- and
+   two-year windows (each window's `res10` flag). At ~0.015 km² a single
+   category over 30 days leaves nearly every cell on zero, tied with every
+   other, and a percentile over a field of ties is not a reading. Same bounds on
+   the server, which answers the rest with the reason; the client knows them so
+   the controls can say so first. */
 const ACTIVITY_CATEGORIES = { 10: ["all"] };
 
-const activityWindows = (res) => ACTIVITY_WINDOWS[res] ?? null;
 const activityCategories = (res) => ACTIVITY_CATEGORIES[res] ?? null;
+
+/** The selected window's entry from the city's list, or null before it loads. */
+const currentWindow = () => findWindow(state.cityRecord?.windows, state.window);
 
 /** "20:00–21:00". The last block reads 23:00–24:00, not 23:00–00:00. */
 const hourLabel = (hour) =>
@@ -391,7 +393,9 @@ const state = {
   /* The selected city's snapshot row, so the header, the frame and the
      methodology sheet all read from one place. */
   cityRecord: null,
-  window: "last_12m",
+  /* A window id from the city's list (windows.js). ?window= wins on first load;
+     the list itself arrives with the city record. */
+  window: new URLSearchParams(location.search).get("window") || DEFAULT_WINDOW,
   category: "all",
   res: 8,
   scale: "safety",
@@ -664,6 +668,7 @@ async function loadFreshness({ refit = false } = {}) {
   if (!response.ok) return;
   const city = await response.json();
   state.cityRecord = city;
+  renderWindowOptions();
 
   // Frame the city from its own stored bounding box rather than a hardcoded
   // centre, so a second city needs no client change (design doc S11). `refit`
@@ -758,6 +763,9 @@ async function loadCities() {
  */
 async function selectCity(sourceId) {
   if (sourceId === state.city) return;
+  // How wide the outgoing window is, so renderWindowOptions can find the
+  // nearest one if the new city's history is shorter.
+  state.windowSpan = currentWindow()?.span_days ?? null;
   state.city = sourceId;
   closeDetail();
   // The stamp is per city now, so carrying the old one across would read as "the
@@ -770,6 +778,8 @@ async function selectCity(sourceId) {
   history.replaceState(null, "", url);
 
   await loadFreshness({ refit: true });
+  syncActivityScope();
+  syncHourAvailability();
   await loadLayer();
 }
 
@@ -1476,7 +1486,7 @@ function repaint() {
  */
 function syncHourAvailability() {
   const ok =
-    HOURLY_RESOLUTIONS.includes(state.res) && HOURLY_WINDOWS.includes(state.window);
+    HOURLY_RESOLUTIONS.includes(state.res) && Boolean(currentWindow()?.hourly);
   const field = $("f-hour-field");
   field.setAttribute("aria-disabled", String(!ok));
   $("f-hour").disabled = !ok;
@@ -1533,41 +1543,84 @@ function syncSafetyAvailability() {
 }
 
 /**
+ * Fill the window control from the city's own list (windows.js).
+ *
+ * Runs whenever the city record arrives: on load, on a city switch, and when a
+ * refresh grows the history by a year. Keeps the selected window if the city
+ * has it, otherwise picks the nearest (pickWindow), and records the choice in
+ * the URL so a shared link opens on the same window.
+ */
+function renderWindowOptions() {
+  const windows = state.cityRecord?.windows ?? [];
+  const chosen = pickWindow(
+    windows,
+    state.window,
+    state.windowSpan ?? currentWindow()?.span_days,
+    state.cityRecord?.default_window
+  );
+  state.windowSpan = null;
+  $("f-window").replaceChildren(
+    ...windows.map((w) => {
+      const option = document.createElement("option");
+      option.value = w.id;
+      option.textContent = w.partial ? `${w.label} (partial)` : w.label;
+      return option;
+    })
+  );
+  if (chosen) setWindow(chosen.id);
+  syncActivityScope();
+}
+
+/** Select a window: state, control and URL together. Does not reload. */
+function setWindow(id) {
+  state.window = id;
+  $("f-window").value = id;
+  const url = new URL(location.href);
+  url.searchParams.set("window", id);
+  history.replaceState(null, "", url);
+}
+
+/**
  * Gate the window and category controls on what is built at this cell size.
  *
  * Same principle as syncHourAvailability and syncSafetyAvailability, applied to
  * the two controls that have always been free: at resolution 10 the layer only
- * exists for the widest windows and the combined category. Coerces the current
- * selection rather than leaving one that is about to 400 -- the narrowing keeps
- * the default view (last 12 months, all incidents) at every resolution, so there
- * is always something to fall back to.
+ * exists for the one- and two-year windows and the combined category. Coerces
+ * the current selection rather than leaving one that is about to 400 -- the
+ * narrowing keeps the default view (last 12 months, all incidents) at every
+ * resolution, so there is always something to fall back to.
  *
  * Every caller reloads the layer straight afterwards, so a coerced selection is
  * picked up by that fetch rather than needing one of its own.
  */
 function syncActivityScope() {
-  const windows = activityWindows(state.res);
+  const windows = state.cityRecord?.windows ?? [];
   const categories = activityCategories(state.res);
 
   for (const option of $("f-window").options) {
-    option.disabled = windows !== null && !windows.includes(option.value);
+    const win = findWindow(windows, option.value);
+    option.disabled = Boolean(win) && !windowBuiltAt(win, state.res);
   }
   for (const option of $("f-category").options) {
     option.disabled = categories !== null && !categories.includes(option.value);
   }
 
-  if (windows && !windows.includes(state.window)) {
-    state.window = "last_12m";
-    $("f-window").value = state.window;
+  const win = currentWindow();
+  if (win && !windowBuiltAt(win, state.res)) {
+    const fallback =
+      findWindow(windows, state.cityRecord?.default_window) || findWindow(windows, DEFAULT_WINDOW);
+    if (fallback) setWindow(fallback.id);
   }
   if (categories && !categories.includes(state.category)) {
     state.category = "all";
     $("f-category").value = state.category;
   }
 
-  $("f-window-note").textContent = windows
-    ? "Shorter windows leave a cell this small empty — not enough to rank."
-    : "";
+  $("f-window-note").textContent =
+    state.res === 10
+      ? "Only the 12-month and 2-year windows are built for cells this small. " +
+        windowNote(currentWindow(), state.res)
+      : windowNote(currentWindow(), state.res);
   $("f-category-note").textContent = categories
     ? "A cell this small is empty in most single categories."
     : "";
@@ -1576,7 +1629,8 @@ function syncActivityScope() {
 function wireControls() {
   $("f-city").onchange = (e) => selectCity(e.target.value);
   $("f-window").onchange = (e) => {
-    state.window = e.target.value;
+    setWindow(e.target.value);
+    syncActivityScope();
     syncHourAvailability();
     if (state.selected) selectCell(state.selected);
     loadLayer();
@@ -1707,14 +1761,14 @@ function watchForRefresh() {
   }
 
   wireControls();
+  // Expose read-only state for debugging and for the smoke-test driver.
+  window.__safetyState = state;
+  // Sequential, not parallel: the frame and the window control read the city
+  // record, so the controls sync and the layer paints after it exists.
+  await loadFreshness();
   syncActivityScope();
   syncHourAvailability();
   syncSafetyAvailability();
-  // Expose read-only state for debugging and for the smoke-test driver.
-  window.__safetyState = state;
-  // Sequential, not parallel: the frame reads the city record, so the layer
-  // should paint after it exists.
-  await loadFreshness();
   await loadLayer();
 
   const version = await fetch(`${API}/version?city=${encodeURIComponent(state.city)}`)

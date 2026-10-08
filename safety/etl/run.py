@@ -1181,8 +1181,9 @@ def cmd_safety(args: argparse.Namespace) -> int:
         anchor = gold.data_anchor(conn, args.city)
         if anchor is None:
             raise LookupError(f"no silver rows for '{args.city}'; nothing to rank")
-        windows = gold.resolve_windows(anchor)
+        windows = gold.city_windows(conn, args.city, anchor)
         rows, coverage = gold.refresh_safety_layer(conn, args.city, windows, args.scheme)
+        gold.write_legacy_windows(conn, args.city, ("cell_safety",))
         gold.refresh_city_snapshot(conn, args.city, PIPELINE_VERSION, coverage)
         conn.commit()
 
@@ -1212,10 +1213,11 @@ def cmd_hourly(args: argparse.Namespace) -> int:
         anchor = gold.data_anchor(conn, args.city)
         if anchor is None:
             raise LookupError(f"no silver rows for '{args.city}'; nothing to rank")
-        windows = gold.resolve_windows(anchor)
+        windows = gold.city_windows(conn, args.city, anchor)
         rows, profile_rows, share = gold.refresh_hourly_layer(
             conn, args.city, windows, args.scheme
         )
+        gold.write_legacy_windows(conn, args.city, gold.HOURLY_TABLES)
         gold.refresh_city_snapshot(
             conn, args.city, PIPELINE_VERSION, hour_coverage_share=share
         )
@@ -1633,6 +1635,16 @@ def _require_enabled(config: SourceConfig) -> None:
         )
 
 
+def _window_name(value: str) -> str:
+    """argparse type for a gold window name; legacy names map to the new ones."""
+    value = gold.LEGACY_WINDOWS.get(value, value)
+    if not gold.WINDOW_PATTERN.match(value):
+        raise argparse.ArgumentTypeError(
+            f"'{value}' is not a window: use last_30d, last_3m, last_6m, last_9m or last_<N>y"
+        )
+    return value
+
+
 def _add_all_flag(parser: argparse.ArgumentParser, due: bool = False) -> None:
     """`--all` fans the command out over every enabled source, stalest first."""
     parser.add_argument(
@@ -1755,7 +1767,12 @@ def build_parser() -> argparse.ArgumentParser:
     compare_cmd.add_argument("--a", required=True, help="baseline scheme version")
     compare_cmd.add_argument("--b", required=True, help="candidate scheme version")
     compare_cmd.add_argument("--res", type=int, default=8, choices=(8, 9))
-    compare_cmd.add_argument("--window", default="last_12m", choices=gold.TIME_WINDOWS)
+    compare_cmd.add_argument(
+        "--window",
+        default="last_1y",
+        type=_window_name,
+        help="last_30d, last_3m, last_6m, last_9m or last_<N>y",
+    )
     compare_cmd.add_argument("--track", default="violent", choices=gold.TRACKS)
     compare_cmd.set_defaults(func=cmd_safety_compare)
 

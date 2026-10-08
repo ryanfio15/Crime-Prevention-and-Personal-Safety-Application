@@ -13,7 +13,7 @@
        curl -sSfL <url> | openssl dgst -sha384 -binary | openssl base64 -A
      crossorigin="anonymous" is required for SRI on a cross-origin fetch; unpkg
      answers with access-control-allow-origin: *. Same-origin files (styles.css,
-     html.js, app.js) need no integrity attribute. -->
+     html.js, windows.js, app.js) need no integrity attribute. -->
 <link href="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.css" rel="stylesheet"
       integrity="sha384-gNYNsUmuZqDYiT3gbirWTV5K7rt71RoveS/yXAaU09d4ZUmeDVTD3XoqB6uJAIFR"
       crossorigin="anonymous">
@@ -51,14 +51,14 @@
 
   <label class="field">
     <span class="field-label">Time window</span>
+    <!-- Filled from the city's own window list (web/windows.js): 30 days, 3/6/9
+         months, then years back to its oldest stored incident. -->
     <select id="f-window">
-      <option value="last_30d">Last 30 days</option>
-      <option value="last_90d">Last 90 days</option>
-      <option value="last_12m" selected>Last 12 months</option>
-      <option value="last_24m">Last 24 months</option>
+      <option value="last_1y" selected>Last 12 months</option>
     </select>
-    <!-- Filled by syncActivityScope when the selected cell size is too small to
-         carry a shorter window, so the disabled options explain themselves. -->
+    <!-- Filled by syncActivityScope: why an option is disabled at this cell
+         size, a window that starts before the city's data does, and any
+         recording change the window reaches back into. -->
     <span class="field-note" id="f-window-note"></span>
   </label>
 
@@ -272,6 +272,7 @@
         integrity="sha384-ViAXEmpUtfR6LTFA4VPFElyF4q6ysOu7yi4fs2v5udUWy6l162CdHpDx1SyS870v"
         crossorigin="anonymous"></script>
 <script src="html.js"></script>
+<script src="windows.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

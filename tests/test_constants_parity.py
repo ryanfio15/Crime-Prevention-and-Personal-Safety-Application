@@ -26,9 +26,44 @@ def test_activity_narrowing_matches():
     assert repo.ACTIVITY_CATEGORIES == gold.ACTIVITY_CATEGORIES
 
 
-def test_valid_windows_are_the_windows_gold_builds():
-    built = tuple(w.name for w in gold.resolve_windows(date(2025, 6, 30)))
-    assert repo.VALID_WINDOWS == built
+def test_window_pattern_and_aliases_match():
+    assert repo.WINDOW_PATTERN.pattern == gold.WINDOW_PATTERN.pattern
+    assert repo.LEGACY_WINDOWS == gold.LEGACY_WINDOWS
+
+
+def test_every_window_gold_builds_is_accepted_and_labelled():
+    for w in gold.resolve_windows(date(2025, 6, 30), date(1990, 1, 1)):
+        assert repo.canonical_window(w.name) == w.name
+        assert repo.window_label(w.name).startswith("Last ")
+
+
+def test_default_and_hourly_window_are_built_for_a_two_year_city():
+    built = {w.name for w in gold.resolve_windows(date(2025, 6, 30))}
+    assert repo.DEFAULT_WINDOW in built
+    assert set(repo.HOURLY_WINDOWS) <= built
+    assert set(repo.ACTIVITY_WINDOWS[10]) <= built
+
+
+@pytest.mark.parametrize(
+    ("name", "label"),
+    [
+        ("last_30d", "Last 30 days"),
+        ("last_3m", "Last 3 months"),
+        ("last_1y", "Last 12 months"),
+        ("last_2y", "Last 2 years"),
+        ("last_12m", "Last 12 months"),
+    ],
+)
+def test_window_labels(name, label):
+    assert repo.window_label(name) == label
+
+
+def test_aliases_resolve_both_ways():
+    new = [{"id": n} for n in ("last_30d", "last_3m", "last_1y", "last_2y")]
+    old = [{"id": n} for n in ("last_30d", "last_90d", "last_12m", "last_24m")]
+    assert repo.match_window("last_12m", new)["id"] == "last_1y"
+    assert repo.match_window("last_1y", old)["id"] == "last_12m"
+    assert repo.match_window("last_5y", new) is None
 
 
 @pytest.mark.parametrize("res", [8, 9, 10])

@@ -170,12 +170,14 @@ def built(db_conn):
 
     assert gold.data_anchor(conn, SOURCE) == ANCHOR
     result = gold.refresh_all(conn, SOURCE, PIPELINE_VERSION, include_hourly=True)
-    windows = gold.resolve_windows(ANCHOR)
+    windows = gold.city_windows(conn, SOURCE, ANCHOR)
+    assert [w.name for w in windows] == result["windows"]
     # The only *enabled* scheme is per-capita (reference/severity/schemes.csv),
     # and with no census blocks loaded refresh_all logs it and skips it, so
     # nothing above writes gold.cell_safety. Build the area-denominated scheme
     # explicitly so the safety ranking's invariants are exercised too.
     safety_rows, _ = gold.refresh_safety_layer(conn, SOURCE, windows, scheme_version=AREA_SCHEME)
+    gold.write_legacy_windows(conn, SOURCE, ("cell_safety",))
     conn.commit()
     assert safety_rows > 0
     return {"conn": conn, "rows": rows, "windows": windows, "result": result}
@@ -414,3 +416,86 @@ def test_hourly_per_capita_scheme_skipped_without_exposure(built):
         (SOURCE,),
     )
     assert n == 0
+
+
+# ---------------------------------------------------------------- windows (018)
+
+
+def test_fixture_spans_the_two_year_window_list(built):
+    # 800 days of history: the four short windows, one and two years, and no
+    # third year (70 days past last_2y is under PARTIAL_WINDOW_MIN_SHARE).
+    assert [w.name for w in built["windows"]] == [
+        "last_30d", "last_3m", "last_6m", "last_9m", "last_1y", "last_2y"
+    ]
+
+
+def test_city_window_matches_what_was_built(built):
+    # gold.write_city_windows writes one row per window, in order, with the
+    # flags the layer refreshes used.
+    rows = _rows(
+        built["conn"],
+        "SELECT * FROM gold.city_window WHERE source_id = %s ORDER BY sort_order",
+        (SOURCE,),
+    )
+    assert [r["time_window"] for r in rows] == [w.name for w in built["windows"]]
+    for row, w in zip(rows, built["windows"]):
+        assert (row["window_start"], row["window_end"]) == (w.start, w.end)
+        assert row["hourly_built"] == (w.name in gold.HOURLY_WINDOWS)
+        assert row["res10_built"] == gold.activity_builds(10, w.name)
+        assert row["safety_built"] is True
+        n = _scalar(
+            built["conn"],
+            """
+            SELECT count(*) FROM gold.cell_activity
+            WHERE source_id = %s AND time_window = %s AND h3_res = 8
+            """,
+            (SOURCE, w.name),
+        )
+        assert n > 0, w.name
+
+
+def test_no_layer_holds_a_window_outside_the_city_list(built):
+    # Every refresh deletes all windows for the city before rebuilding, so a
+    # window the list no longer has cannot linger. Legacy names are the one
+    # exception while settings.gold_legacy_windows is on.
+    allowed = {w.name for w in built["windows"]} | set(gold.LEGACY_WINDOWS)
+    for table in gold.ALL_HOURS_TABLES + gold.HOURLY_TABLES:
+        names = {
+            r["time_window"]
+            for r in _rows(
+                built["conn"],
+                f"SELECT DISTINCT time_window FROM gold.{table} WHERE source_id = %s",
+                (SOURCE,),
+            )
+        }
+        assert names <= allowed, (table, names - allowed)
+
+
+@pytest.mark.parametrize("table", ["cell_activity", "cell_safety", "cell_offense_mix",
+                                   "cell_hour_profile"])
+def test_legacy_names_are_exact_copies(built, table):
+    # gold.write_legacy_windows: last_12m / last_24m / last_90d are the rows of
+    # last_1y / last_2y / last_3m under the old name, so the previous release
+    # reads the same numbers the new one serves.
+    def fingerprint(name):
+        (row,) = _rows(
+            built["conn"],
+            f"""
+            SELECT count(*) AS n, md5(string_agg(j, ',' ORDER BY j)) AS digest
+            FROM (
+                SELECT (to_jsonb(t) - 'time_window')::text AS j
+                FROM gold.{table} t
+                WHERE source_id = %s AND time_window = %s
+            ) rows
+            """,
+            (SOURCE, name),
+        )
+        return row["n"], row["digest"]
+
+    for legacy, current in gold.LEGACY_WINDOWS.items():
+        if table == "cell_hour_profile" and current not in gold.HOURLY_WINDOWS:
+            continue
+        old_n, old_digest = fingerprint(legacy)
+        new_n, new_digest = fingerprint(current)
+        assert new_n > 0, (table, current)
+        assert (old_n, old_digest) == (new_n, new_digest), (table, legacy)

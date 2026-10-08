@@ -11,6 +11,7 @@ Two rules hold throughout this module:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import psycopg
@@ -18,7 +19,13 @@ import psycopg
 # Whitelists. These bound every value that reaches SQL through anything other
 # than a bound parameter.
 VALID_RESOLUTIONS = (8, 9, 10)
-VALID_WINDOWS = ("last_30d", "last_90d", "last_12m", "last_24m")
+# Window names are per city now (gold.city_window): 30 days, 3/6/9 months, then
+# last_<N>y back to the city's oldest stored incident. The pattern bounds what
+# can reach SQL; city_windows() says which a given city actually has.
+WINDOW_PATTERN = re.compile(r"^last_(30d|[369]m|[1-9][0-9]?y)$")
+DEFAULT_WINDOW = "last_1y"
+# The previous release's names, as aliases (mirrors gold.LEGACY_WINDOWS).
+LEGACY_WINDOWS = {"last_90d": "last_3m", "last_12m": "last_1y", "last_24m": "last_2y"}
 VALID_CATEGORIES = ("all", "violent", "property", "quality_of_life", "other")
 VALID_HOURS = tuple(range(24))
 
@@ -27,10 +34,10 @@ VALID_HOURS = tuple(range(24))
 # asserted against the ETL by safety/api/main.py's error text: a request for an
 # hour outside this scope gets told why, not an empty map.
 HOURLY_RESOLUTIONS = (8, 9)
-# One window, not two. gold.cell_hour_safety is the only layer multiplied by 24
-# and was the largest table in the database; last_24m was the more redundant of
-# the pair, since the hourly distribution is already stable at a year wide.
-HOURLY_WINDOWS = ("last_12m",)
+# One window. gold.cell_hour_safety is the only layer multiplied by 24 and was
+# the largest table in the database; a second year mostly restates the first,
+# since the hourly distribution is already stable at a year wide.
+HOURLY_WINDOWS = ("last_1y",)
 
 # Mirrors safety.etl.gold.SAFETY_RESOLUTIONS, same duplication rationale.
 # The safety ranking divides severity-weighted offence by ambient population,
@@ -51,14 +58,17 @@ SAFETY_RESOLUTIONS = (8, 9)
 # in every category at once. So resolution 10 is built for the two widest windows
 # and the combined category only, and the narrower combinations are refused with
 # the reason rather than answered with an empty layer.
-ACTIVITY_WINDOWS = {10: ("last_12m", "last_24m")}
+ACTIVITY_WINDOWS = {10: ("last_1y", "last_2y")}
 ACTIVITY_CATEGORIES = {10: ("all",)}
 
 
-def activity_scope(h3_res: int) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """The windows and categories the activity layer is built at a resolution."""
+def activity_scope(h3_res: int) -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
+    """The windows and categories the activity layer is built at a resolution.
+
+    None for the windows means every window the city has.
+    """
     return (
-        ACTIVITY_WINDOWS.get(h3_res, VALID_WINDOWS),
+        ACTIVITY_WINDOWS.get(h3_res),
         ACTIVITY_CATEGORIES.get(h3_res, VALID_CATEGORIES),
     )
 
@@ -73,11 +83,45 @@ def category_breakdown_built(h3_res: int) -> bool:
     return any(category != "all" for category in categories)
 
 
+def window_label(name: str) -> str:
+    """'Last 30 days', 'Last 3 months', 'Last year', 'Last 7 years'."""
+    legacy = {
+        "last_90d": "Last 90 days",
+        "last_12m": "Last 12 months",
+        "last_24m": "Last 24 months",
+    }
+    if name in legacy:
+        return legacy[name]
+    if name == "last_30d":
+        return "Last 30 days"
+    count, unit = int(name[5:-1]), name[-1]
+    if unit == "m":
+        return f"Last {count} months"
+    # "Last year" would read as the previous calendar year.
+    return "Last 12 months" if count == 1 else f"Last {count} years"
+
+
+def canonical_window(name: str) -> str | None:
+    """The current name for a requested window, or None if it is not one."""
+    name = LEGACY_WINDOWS.get(name, name)
+    return name if WINDOW_PATTERN.match(name) else None
+
+
+# The four windows every city had before per-city windows (migration 018). A
+# city whose gold has not been rebuilt since is still served these, under these
+# names, until its next refresh writes gold.city_window.
+_LEGACY_LIST = (
+    ("last_30d", 30, False, False),
+    ("last_90d", 90, False, False),
+    ("last_12m", 365, True, True),
+    ("last_24m", 730, False, True),
+)
+
+# Kept for /categories, which has always returned a label map; built from the
+# default list rather than any one city's.
 WINDOW_LABELS = {
-    "last_30d": "Last 30 days",
-    "last_90d": "Last 90 days",
-    "last_12m": "Last 12 months",
-    "last_24m": "Last 24 months",
+    name: window_label(name)
+    for name in ("last_30d", "last_3m", "last_6m", "last_9m", "last_1y", "last_2y")
 }
 
 CATEGORY_LABELS = {
@@ -113,6 +157,110 @@ SAFETY_TIER_LABELS = {
     3: "Upper-middle quarter",
     4: "Safest quarter",
 }
+
+
+_CITY_WINDOWS_SQL = """
+SELECT
+    w.time_window, w.window_start, w.window_end, w.data_start, w.partial,
+    w.safety_built, w.hourly_built, w.res10_built,
+    ARRAY(
+        SELECT c.caveat_text
+        FROM reference.source_series_caveat c
+        WHERE c.source_id   = w.source_id
+          AND c.period_from <= w.window_end
+          AND c.period_to   >  w.data_start
+        ORDER BY c.period_from
+    ) AS caveats
+FROM gold.city_window w
+WHERE w.source_id = %s
+ORDER BY w.sort_order
+"""
+
+
+def city_windows(conn: psycopg.Connection, source_id: str) -> list[dict[str, Any]]:
+    """The windows this city is served for, in display order.
+
+    Plain types only (ISO date strings), so the result can ride the API's
+    stamped JSON cache. A city with no gold.city_window rows has not been
+    rebuilt since migration 018 and still holds the four legacy windows, which
+    are returned under their own names.
+    """
+    with conn.cursor() as cur:
+        cur.execute(_CITY_WINDOWS_SQL, (source_id,))
+        rows = cur.fetchall()
+    if rows:
+        return [
+            {
+                "id": r["time_window"],
+                "label": window_label(r["time_window"]),
+                "start": r["window_start"].isoformat(),
+                "end": r["window_end"].isoformat(),
+                "data_start": r["data_start"].isoformat(),
+                "span_days": (r["window_end"] - r["window_start"]).days + 1,
+                "partial": r["partial"],
+                "safety": r["safety_built"],
+                "hourly": r["hourly_built"],
+                "res10": r["res10_built"],
+                "caveats": list(r["caveats"]),
+            }
+            for r in rows
+        ]
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT time_window, min(window_start) AS window_start, max(window_end) AS window_end
+            FROM gold.cell_activity
+            WHERE source_id = %s AND h3_res = 8 AND category = 'all'
+            GROUP BY 1
+            """,
+            (source_id,),
+        )
+        built = {r["time_window"]: r for r in cur.fetchall()}
+    return [
+        {
+            "id": name,
+            "label": window_label(name),
+            "start": built[name]["window_start"].isoformat(),
+            "end": built[name]["window_end"].isoformat(),
+            "data_start": built[name]["window_start"].isoformat(),
+            "span_days": span,
+            "partial": False,
+            "safety": True,
+            "hourly": hourly,
+            "res10": res10,
+            "caveats": [],
+        }
+        for name, span, hourly, res10 in _LEGACY_LIST
+        if name in built
+    ]
+
+
+def match_window(requested: str, windows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The served window a request means, or None.
+
+    Accepts the current names and the legacy ones in either direction: a link
+    saved as last_12m finds last_1y, and while a city still holds only the
+    legacy windows, last_1y finds last_12m.
+    """
+    by_id = {w["id"]: w for w in windows}
+    if requested in by_id:
+        return by_id[requested]
+    forward = LEGACY_WINDOWS.get(requested)
+    if forward in by_id:
+        return by_id[forward]
+    backward = {v: k for k, v in LEGACY_WINDOWS.items()}.get(requested)
+    if backward in by_id:
+        return by_id[backward]
+    return None
+
+
+def cell_source(conn: psycopg.Connection, h3_index: str) -> str | None:
+    """Which city a cell belongs to (gold.cell_geometry is keyed by the index)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT source_id FROM gold.cell_geometry WHERE h3_index = %s", (h3_index,))
+        row = cur.fetchone()
+    return row["source_id"] if row else None
 
 
 def hour_label(hour: int) -> str:
@@ -787,7 +935,7 @@ def cell_detail(
         "cell": cell,
         "exposure": _exposure_payload(exposure),
         "time_window": time_window,
-        "window_label": WINDOW_LABELS.get(time_window, time_window),
+        "window_label": window_label(time_window),
         "headline": headline,
         "tier_label": TIER_LABELS.get(headline["activity_tier"]) if headline else None,
         "by_category": [row for row in activity if row["category"] != "all"],

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
@@ -31,11 +32,32 @@ from safety.h3grid import (
 
 log = logging.getLogger(__name__)
 
-# S5/S9.3: the windows and categories the product actually needs, precomputed.
-TIME_WINDOWS = ("last_30d", "last_90d", "last_12m", "last_24m")
+# S5/S9.3: the windows the product needs, precomputed. Not a fixed list any more:
+# every city gets the four short windows, then cumulative years back to its
+# oldest stored incident (resolve_windows), so a city with twenty years of
+# history offers twenty more choices than one with two.
+SHORT_WINDOWS = ("last_30d", "last_3m", "last_6m", "last_9m")
+WINDOW_PATTERN = re.compile(r"^last_(30d|[369]m|[1-9][0-9]?y)$")
+MAX_WINDOW_YEARS = 99
+
+# The names the previous release wrote, and the window each is now a copy of.
+# last_12m and last_24m span exactly last_1y and last_2y; last_90d becomes three
+# calendar months, a day or two longer. Written alongside the new names while
+# settings.gold_legacy_windows is on, so a rollback to that release still finds
+# a full map, and served by the API as aliases so bookmarked links keep working.
+LEGACY_WINDOWS = {"last_90d": "last_3m", "last_12m": "last_1y", "last_24m": "last_2y"}
+
+# A partial oldest window is offered only if it adds at least this share of a
+# full step's worth of data. A 24-month backfill starts on the first of a month,
+# so it usually reaches a week or two past "last 2 years"; without this every
+# city would offer a "last 3 years" holding two years and a fortnight.
+PARTIAL_WINDOW_MIN_SHARE = 0.25
+
 CATEGORIES = ("all", "violent", "property", "quality_of_life", "other")
 FILTERED_CATEGORIES = tuple(c for c in CATEGORIES if c != "all")
 OFFENSE_MIX_DEPTH = 8
+# The span of gold.cell_monthly (refresh_cell_detail).
+MONTHLY_SPAN = "last_2y"
 
 # The safety ranking splits the city two ways rather than five, and publishes no
 # combined figure. That follows the FBI, which discontinued its own combined
@@ -62,7 +84,7 @@ SAFETY_TIERS = 4
 SAFETY_RESOLUTIONS = (8, 9)
 
 # What the activity layer builds per resolution, where that is narrower than
-# TIME_WINDOWS x CATEGORIES.
+# every window x CATEGORIES.
 #
 # cell_activity is dense by construction -- every cell in the universe gets a
 # row per window per category, because a cell with no reported incidents is part
@@ -77,16 +99,44 @@ SAFETY_RESOLUTIONS = (8, 9)
 # across cells that size leaves a median of zero, so the short windows were
 # ranking a field of ties. The drill-down keeps the two windows and the one
 # category the map opens on.
-ACTIVITY_WINDOWS: dict[int, tuple[str, ...]] = {10: ("last_12m", "last_24m")}
+ACTIVITY_WINDOWS: dict[int, tuple[str, ...]] = {10: ("last_1y", "last_2y")}
 ACTIVITY_CATEGORIES: dict[int, tuple[str, ...]] = {10: ("all",)}
 
 
-def activity_scope(res: int) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """The windows and categories the activity layer builds at a resolution."""
+def activity_scope(res: int) -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
+    """The windows and categories the activity layer builds at a resolution.
+
+    None for the windows means every window the city has; the list itself is
+    per city (resolve_windows).
+    """
     return (
-        ACTIVITY_WINDOWS.get(res, TIME_WINDOWS),
+        ACTIVITY_WINDOWS.get(res),
         ACTIVITY_CATEGORIES.get(res, CATEGORIES),
     )
+
+
+def activity_builds(res: int, window: str) -> bool:
+    windows, _ = activity_scope(res)
+    return windows is None or window in windows
+
+
+def window_years(name: str) -> int | None:
+    """N for last_Ny, None for the short windows."""
+    return int(name[5:-1]) if name.endswith("y") else None
+
+
+def safety_builds(window: str) -> bool:
+    """Whether the safety ranking is built for a window.
+
+    Every window by default. settings.safety_max_window_years is the fallback
+    if the long windows do not fit the disk or the refresh budget: windows
+    longer than it keep their counts and lose the ranking, and the API says so.
+    """
+    from safety.config import settings
+
+    limit = settings.safety_max_window_years
+    years = window_years(window)
+    return limit is None or years is None or years <= limit
 
 # Time of day. Block h covers [h:00, h+1:00) local; 23 is 23:00-24:00.
 HOUR_BLOCKS = 24
@@ -101,11 +151,12 @@ HOUR_BLOCKS = 24
 # disk decision. gold.cell_hour_safety is the largest table in the database by a
 # wide margin -- 1,042 MB at two cities, 31% of the total, against a 5 GB volume
 # that has to hold six -- because it is the only layer multiplied by 24. Dropping
-# last_24m halves it, and halves gold.cell_hour_profile with it.
+# the two-year window halved it, and halved gold.cell_hour_profile with it; the
+# per-city years back to 2001 (resolve_windows) would multiply it again.
 #
-# last_12m is the one kept because last_24m is the more redundant of the pair: at
-# a year wide the hourly distribution is already stable, and the second year
-# mostly reasserts it. Both were within the range where the counts support the
+# One year (last_1y, formerly last_12m) is the one kept because longer windows
+# are the more redundant: at a year wide the hourly distribution is already
+# stable, and a second year mostly reasserts it. Both were within the range where the counts support the
 # statistic, so this gives up a real view rather than a marginal one -- see
 # docs/PHASE2.md.
 #
@@ -113,7 +164,7 @@ HOUR_BLOCKS = 24
 # refreshes delete across every window before skipping the ones out of scope, so
 # the rows come back on the next build.
 HOURLY_RESOLUTIONS = (8, 9)
-HOURLY_WINDOWS = ("last_12m",)
+HOURLY_WINDOWS = ("last_1y",)
 
 # Below this many incidents across the whole window, a cell's hour-to-hour
 # ratio is noise dressed as a measurement, and hour_index is left NULL rather
@@ -126,21 +177,59 @@ class Window:
     name: str
     start: date
     end: date
+    # The first date this city actually has data for inside the window. Later
+    # than `start` only for the oldest window, or every window of a city with
+    # less history than the window spans.
+    data_start: date | None = None
+    partial: bool = False
 
 
-def resolve_windows(anchor: date) -> list[Window]:
-    """Windows are anchored to the newest reported date, not to today.
+def _window_candidates(anchor: date):
+    """Every window name in order, with its start date, up to MAX_WINDOW_YEARS."""
+    yield "last_30d", anchor - timedelta(days=29)
+    for months in (3, 6, 9):
+        yield f"last_{months}m", _shift_months(anchor, months) + timedelta(days=1)
+    for years in range(1, MAX_WINDOW_YEARS + 1):
+        yield f"last_{years}y", _shift_years(anchor, years) + timedelta(days=1)
 
-    Anchoring to `now` would silently present a source's publication lag as an
-    absence of crime. S12(b) wants "data as of" visible; this makes the windows
-    themselves honest about it too.
+
+def resolve_windows(anchor: date, history_floor: date | None = None) -> list[Window]:
+    """The windows a city is built for: 30 days, 3/6/9 months, then years.
+
+    Windows are anchored to the newest reported date, not to today. Anchoring to
+    `now` would silently present a source's publication lag as an absence of
+    crime. S12(b) wants "data as of" visible; this makes the windows themselves
+    honest about it too.
+
+    Each window is cumulative ("the last 3 years" includes the last 2). The list
+    stops at the first window that reaches the city's oldest stored date,
+    `history_floor`, so it covers the whole history without offering windows
+    that hold nothing more than the one before. A window reaching past the floor
+    is marked partial, and is dropped if it would add less than
+    PARTIAL_WINDOW_MIN_SHARE of a full step.
+
+    With no floor, the list stops at last_2y: the windows a 24-month backfill
+    supports.
     """
-    return [
-        Window("last_30d", anchor - timedelta(days=29), anchor),
-        Window("last_90d", anchor - timedelta(days=89), anchor),
-        Window("last_12m", _shift_years(anchor, 1) + timedelta(days=1), anchor),
-        Window("last_24m", _shift_years(anchor, 2) + timedelta(days=1), anchor),
-    ]
+    if history_floor is None:
+        history_floor = _shift_years(anchor, 2) + timedelta(days=1)
+
+    built: list[Window] = []
+    previous_start: date | None = None
+    for name, start in _window_candidates(anchor):
+        partial = start < history_floor
+        if previous_start is not None:
+            step = (previous_start - start).days
+            added = (previous_start - max(start, history_floor)).days
+            if added <= 0:
+                break
+            if partial and added < step * PARTIAL_WINDOW_MIN_SHARE:
+                break
+        built.append(Window(name, start, anchor, max(start, history_floor), partial))
+        if start <= history_floor:
+            break
+        previous_start = start
+    return built
 
 
 def _shift_years(value: date, years: int) -> date:
@@ -148,6 +237,42 @@ def _shift_years(value: date, years: int) -> date:
         return value.replace(year=value.year - years)
     except ValueError:  # 29 February
         return value.replace(year=value.year - years, day=28)
+
+
+def _shift_months(value: date, months: int) -> date:
+    """The same day `months` earlier, clamped to the end of a shorter month."""
+    index = value.year * 12 + value.month - 1 - months
+    year, month = divmod(index, 12)
+    month += 1
+    last_day = (date(year + (month == 12), month % 12 + 1, 1) - timedelta(days=1)).day
+    return date(year, month, min(value.day, last_day))
+
+
+def history_floor(conn: psycopg.Connection, source_id: str) -> date | None:
+    """The oldest date the window list has to reach for this city.
+
+    The oldest stored incident, but never before the registry's configured
+    floor: a single record published with a 1901 date would otherwise add a
+    century of windows over nothing.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT GREATEST(
+                       (SELECT min(occurred_local_date) FROM silver.incident WHERE source_id = %(s)s),
+                       COALESCE(r.history_start_date, r.backfill_start_date)
+                   ) AS floor
+            FROM (SELECT 1) _
+            LEFT JOIN reference.source_registry r ON r.source_id = %(s)s
+            """,
+            {"s": source_id},
+        )
+        row = cur.fetchone()
+    return row["floor"] if row else None
+
+
+def city_windows(conn: psycopg.Connection, source_id: str, anchor: date) -> list[Window]:
+    return resolve_windows(anchor, history_floor(conn, source_id))
 
 
 def data_anchor(conn: psycopg.Connection, source_id: str) -> date | None:
@@ -439,31 +564,29 @@ def refresh_cell_activity(
         for res in RESOLUTIONS:
             h3_column = _h3_column(res)
             scope_windows, scope_categories = activity_scope(res)
-            if (scope_windows, scope_categories) != (TIME_WINDOWS, CATEGORIES):
+            if scope_windows is not None or scope_categories != CATEGORIES:
                 log.info(
                     "cell_activity res=%s is narrowed to windows %s, categories %s",
                     res,
-                    ", ".join(scope_windows),
+                    ", ".join(scope_windows or ("all",)),
                     ", ".join(scope_categories),
                 )
+            # Delete-then-insert inside the caller's transaction: readers keep
+            # seeing the previous rollup until commit, so the map never renders
+            # a half-built layer.
+            #
+            # The DELETE covers every window and every category at this
+            # resolution, including ones about to be skipped and ones this
+            # refresh no longer builds at all (a legacy name, or a year the
+            # city's history no longer reaches). That is what makes narrowing
+            # reclaim disk rather than strand rows nothing will overwrite again,
+            # and why the scope can be widened back without a migration.
+            cur.execute(
+                "DELETE FROM gold.cell_activity WHERE source_id = %s AND h3_res = %s",
+                (source_id, res),
+            )
             for window in windows:
-                # Delete-then-insert inside the caller's transaction: readers
-                # keep seeing the previous rollup until commit, so the map
-                # never renders a half-built layer.
-                #
-                # The DELETE covers every window and every category at this
-                # resolution, including the ones about to be skipped. That is
-                # what makes narrowing the scope reclaim disk rather than strand
-                # rows nothing will overwrite again -- and it is why the scope
-                # can be widened back without a migration.
-                cur.execute(
-                    """
-                    DELETE FROM gold.cell_activity
-                    WHERE source_id = %s AND h3_res = %s AND time_window = %s
-                    """,
-                    (source_id, res, window.name),
-                )
-                if window.name not in scope_windows:
+                if not activity_builds(res, window.name):
                     continue
                 cur.execute(
                     _ACTIVITY_SQL.format(h3_column=h3_column),
@@ -884,17 +1007,19 @@ def refresh_cell_safety(
             sql = _SAFETY_SQL.format(
                 h3_column=h3_column, weight_lookup=_WEIGHT_LOOKUP
             )
+            # Delete-then-insert inside the caller's transaction, so readers keep
+            # seeing the previous ranking until commit. Every window at once, as
+            # in refresh_cell_activity.
+            cur.execute(
+                """
+                DELETE FROM gold.cell_safety
+                WHERE source_id = %s AND h3_res = %s AND scheme_version = %s
+                """,
+                (source_id, res, scheme.version),
+            )
             for window in windows:
-                # Delete-then-insert inside the caller's transaction, so readers
-                # keep seeing the previous ranking until commit.
-                cur.execute(
-                    """
-                    DELETE FROM gold.cell_safety
-                    WHERE source_id = %s AND h3_res = %s
-                      AND time_window = %s AND scheme_version = %s
-                    """,
-                    (source_id, res, window.name, scheme.version),
-                )
+                if not safety_builds(window.name):
+                    continue
                 cur.execute(
                     sql,
                     {
@@ -1148,16 +1273,15 @@ def refresh_cell_hour_safety(
             # narrowing HOURLY_WINDOWS reclaim disk instead of stranding rows no
             # later refresh will revisit, and what lets it be widened again with
             # no migration. Same shape as refresh_cell_activity.
+            cur.execute(
+                """
+                DELETE FROM gold.cell_hour_safety
+                WHERE source_id = %s AND h3_res = %s AND scheme_version = %s
+                """,
+                (source_id, res, scheme.version),
+            )
             for window in windows:
-                cur.execute(
-                    """
-                    DELETE FROM gold.cell_hour_safety
-                    WHERE source_id = %s AND h3_res = %s
-                      AND time_window = %s AND scheme_version = %s
-                    """,
-                    (source_id, res, window.name, scheme.version),
-                )
-                if window.name not in HOURLY_WINDOWS:
+                if window.name not in HOURLY_WINDOWS or not safety_builds(window.name):
                     continue
                 cur.execute(
                     sql,
@@ -1196,14 +1320,11 @@ def refresh_cell_hour_profile(
         for res in HOURLY_RESOLUTIONS:
             sql = _HOUR_PROFILE_SQL.format(h3_column=_h3_column(res))
             # Delete across every window, then skip; see refresh_cell_hour_safety.
+            cur.execute(
+                "DELETE FROM gold.cell_hour_profile WHERE source_id = %s AND h3_res = %s",
+                (source_id, res),
+            )
             for window in windows:
-                cur.execute(
-                    """
-                    DELETE FROM gold.cell_hour_profile
-                    WHERE source_id = %s AND h3_res = %s AND time_window = %s
-                    """,
-                    (source_id, res, window.name),
-                )
                 if window.name not in HOURLY_WINDOWS:
                     continue
                 cur.execute(
@@ -1406,7 +1527,11 @@ def refresh_cell_detail(
     conn: psycopg.Connection, source_id: str, windows: list[Window]
 ) -> tuple[int, int]:
     """Rebuild the monthly series and per-cell offense mix."""
-    widest = max(windows, key=lambda w: (w.end - w.start).days)
+    # The trend sparkline covers at most MONTHLY_SPAN, not the widest window: a
+    # city with twenty years of history would otherwise store ten times the
+    # monthly rows for a chart that draws two years legibly.
+    spans = [w for w in windows if w.name == MONTHLY_SPAN]
+    widest = spans[0] if spans else max(windows, key=lambda w: (w.end - w.start).days)
     monthly_rows = 0
     mix_rows = 0
 
@@ -1429,14 +1554,11 @@ def refresh_cell_detail(
             )
             monthly_rows += cur.rowcount
 
+            cur.execute(
+                "DELETE FROM gold.cell_offense_mix WHERE source_id = %s AND h3_res = %s",
+                (source_id, res),
+            )
             for window in windows:
-                cur.execute(
-                    """
-                    DELETE FROM gold.cell_offense_mix
-                    WHERE source_id = %s AND h3_res = %s AND time_window = %s
-                    """,
-                    (source_id, res, window.name),
-                )
                 cur.execute(
                     _OFFENSE_MIX_SQL.format(h3_column=h3_column),
                     {
@@ -1694,6 +1816,101 @@ def refresh_cell_exposure(
         log.error("cannot extend the exposure layer for %s: %s", source_id, exc)
         return {}
 
+# ---------------------------------------------------------------------------
+# The per-city window list, and the legacy names the previous release reads
+# ---------------------------------------------------------------------------
+
+
+def write_city_windows(conn: psycopg.Connection, source_id: str, windows: list[Window]) -> int:
+    """Record which windows this city is built for, and what each one carries.
+
+    Written in the refresh's own transaction, so the API never offers a window
+    before its rows exist. The flags come from the same scope functions the
+    layer refreshes use, so they cannot disagree with what was built.
+    """
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM gold.city_window WHERE source_id = %s", (source_id,))
+        cur.executemany(
+            """
+            INSERT INTO gold.city_window (
+                source_id, time_window, sort_order, window_start, window_end,
+                data_start, partial, safety_built, hourly_built, res10_built
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            [
+                (
+                    source_id,
+                    w.name,
+                    order,
+                    w.start,
+                    w.end,
+                    w.data_start or w.start,
+                    w.partial,
+                    safety_builds(w.name),
+                    w.name in HOURLY_WINDOWS and safety_builds(w.name),
+                    activity_builds(10, w.name),
+                )
+                for order, w in enumerate(windows)
+            ],
+        )
+    return len(windows)
+
+
+def _table_columns(conn: psycopg.Connection, table: str) -> list[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'gold' AND table_name = %s
+            ORDER BY ordinal_position
+            """,
+            (table,),
+        )
+        return [r["column_name"] for r in cur.fetchall()]
+
+
+def write_legacy_windows(
+    conn: psycopg.Connection, source_id: str, tables: tuple[str, ...]
+) -> int:
+    """Copy last_3m / last_1y / last_2y rows under the previous release's names.
+
+    Only while settings.gold_legacy_windows is on (one release): the release
+    before this one queries last_90d / last_12m / last_24m, and a rollback to it
+    must still find a map. The copies are exact for 12m and 24m, which span the
+    same dates as 1y and 2y; last_90d gets three calendar months, a day or two
+    wider than it used to be, which a rollback can live with.
+    """
+    from safety.config import settings
+
+    if not settings.gold_legacy_windows:
+        return 0
+    copied = 0
+    with conn.cursor() as cur:
+        for table in tables:
+            columns = _table_columns(conn, table)
+            select = ", ".join(
+                "%(legacy)s" if c == "time_window" else f'"{c}"' for c in columns
+            )
+            names = ", ".join(f'"{c}"' for c in columns)
+            cur.execute(
+                f"DELETE FROM gold.{table} WHERE source_id = %s AND time_window = ANY(%s)",
+                (source_id, list(LEGACY_WINDOWS)),
+            )
+            for legacy, current in LEGACY_WINDOWS.items():
+                cur.execute(
+                    f"INSERT INTO gold.{table} ({names}) SELECT {select} "
+                    f"FROM gold.{table} WHERE source_id = %(source_id)s "
+                    f"AND time_window = %(current)s",
+                    {"legacy": legacy, "current": current, "source_id": source_id},
+                )
+                copied += cur.rowcount
+    log.info("legacy window names for %s: %s rows copied", source_id, copied)
+    return copied
+
+
+ALL_HOURS_TABLES = ("cell_activity", "cell_safety", "cell_offense_mix")
+HOURLY_TABLES = ("cell_hour_safety", "cell_hour_profile")
+
 
 def refresh_all(
     conn: psycopg.Connection,
@@ -1705,8 +1922,8 @@ def refresh_all(
 
     `include_hourly=False` leaves the time-of-day layers alone. They are by far
     the most expensive thing here -- the same ranking recomputed 24 times, at two
-    resolutions and two windows, per scheme -- and also the slowest-moving, since
-    both their windows are 12 months or wider. A day of new incidents moves an
+    resolutions, per scheme -- and also the slowest-moving, since their window
+    is a year wide. A day of new incidents moves an
     hourly percentile computed over two years almost not at all.
 
     Skipping them is therefore the right trade for a frequent incremental, with
@@ -1720,7 +1937,7 @@ def refresh_all(
         raise LookupError(f"no silver rows for '{source_id}'; nothing to roll up")
 
     cells = build_cell_universe(conn, source_id)
-    windows = resolve_windows(anchor)
+    windows = city_windows(conn, source_id, anchor)
     log.info(
         "gold anchor date %s; windows: %s",
         anchor,
@@ -1758,6 +1975,10 @@ def refresh_all(
         )
 
     monthly_rows, mix_rows = refresh_cell_detail(conn, source_id, windows)
+    write_city_windows(conn, source_id, windows)
+    write_legacy_windows(
+        conn, source_id, ALL_HOURS_TABLES + (HOURLY_TABLES if include_hourly else ())
+    )
     refresh_city_snapshot(conn, source_id, pipeline_version, coverage, hour_share)
     conn.commit()
 
@@ -1776,4 +1997,5 @@ def refresh_all(
         "severity_weight_coverage": round(coverage, 4) if coverage is not None else None,
         "cell_monthly_rows": monthly_rows,
         "cell_offense_mix_rows": mix_rows,
+        "windows": [w.name for w in windows],
     }

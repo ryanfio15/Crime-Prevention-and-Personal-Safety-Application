@@ -343,9 +343,26 @@ def version(conn: Conn, city: str | None = None) -> dict[str, Any]:
     return repo.serving_version(conn, city)
 
 
+def city_windows(conn, source_id: str) -> list[dict[str, Any]]:
+    """The windows a city is served for, cached on that city's refresh stamp."""
+    return cached_json(
+        conn, ("windows", source_id), lambda: repo.city_windows(conn, source_id), source_id
+    )
+
+
+def _with_windows(conn, record: dict[str, Any]) -> dict[str, Any]:
+    windows = city_windows(conn, record["source_id"])
+    default = repo.match_window(repo.DEFAULT_WINDOW, windows)
+    return {
+        **record,
+        "windows": windows,
+        "default_window": (default or (windows[-1] if windows else {"id": None}))["id"],
+    }
+
+
 @app.get(f"{API}/cities", tags=["cities"])
 def cities(conn: Conn) -> dict[str, Any]:
-    return {"cities": repo.list_cities(conn)}
+    return {"cities": [_with_windows(conn, r) for r in repo.list_cities(conn)]}
 
 
 @app.get(f"{API}/cities/{{source_id}}", tags=["cities"])
@@ -353,7 +370,7 @@ def city(source_id: str, conn: Conn) -> dict[str, Any]:
     record = repo.get_city(conn, source_id)
     if record is None:
         raise HTTPException(404, f"no serving data for city '{source_id}'")
-    return record
+    return _with_windows(conn, record)
 
 
 @app.get(f"{API}/categories", tags=["cities"])
@@ -387,26 +404,52 @@ def quality(conn: Conn, city: str = "phl") -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _validate_layer(res: int, window: str, category: str) -> None:
+def _resolve_window(conn, city: str | None, window: str) -> dict[str, Any]:
+    """The served window a request names, for this city.
+
+    Windows are per city (gold.city_window): a city with two years of history
+    has no last_10y. Legacy names are accepted as aliases. A city with no
+    windows at all -- unknown, or not built yet -- gets the name checked
+    against the pattern only, so it answers with an empty layer as before
+    rather than a 400 that blames the window.
+    """
+    if repo.canonical_window(window) is None:
+        raise HTTPException(
+            400,
+            "window must be last_30d, last_3m, last_6m, last_9m or last_<N>y "
+            "(see /api/v1/cities for each city's list)",
+        )
+    windows = city_windows(conn, city) if city else []
+    if not windows:
+        return {"id": repo.canonical_window(window), "hourly": True, "res10": True, "safety": True}
+    match = repo.match_window(window, windows)
+    if match is None:
+        raise HTTPException(
+            400,
+            f"'{window}' is not built for city '{city}', which has "
+            f"{', '.join(w['id'] for w in windows)}",
+        )
+    return match
+
+
+def _validate_layer(res: int, window: dict[str, Any], category: str) -> None:
     if res not in repo.VALID_RESOLUTIONS:
         raise HTTPException(400, f"res must be one of {list(repo.VALID_RESOLUTIONS)}")
-    if window not in repo.VALID_WINDOWS:
-        raise HTTPException(400, f"window must be one of {list(repo.VALID_WINDOWS)}")
     if category not in repo.VALID_CATEGORIES:
         raise HTTPException(400, f"category must be one of {list(repo.VALID_CATEGORIES)}")
 
     # Same principle as _validate_hour: an unbuilt combination would otherwise
     # come back as a layer of zeroes, which is indistinguishable from a city
     # where nothing was reported. Told, with the reason.
-    windows, categories = repo.activity_scope(res)
-    if window not in windows:
+    _, categories = repo.activity_scope(res)
+    if res == 10 and not window["res10"]:
         raise HTTPException(
             400,
-            f"res {res} is built for window {list(windows)} only -- a cell that "
-            "size holds too little over a shorter window for a percentile to "
-            f"separate anything ({', '.join(w for w in repo.VALID_WINDOWS if w not in windows)} "
-            "leave nearly every cell on zero, tied with every other). Use a "
-            "coarser resolution for the shorter windows.",
+            f"res {res} is built for windows {list(repo.ACTIVITY_WINDOWS[10])} "
+            "only -- a cell that size holds too little over a shorter window for "
+            "a percentile to separate anything, and the longer windows are not "
+            "worth their size at a cell this small. Use a coarser resolution for "
+            "the other windows.",
         )
     if category not in categories:
         raise HTTPException(
@@ -441,7 +484,7 @@ def _require_safety_res(res: int) -> None:
         )
 
 
-def _validate_hour(hour: int | None, res: int, window: str) -> None:
+def _validate_hour(hour: int | None, res: int, window: dict[str, Any]) -> None:
     """Reject an hour the pipeline does not build, with the reason.
 
     An unbuilt combination would otherwise return a layer whose hourly fields
@@ -458,12 +501,13 @@ def _validate_hour(hour: int | None, res: int, window: str) -> None:
             f"only -- a window split 24 ways at res {res} leaves too few incidents "
             "per cell to rank",
         )
-    if window not in repo.HOURLY_WINDOWS:
+    if not window["hourly"]:
         raise HTTPException(
             400,
-            f"the time-of-day layer is built for windows "
-            f"{list(repo.HOURLY_WINDOWS)} only -- shorter windows do not carry "
-            "enough incidents once split across 24 hour blocks",
+            f"the time-of-day layer is built for the last 12 months only "
+            f"({', '.join(repo.HOURLY_WINDOWS)}) -- shorter windows do not carry "
+            "enough incidents once split across 24 hour blocks, and longer ones "
+            "would multiply the largest table in the database",
         )
 
 
@@ -473,7 +517,7 @@ def cells(
     conn: Conn,
     city: str = "phl",
     res: int = 8,
-    window: str = "last_12m",
+    window: str = repo.DEFAULT_WINDOW,
     category: str = "all",
     min_count: int = Query(0, ge=0),
     hour: int | None = Query(
@@ -498,8 +542,10 @@ def cells(
     ),
 ) -> Response:
     """The H3 hexagon layer as GeoJSON, coloured client-side from `count`."""
-    _validate_layer(res, window, category)
-    _validate_hour(hour, res, window)
+    served = _resolve_window(conn, city, window)
+    _validate_layer(res, served, category)
+    _validate_hour(hour, res, served)
+    window = served["id"]
     if measure is not None:
         if measure not in ("activity", "safety"):
             raise HTTPException(400, "measure must be 'activity' or 'safety'")
@@ -569,7 +615,7 @@ def cells_ring(
     conn: Conn,
     h3: str,
     k: int = Query(1, ge=0, le=6),
-    window: str = "last_12m",
+    window: str = repo.DEFAULT_WINDOW,
     category: str = "all",
 ) -> dict[str, Any]:
     """S10: activity for a cell plus its k-ring of neighbours.
@@ -579,7 +625,9 @@ def cells_ring(
     """
     if not is_valid_cell(h3):
         raise HTTPException(400, f"'{h3}' is not a valid H3 index")
-    _validate_layer(cell_resolution(h3), window, category)
+    served = _resolve_window(conn, repo.cell_source(conn, h3), window)
+    _validate_layer(cell_resolution(h3), served, category)
+    window = served["id"]
 
     indexes = grid_disk(h3, k)
     rows = repo.cell_ring(conn, h3_indexes=indexes, time_window=window, category=category)
@@ -600,7 +648,7 @@ def cells_lookup(
     lat: float = Query(..., ge=-90, le=90),
     lng: float = Query(..., ge=-180, le=180),
     res: int = 8,
-    window: str = "last_12m",
+    window: str = repo.DEFAULT_WINDOW,
 ) -> dict[str, Any]:
     """Resolve a coordinate to its cell and return that cell's rollup.
 
@@ -608,9 +656,12 @@ def cells_lookup(
     round trip; this endpoint exists for the geocoded-address path, where the
     lookup is already happening server-side.
     """
-    _validate_layer(res, window, "all")
+    if res not in repo.VALID_RESOLUTIONS:
+        raise HTTPException(400, f"res must be one of {list(repo.VALID_RESOLUTIONS)}")
     cell = cells_for_point(lat, lng)[res]
-    detail = repo.cell_detail(conn, h3_index=cell, time_window=window)
+    served = _resolve_window(conn, repo.cell_source(conn, cell), window)
+    _validate_layer(res, served, "all")
+    detail = repo.cell_detail(conn, h3_index=cell, time_window=served["id"])
     if detail is None:
         return {
             "h3": cell,
@@ -624,17 +675,16 @@ def cells_lookup(
 def cell(
     conn: Conn,
     h3_index: str,
-    window: str = "last_12m",
+    window: str = repo.DEFAULT_WINDOW,
     hour: int | None = Query(None, ge=0, le=23),
 ) -> dict[str, Any]:
     if not is_valid_cell(h3_index):
         raise HTTPException(400, f"'{h3_index}' is not a valid H3 index")
-    if window not in repo.VALID_WINDOWS:
-        raise HTTPException(400, f"window must be one of {list(repo.VALID_WINDOWS)}")
-    _validate_hour(hour, cell_resolution(h3_index), window)
+    served = _resolve_window(conn, repo.cell_source(conn, h3_index), window)
+    _validate_hour(hour, cell_resolution(h3_index), served)
 
     detail = repo.cell_detail(
-        conn, h3_index=h3_index, time_window=window, hour=hour
+        conn, h3_index=h3_index, time_window=served["id"], hour=hour
     )
     if detail is None:
         raise HTTPException(404, f"cell '{h3_index}' is not in the covered area")
@@ -645,14 +695,16 @@ def cell(
 def summary(
     conn: Conn,
     city: str = "phl",
-    window: str = "last_12m",
+    window: str = repo.DEFAULT_WINDOW,
     res: int = 8,
 ) -> dict[str, Any]:
-    _validate_layer(res, window, "all")
+    served = _resolve_window(conn, city, window)
+    _validate_layer(res, served, "all")
+    window = served["id"]
     return {
         "city": city,
         "window": window,
-        "window_label": repo.WINDOW_LABELS[window],
+        "window_label": repo.window_label(window),
         "totals": repo.city_totals(conn, source_id=city, time_window=window, h3_res=res),
     }
 
@@ -957,13 +1009,13 @@ def _time_of_day(
         },
         "scope": {
             "resolutions": list(repo.HOURLY_RESOLUTIONS),
-            "windows": list(repo.HOURLY_WINDOWS),
+            "windows": [repo.window_label(w) for w in repo.HOURLY_WINDOWS],
             "note": (
                 "Built for the last 12 months at the two coarser cell sizes. "
                 "Splitting a window 24 ways divides the evidence by 24, and at the "
                 "finest cell size over 30 days the median cell-hour has no reported "
                 "incidents at all -- there is no distribution left to rank. The "
-                "24-month window is not built: recomputing a ranking inside every "
+                "longer windows are not built: recomputing a ranking inside every "
                 "hour of the day is the most storage-intensive thing this pipeline "
                 "produces, and at a year wide the hourly pattern is already stable "
                 "enough that a second year mostly restates it."
