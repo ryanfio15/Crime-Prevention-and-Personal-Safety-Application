@@ -1,14 +1,47 @@
 {
   "normal": {
-    "uniquenibrno": "240100001-1", "date_occ": "2024-03-01T00:00:00.000", "time_occ": "45",
-    "date_rptd": "2024-03-02T00:00:00.000", "area_name": "Central", "nibr_code": "23H",
-    "nibr_description": "All Other Larceny", "crime_against": "Property",
-    "premis_desc": "101 - STREET", "hndrdth_loc_chk": "600 S SPRING ST",
-    "hndrdth_lat": "34.0453", "hndrdth_lon": "-118.2507"
+    "uniquenibrno": "240100001-1",
+    "date_occ": "2024-03-01T00:00:00.000",
+    "time_occ": "45",
+    "date_rptd": "2024-03-02T00:00:00.000",
+    "area_name": "Central",
+    "nibr_code": "23H",
+    "nibr_description": "All Other Larceny",
+    "crime_against": "Property",
+    "premis_desc": "101 - STREET",
+    "hndrdth_loc_chk": "600 S SPRING ST",
+    "hndrdth_lat": "34.0453",
+    "hndrdth_lon": "-118.2507"
   },
   "bad_time_zero_coords": {
-    "uniquenibrno": "240100002-1", "date_occ": "2024-03-01T00:00:00.000", "time_occ": "2400",
-    "nibr_code": "13B", "nibr_description": "Simple Assault",
-    "hndrdth_lat": "0", "hndrdth_lon": "0"
+    "uniquenibrno": "240100002-1",
+    "date_occ": "2024-03-01T00:00:00.000",
+    "time_occ": "2400",
+    "nibr_code": "13B",
+    "nibr_description": "Simple Assault",
+    "hndrdth_lat": "0",
+    "hndrdth_lon": "0"
+  },
+  "legacy": {
+    "dr_no": "001307355",
+    "date_rptd": "2010-02-20T00:00:00.000",
+    "date_occ": "2010-02-20T00:00:00.000",
+    "time_occ": "1350",
+    "area_name": "Newton",
+    "part_1_2": "1",
+    "crm_cd": "510",
+    "crm_cd_desc": "VEHICLE - STOLEN",
+    "premis_desc": "STREET",
+    "location": "300 E  GAGE                         AV",
+    "lat": "33.9825",
+    "lon": "-118.2695"
+  },
+  "legacy_no_code": {
+    "dr_no": "001307356",
+    "date_occ": "2010-02-20T00:00:00.000",
+    "time_occ": "",
+    "crm_cd": "",
+    "lat": "0",
+    "lon": "0"
   }
 }

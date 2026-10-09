@@ -112,7 +112,7 @@ safety/                     Python package
                             gold, safety, hourly, safety-compare, enable, weights, status, log
   etl/adapters/             one adapter per city (Carto, Socrata, Esri ArcGIS)
   etl/bronze.py · transform.py · validate.py · gold.py · census.py · boundary.py · withdrawn.py
-db/migrations/              001–018 forward-only SQL migrations
+db/migrations/              001–019 forward-only SQL migrations
 reference/crosswalk/        per-city offense code → NIBRS/UCR/category CSVs (loaded on every migrate)
 reference/severity/         severity schemes and weights
 web/                        index.html, app.js, html.js (escape-by-default templating), styles.css

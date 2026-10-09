@@ -206,7 +206,9 @@ Scaling is vertical only. The cache and rate limiter are per process, and prod a
 ### Loading a city's full history
 
 The backfill keeps 24 months. The history load walks a city back to `reference.source_registry.history_start_date`
-(Chicago 2001, Philadelphia 2006, DC and Seattle 2008), one pull per slice of 6 months (Chicago 3), newest first.
+(Chicago 2001, Philadelphia 2006, DC and Seattle 2008, Los Angeles 2010), one pull per slice of 6 months
+(Chicago 3), newest first. Los Angeles reads three datasets one after another (NIBRS, then LAPD's legacy 2020–2024
+and 2010–2019 datasets); `log` shows which dataset each pull read.
 Each loaded year adds a window to that city's list on the next gold refresh. It is off until switched on per city and
 per instance, and **dev goes first**: prod and dev share one disk, and the full history makes each database several
 times larger (step 1 gives the estimate).
@@ -246,8 +248,9 @@ back as well, run `scripts/storage.py compact` in a quiet window.
 loaded stay. Removing them means deleting that city's older `silver.incident_<id>_<year>` partitions by hand and
 rebuilding gold.
 
-**Seattle** before May 2019 and **DC** in 2008 were recorded differently from today. Their windows carry that caveat
-(`reference.source_series_caveat`); Seattle's older rows are mapped through crosswalk rows marked `approximate`.
+**Seattle** before May 2019, **DC** in 2008 and **Los Angeles** before 2025 were recorded differently from today.
+Their windows carry that caveat (`reference.source_series_caveat`). Seattle's older rows are mapped through crosswalk
+rows marked `approximate`; Los Angeles' through hand-mapped `CRM-<code>` rows for LAPD's own crime codes.
 
 ### First steps when the site is down
 

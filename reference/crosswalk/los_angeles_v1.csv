@@ -63,3 +63,210 @@ lax_v1,lax,90H,*,,90H,Peeping Tom,B,group_b,II,part_ii,quality_of_life,exact,202
 lax_v1,lax,90I,*,,90I,Runaway,B,group_b,II,part_ii,other,exact,2024-03-01,,Source publishes the NIBRS code; category from scripts/build_nibrs_crosswalk.py.
 lax_v1,lax,90J,*,,90J,Trespass of Real Property,B,group_b,II,part_ii,quality_of_life,exact,2024-03-01,,Source publishes the NIBRS code; category from scripts/build_nibrs_crosswalk.py.
 lax_v1,lax,90Z,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,exact,2024-03-01,,Source publishes the NIBRS code; category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,09A,*,,09A,Murder and Nonnegligent Manslaughter,A,person,I,part_i_violent,violent,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,09B,*,,09B,Negligent Manslaughter,A,person,II,part_i_violent,violent,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,09C,*,,09C,Justifiable Homicide,A,person,II,part_ii,other,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,100,*,,100,Kidnapping/Abduction,A,person,II,part_i_violent,violent,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,11A,*,,11A,Rape,A,person,I,part_i_violent,violent,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,11B,*,,11B,Sodomy,A,person,I,part_i_violent,violent,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,11C,*,,11C,Sexual Assault With An Object,A,person,I,part_i_violent,violent,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,11D,*,,11D,Fondling,A,person,II,part_ii,violent,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,120,*,,120,Robbery,A,property,I,part_i_violent,violent,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,13A,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,13B,*,,13B,Simple Assault,A,person,II,part_ii,violent,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,13C,*,,13C,Intimidation,A,person,II,part_ii,violent,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,200,*,,200,Arson,A,property,I,part_i_property,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,210,*,,210,Extortion/Blackmail,A,property,II,part_ii,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,220,*,,220,Burglary/Breaking and Entering,A,property,I,part_i_property,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,23A,*,,23A,Pocket-picking,A,property,I,part_i_property,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,23B,*,,23B,Purse-snatching,A,property,I,part_i_property,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,23C,*,,23C,Shoplifting,A,property,I,part_i_property,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,23D,*,,23D,Theft From Building,A,property,I,part_i_property,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,23E,*,,23E,Theft From Coin-Operated Machine or Device,A,property,I,part_i_property,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,23F,*,,23F,Theft From Motor Vehicle,A,property,I,part_i_property,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,23G,*,,23G,Theft of Motor Vehicle Parts or Accessories,A,property,I,part_i_property,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,23H,*,,23H,All Other Larceny,A,property,I,part_i_property,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,240,*,,240,Motor Vehicle Theft,A,property,I,part_i_property,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,250,*,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,26A,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,26B,*,,26B,Credit Card/Automated Teller Machine Fraud,A,property,II,part_ii,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,26C,*,,26C,Impersonation,A,property,II,part_ii,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,26D,*,,26D,Welfare Fraud,A,property,II,part_ii,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,26E,*,,26E,Wire Fraud,A,property,II,part_ii,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,26F,*,,26F,Identity Theft,A,property,II,part_ii,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,26G,*,,26G,Hacking/Computer Invasion,A,property,II,part_ii,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,26H,*,,26H,Money Laundering,A,property,II,part_ii,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,270,*,,270,Embezzlement,A,property,II,part_ii,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,280,*,,280,Stolen Property Offenses,A,property,II,part_ii,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,290,*,,290,Destruction/Damage/Vandalism of Property,A,property,II,part_ii,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,35A,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,35B,*,,35B,Drug Equipment Violations,A,society,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,36A,*,,36A,Incest,A,person,II,part_ii,other,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,36B,*,,36B,Statutory Rape,A,person,II,part_ii,violent,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,370,*,,370,Pornography/Obscene Material,A,society,II,part_ii,other,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,39A,*,,39A,Betting/Wagering,A,society,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,39B,*,,39B,Operating/Promoting/Assisting Gambling,A,society,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,39C,*,,39C,Gambling Equipment Violations,A,society,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,39D,*,,39D,Sports Tampering,A,society,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,40A,*,,40A,Prostitution,A,society,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,40B,*,,40B,Assisting or Promoting Prostitution,A,society,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,40C,*,,40C,Purchasing Prostitution,A,society,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,510,*,,510,Bribery,A,property,II,part_ii,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,520,*,,520,Weapon Law Violations,A,society,II,part_ii,other,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,64A,*,,64A,"Human Trafficking, Commercial Sex Acts",A,person,II,part_i_violent,violent,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,64B,*,,64B,"Human Trafficking, Involuntary Servitude",A,person,II,part_i_violent,violent,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,720,*,,720,Animal Cruelty,A,society,II,part_ii,other,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,90A,*,,90A,Bad Checks,B,group_b,II,part_ii,property,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,90B,*,,90B,Curfew/Loitering/Vagrancy Violations,B,group_b,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,90C,*,,90C,Disorderly Conduct,B,group_b,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,90D,*,,90D,Driving Under the Influence,B,group_b,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,90E,*,,90E,Drunkenness,B,group_b,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,90F,*,,90F,"Family Offenses, Nonviolent",B,group_b,II,part_ii,other,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,90G,*,,90G,Liquor Law Violations,B,group_b,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,90H,*,,90H,Peeping Tom,B,group_b,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,90I,*,,90I,Runaway,B,group_b,II,part_ii,other,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,90J,*,,90J,Trespass of Real Property,B,group_b,II,part_ii,quality_of_life,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,90Z,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2024-01-01,2024-03-01,NIBRS-coded report of an offence dated before LAPD's March 2024 cut-over. Category from scripts/build_nibrs_crosswalk.py.
+lax_v1,lax,CRM-110,*,,09A,Murder and Nonnegligent Manslaughter,A,person,I,part_i_violent,violent,exact,2010-01-01,,LAPD crime code 110. Criminal homicide.
+lax_v1,lax,CRM-113,*,,09B,Negligent Manslaughter,A,person,II,part_i_violent,violent,exact,2010-01-01,,"LAPD crime code 113. Manslaughter, negligent."
+lax_v1,lax,CRM-121,*,,11A,Rape,A,person,I,part_i_violent,violent,exact,2010-01-01,,"LAPD crime code 121. Rape, forcible."
+lax_v1,lax,CRM-122,*,,11A,Rape,A,person,I,part_i_violent,violent,exact,2010-01-01,,"LAPD crime code 122. Rape, attempted: NIBRS counts an attempt as the offence."
+lax_v1,lax,CRM-210,*,,120,Robbery,A,property,I,part_i_violent,violent,exact,2010-01-01,,LAPD crime code 210. Robbery.
+lax_v1,lax,CRM-220,*,,120,Robbery,A,property,I,part_i_violent,violent,exact,2010-01-01,,LAPD crime code 220. Attempted robbery (NIBRS 220 is burglary; hence the CRM- key).
+lax_v1,lax,CRM-230,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2010-01-01,,"LAPD crime code 230. Assault with a deadly weapon, aggravated assault."
+lax_v1,lax,CRM-231,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2010-01-01,,LAPD crime code 231. Assault with a deadly weapon on a police officer.
+lax_v1,lax,CRM-235,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2010-01-01,,"LAPD crime code 235. Child abuse (physical), aggravated assault."
+lax_v1,lax,CRM-236,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,exact,2010-01-01,,"LAPD crime code 236. Intimate partner, aggravated assault."
+lax_v1,lax,CRM-237,*,,90F,"Family Offenses, Nonviolent",B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 237. Child neglect: nonviolent family offence.
+lax_v1,lax,CRM-250,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,approximate,2010-01-01,,"LAPD crime code 250. Shots fired at a moving vehicle, train or aircraft; LAPD counts it as aggravated assault."
+lax_v1,lax,CRM-251,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,approximate,2010-01-01,,LAPD crime code 251. Shots fired at an inhabited dwelling; LAPD counts it as aggravated assault.
+lax_v1,lax,CRM-310,*,,220,Burglary/Breaking and Entering,A,property,I,part_i_property,property,exact,2010-01-01,,LAPD crime code 310. Burglary.
+lax_v1,lax,CRM-320,*,,220,Burglary/Breaking and Entering,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 320. Burglary, attempted."
+lax_v1,lax,CRM-330,*,,23F,Theft From Motor Vehicle,A,property,I,part_i_property,property,approximate,2010-01-01,,LAPD crime code 330. Burglary from vehicle: California vehicle burglary is NIBRS theft from motor vehicle.
+lax_v1,lax,CRM-331,*,,23F,Theft From Motor Vehicle,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 331. Theft from motor vehicle, grand."
+lax_v1,lax,CRM-341,*,,23H,All Other Larceny,A,property,I,part_i_property,property,approximate,2010-01-01,,"LAPD crime code 341. Grand theft, other than guns, fowl, livestock, produce."
+lax_v1,lax,CRM-343,*,,23C,Shoplifting,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 343. Shoplifting, grand theft."
+lax_v1,lax,CRM-345,*,,270,Embezzlement,A,property,II,part_ii,property,approximate,2010-01-01,,"LAPD crime code 345. Dishonest employee, grand theft: NIBRS embezzlement."
+lax_v1,lax,CRM-347,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2010-01-01,,"LAPD crime code 347. Grand theft, insurance fraud."
+lax_v1,lax,CRM-349,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2010-01-01,,"LAPD crime code 349. Grand theft, auto repair fraud."
+lax_v1,lax,CRM-350,*,,23A,Pocket-picking,A,property,I,part_i_property,property,approximate,2010-01-01,,LAPD crime code 350. Theft from the person.
+lax_v1,lax,CRM-351,*,,23B,Purse-snatching,A,property,I,part_i_property,property,exact,2010-01-01,,LAPD crime code 351. Purse snatching.
+lax_v1,lax,CRM-352,*,,23A,Pocket-picking,A,property,I,part_i_property,property,exact,2010-01-01,,LAPD crime code 352. Pickpocket.
+lax_v1,lax,CRM-353,*,,23A,Pocket-picking,A,property,I,part_i_property,property,approximate,2010-01-01,,LAPD crime code 353. Drunk roll: theft from an incapacitated person.
+lax_v1,lax,CRM-354,*,,26F,Identity Theft,A,property,II,part_ii,property,exact,2010-01-01,,LAPD crime code 354. Theft of identity.
+lax_v1,lax,CRM-410,*,,23F,Theft From Motor Vehicle,A,property,I,part_i_property,property,approximate,2010-01-01,,"LAPD crime code 410. Burglary from vehicle, attempted."
+lax_v1,lax,CRM-420,*,,23F,Theft From Motor Vehicle,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 420. Theft from motor vehicle, petty."
+lax_v1,lax,CRM-421,*,,23F,Theft From Motor Vehicle,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 421. Theft from motor vehicle, attempt."
+lax_v1,lax,CRM-432,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 432. Blocking door of an induction centre.
+lax_v1,lax,CRM-433,*,,240,Motor Vehicle Theft,A,property,I,part_i_property,property,approximate,2010-01-01,,LAPD crime code 433. Driving without owner consent: joyriding is NIBRS motor vehicle theft.
+lax_v1,lax,CRM-434,*,,100,Kidnapping/Abduction,A,person,II,part_i_violent,violent,approximate,2010-01-01,,LAPD crime code 434. False imprisonment: NIBRS kidnapping/abduction covers unlawful detention.
+lax_v1,lax,CRM-435,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 435. 'Lynching' (California: taking a person from police custody by riot).
+lax_v1,lax,CRM-436,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,"LAPD crime code 436. 'Lynching', attempted."
+lax_v1,lax,CRM-437,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 437. Resisting arrest.
+lax_v1,lax,CRM-438,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 438. Reckless driving.
+lax_v1,lax,CRM-439,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 439. False police report.
+lax_v1,lax,CRM-440,*,,23H,All Other Larceny,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 440. Theft, plain, petty."
+lax_v1,lax,CRM-441,*,,23H,All Other Larceny,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 441. Theft, plain, attempt."
+lax_v1,lax,CRM-442,*,,23C,Shoplifting,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 442. Shoplifting, petty."
+lax_v1,lax,CRM-443,*,,23C,Shoplifting,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 443. Shoplifting, attempt."
+lax_v1,lax,CRM-444,*,,270,Embezzlement,A,property,II,part_ii,property,approximate,2010-01-01,,"LAPD crime code 444. Dishonest employee, petty theft: NIBRS embezzlement."
+lax_v1,lax,CRM-445,*,,270,Embezzlement,A,property,II,part_ii,property,approximate,2010-01-01,,"LAPD crime code 445. Dishonest employee, attempted theft."
+lax_v1,lax,CRM-446,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2010-01-01,,"LAPD crime code 446. Petty theft, auto repair fraud."
+lax_v1,lax,CRM-450,*,,23A,Pocket-picking,A,property,I,part_i_property,property,approximate,2010-01-01,,"LAPD crime code 450. Theft from the person, attempt."
+lax_v1,lax,CRM-451,*,,23B,Purse-snatching,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 451. Purse snatching, attempt."
+lax_v1,lax,CRM-452,*,,23A,Pocket-picking,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 452. Pickpocket, attempt."
+lax_v1,lax,CRM-453,*,,23A,Pocket-picking,A,property,I,part_i_property,property,approximate,2010-01-01,,"LAPD crime code 453. Drunk roll, attempt."
+lax_v1,lax,CRM-470,*,,23H,All Other Larceny,A,property,I,part_i_property,property,approximate,2010-01-01,,"LAPD crime code 470. Till tap, grand theft."
+lax_v1,lax,CRM-471,*,,23H,All Other Larceny,A,property,I,part_i_property,property,approximate,2010-01-01,,"LAPD crime code 471. Till tap, petty."
+lax_v1,lax,CRM-472,*,,23H,All Other Larceny,A,property,I,part_i_property,property,approximate,2010-01-01,,"LAPD crime code 472. Till tap, attempt."
+lax_v1,lax,CRM-473,*,,23E,Theft From Coin-Operated Machine or Device,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 473. Theft from coin machine, grand."
+lax_v1,lax,CRM-474,*,,23E,Theft From Coin-Operated Machine or Device,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 474. Theft from coin machine, petty."
+lax_v1,lax,CRM-475,*,,23E,Theft From Coin-Operated Machine or Device,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 475. Theft from coin machine, attempt."
+lax_v1,lax,CRM-480,*,,23H,All Other Larceny,A,property,I,part_i_property,property,exact,2010-01-01,,LAPD crime code 480. Bicycle stolen: NIBRS files bicycles under all other larceny.
+lax_v1,lax,CRM-485,*,,23H,All Other Larceny,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 485. Bicycle, attempted theft."
+lax_v1,lax,CRM-487,*,,23H,All Other Larceny,A,property,I,part_i_property,property,approximate,2010-01-01,,LAPD crime code 487. Boat stolen: NIBRS motor vehicles run on land.
+lax_v1,lax,CRM-510,*,,240,Motor Vehicle Theft,A,property,I,part_i_property,property,exact,2010-01-01,,LAPD crime code 510. Vehicle stolen (NIBRS 510 is bribery; hence the CRM- key).
+lax_v1,lax,CRM-520,*,,240,Motor Vehicle Theft,A,property,I,part_i_property,property,exact,2010-01-01,,"LAPD crime code 520. Vehicle, attempted theft."
+lax_v1,lax,CRM-522,*,,240,Motor Vehicle Theft,A,property,I,part_i_property,property,approximate,2010-01-01,,"LAPD crime code 522. Vehicle stolen, other (motorised scooters, bikes)."
+lax_v1,lax,CRM-622,*,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2010-01-01,,LAPD crime code 622. Battery on a firefighter.
+lax_v1,lax,CRM-623,*,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2010-01-01,,"LAPD crime code 623. Battery on police, simple."
+lax_v1,lax,CRM-624,*,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2010-01-01,,"LAPD crime code 624. Battery, simple assault."
+lax_v1,lax,CRM-625,*,,13B,Simple Assault,A,person,II,part_ii,violent,approximate,2010-01-01,,LAPD crime code 625. Other assault.
+lax_v1,lax,CRM-626,*,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2010-01-01,,"LAPD crime code 626. Intimate partner, simple assault."
+lax_v1,lax,CRM-627,*,,13B,Simple Assault,A,person,II,part_ii,violent,exact,2010-01-01,,"LAPD crime code 627. Child abuse (physical), simple assault."
+lax_v1,lax,CRM-647,*,,13B,Simple Assault,A,person,II,part_ii,violent,approximate,2010-01-01,,LAPD crime code 647. Throwing an object at a moving vehicle.
+lax_v1,lax,CRM-648,*,,200,Arson,A,property,I,part_i_property,property,exact,2010-01-01,,LAPD crime code 648. Arson.
+lax_v1,lax,CRM-649,*,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,exact,2010-01-01,,LAPD crime code 649. Document forgery.
+lax_v1,lax,CRM-651,*,,90A,Bad Checks,B,group_b,II,part_ii,property,exact,2010-01-01,,"LAPD crime code 651. Worthless document (bad cheque), over $200."
+lax_v1,lax,CRM-652,*,,90A,Bad Checks,B,group_b,II,part_ii,property,exact,2010-01-01,,"LAPD crime code 652. Worthless document (bad cheque), $200 and under."
+lax_v1,lax,CRM-653,*,,26B,Credit Card/Automated Teller Machine Fraud,A,property,II,part_ii,property,exact,2010-01-01,,"LAPD crime code 653. Credit card fraud, over $950."
+lax_v1,lax,CRM-654,*,,26B,Credit Card/Automated Teller Machine Fraud,A,property,II,part_ii,property,exact,2010-01-01,,"LAPD crime code 654. Credit card fraud, $950 and under."
+lax_v1,lax,CRM-660,*,,250,Counterfeiting/Forgery,A,property,II,part_ii,property,exact,2010-01-01,,LAPD crime code 660. Counterfeit.
+lax_v1,lax,CRM-661,*,,26G,Hacking/Computer Invasion,A,property,II,part_ii,property,exact,2010-01-01,,LAPD crime code 661. Unauthorized computer access.
+lax_v1,lax,CRM-662,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2010-01-01,,"LAPD crime code 662. Bunco (confidence game), grand theft."
+lax_v1,lax,CRM-664,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2010-01-01,,"LAPD crime code 664. Bunco, petty theft."
+lax_v1,lax,CRM-666,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,exact,2010-01-01,,"LAPD crime code 666. Bunco, attempt."
+lax_v1,lax,CRM-668,*,,270,Embezzlement,A,property,II,part_ii,property,exact,2010-01-01,,"LAPD crime code 668. Embezzlement, grand theft."
+lax_v1,lax,CRM-670,*,,270,Embezzlement,A,property,II,part_ii,property,exact,2010-01-01,,"LAPD crime code 670. Embezzlement, petty theft."
+lax_v1,lax,CRM-740,*,,290,Destruction/Damage/Vandalism of Property,A,property,II,part_ii,property,exact,2010-01-01,,"LAPD crime code 740. Vandalism, felony."
+lax_v1,lax,CRM-745,*,,290,Destruction/Damage/Vandalism of Property,A,property,II,part_ii,property,exact,2010-01-01,,"LAPD crime code 745. Vandalism, misdemeanour."
+lax_v1,lax,CRM-753,*,,520,Weapon Law Violations,A,society,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 753. Discharging a firearm / shots fired: weapon law violation.
+lax_v1,lax,CRM-755,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 755. Bomb scare.
+lax_v1,lax,CRM-756,*,,520,Weapon Law Violations,A,society,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 756. Weapons possession / bombing.
+lax_v1,lax,CRM-760,*,,11D,Fondling,A,person,II,part_ii,violent,approximate,2010-01-01,,LAPD crime code 760. Lewd or lascivious acts with a child.
+lax_v1,lax,CRM-761,*,,13A,Aggravated Assault,A,person,I,part_i_violent,violent,approximate,2010-01-01,,LAPD crime code 761. Brandishing a weapon; LAPD counts it as aggravated assault.
+lax_v1,lax,CRM-762,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 762. Lewd conduct: FBI guidance files public lewdness under 90Z.
+lax_v1,lax,CRM-763,*,,13C,Intimidation,A,person,II,part_ii,violent,exact,2010-01-01,,LAPD crime code 763. Stalking: NIBRS intimidation.
+lax_v1,lax,CRM-805,*,,40B,Assisting or Promoting Prostitution,A,society,II,part_ii,quality_of_life,exact,2010-01-01,,LAPD crime code 805. Pimping.
+lax_v1,lax,CRM-806,*,,40B,Assisting or Promoting Prostitution,A,society,II,part_ii,quality_of_life,exact,2010-01-01,,LAPD crime code 806. Pandering.
+lax_v1,lax,CRM-810,*,,36B,Statutory Rape,A,person,II,part_ii,violent,approximate,2010-01-01,,LAPD crime code 810. Unlawful sex (including mutual consent with a minor): statutory rape.
+lax_v1,lax,CRM-812,*,,11D,Fondling,A,person,II,part_ii,violent,approximate,2010-01-01,,LAPD crime code 812. Crime against a child 13 or under.
+lax_v1,lax,CRM-813,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 813. Annoying a child.
+lax_v1,lax,CRM-814,*,,370,Pornography/Obscene Material,A,society,II,part_ii,other,exact,2010-01-01,,LAPD crime code 814. Child pornography.
+lax_v1,lax,CRM-815,*,,11C,Sexual Assault With An Object,A,person,I,part_i_violent,violent,exact,2010-01-01,,LAPD crime code 815. Sexual penetration with a foreign object.
+lax_v1,lax,CRM-820,*,,11B,Sodomy,A,person,I,part_i_violent,violent,exact,2010-01-01,,LAPD crime code 820. Oral copulation: NIBRS sodomy.
+lax_v1,lax,CRM-821,*,,11B,Sodomy,A,person,I,part_i_violent,violent,exact,2010-01-01,,LAPD crime code 821. Sodomy.
+lax_v1,lax,CRM-822,*,,64A,"Human Trafficking, Commercial Sex Acts",A,person,II,part_i_violent,violent,exact,2010-01-01,,"LAPD crime code 822. Human trafficking, commercial sex acts."
+lax_v1,lax,CRM-830,*,,36A,Incest,A,person,II,part_ii,other,exact,2010-01-01,,LAPD crime code 830. Incest.
+lax_v1,lax,CRM-840,*,,720,Animal Cruelty,A,society,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 840. Bestiality: NIBRS animal cruelty includes sexual abuse of animals.
+lax_v1,lax,CRM-845,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 845. Sex offender registrant out of compliance.
+lax_v1,lax,CRM-850,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 850. Indecent exposure: FBI guidance files it under 90Z.
+lax_v1,lax,CRM-860,*,,11D,Fondling,A,person,II,part_ii,violent,exact,2010-01-01,,LAPD crime code 860. Battery with sexual contact: fondling.
+lax_v1,lax,CRM-865,*,,35A,Drug/Narcotic Violations,A,society,II,part_ii,quality_of_life,approximate,2010-01-01,,LAPD crime code 865. Drugs to a minor.
+lax_v1,lax,CRM-870,*,,90F,"Family Offenses, Nonviolent",B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 870. Child abandonment: nonviolent family offence.
+lax_v1,lax,CRM-880,*,,90C,Disorderly Conduct,B,group_b,II,part_ii,quality_of_life,approximate,2010-01-01,,LAPD crime code 880. Disrupting a school.
+lax_v1,lax,CRM-882,*,,90C,Disorderly Conduct,B,group_b,II,part_ii,quality_of_life,approximate,2010-01-01,,LAPD crime code 882. Inciting a riot.
+lax_v1,lax,CRM-884,*,,90C,Disorderly Conduct,B,group_b,II,part_ii,quality_of_life,approximate,2010-01-01,,LAPD crime code 884. Failure to disperse.
+lax_v1,lax,CRM-886,*,,90C,Disorderly Conduct,B,group_b,II,part_ii,quality_of_life,exact,2010-01-01,,LAPD crime code 886. Disturbing the peace.
+lax_v1,lax,CRM-888,*,,90J,Trespass of Real Property,B,group_b,II,part_ii,quality_of_life,exact,2010-01-01,,LAPD crime code 888. Trespassing.
+lax_v1,lax,CRM-890,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 890. Failure to yield.
+lax_v1,lax,CRM-900,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 900. Violation of a court order.
+lax_v1,lax,CRM-901,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 901. Violation of a restraining order.
+lax_v1,lax,CRM-902,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 902. Violation of a temporary restraining order.
+lax_v1,lax,CRM-903,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 903. Contempt of court.
+lax_v1,lax,CRM-904,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 904. Firearms emergency protective order.
+lax_v1,lax,CRM-905,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 905. Firearms temporary restraining order.
+lax_v1,lax,CRM-906,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 906. Firearms restraining order.
+lax_v1,lax,CRM-910,*,,100,Kidnapping/Abduction,A,person,II,part_i_violent,violent,exact,2010-01-01,,LAPD crime code 910. Kidnapping.
+lax_v1,lax,CRM-920,*,,100,Kidnapping/Abduction,A,person,II,part_i_violent,violent,exact,2010-01-01,,"LAPD crime code 920. Kidnapping, attempt."
+lax_v1,lax,CRM-921,*,,64B,"Human Trafficking, Involuntary Servitude",A,person,II,part_i_violent,violent,exact,2010-01-01,,"LAPD crime code 921. Human trafficking, involuntary servitude."
+lax_v1,lax,CRM-922,*,,100,Kidnapping/Abduction,A,person,II,part_i_violent,violent,approximate,2010-01-01,,LAPD crime code 922. Child stealing.
+lax_v1,lax,CRM-924,*,,290,Destruction/Damage/Vandalism of Property,A,property,II,part_ii,property,approximate,2010-01-01,,"LAPD crime code 924. Telephone property, damage."
+lax_v1,lax,CRM-926,*,,290,Destruction/Damage/Vandalism of Property,A,property,II,part_ii,property,approximate,2010-01-01,,LAPD crime code 926. Train wrecking.
+lax_v1,lax,CRM-928,*,,13C,Intimidation,A,person,II,part_ii,violent,exact,2010-01-01,,LAPD crime code 928. Threatening phone calls or letters: intimidation.
+lax_v1,lax,CRM-930,*,,13C,Intimidation,A,person,II,part_ii,violent,exact,2010-01-01,,"LAPD crime code 930. Criminal threats, no weapon displayed: intimidation."
+lax_v1,lax,CRM-931,*,,520,Weapon Law Violations,A,society,II,part_ii,other,approximate,2010-01-01,,"LAPD crime code 931. Replica firearms (sale, display, manufacture)."
+lax_v1,lax,CRM-932,*,,90H,Peeping Tom,B,group_b,II,part_ii,quality_of_life,exact,2010-01-01,,LAPD crime code 932. Peeping Tom.
+lax_v1,lax,CRM-933,*,,90B,Curfew/Loitering/Vagrancy Violations,B,group_b,II,part_ii,quality_of_life,approximate,2010-01-01,,LAPD crime code 933. Prowler: loitering.
+lax_v1,lax,CRM-940,*,,210,Extortion/Blackmail,A,property,II,part_ii,property,exact,2010-01-01,,LAPD crime code 940. Extortion.
+lax_v1,lax,CRM-942,*,,510,Bribery,A,property,II,part_ii,property,exact,2010-01-01,,LAPD crime code 942. Bribery.
+lax_v1,lax,CRM-943,*,,720,Animal Cruelty,A,society,II,part_ii,other,exact,2010-01-01,,LAPD crime code 943. Cruelty to animals.
+lax_v1,lax,CRM-944,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 944. Conspiracy.
+lax_v1,lax,CRM-946,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 946. Other miscellaneous crime.
+lax_v1,lax,CRM-948,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 948. Bigamy.
+lax_v1,lax,CRM-949,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 949. Illegal dumping.
+lax_v1,lax,CRM-950,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2010-01-01,,"LAPD crime code 950. Defrauding an innkeeper / theft of services, over $950."
+lax_v1,lax,CRM-951,*,,26A,False Pretenses/Swindle/Confidence Game,A,property,II,part_ii,property,approximate,2010-01-01,,"LAPD crime code 951. Defrauding an innkeeper / theft of services, $950 and under."
+lax_v1,lax,CRM-952,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 952. Illegal abortion.
+lax_v1,lax,CRM-954,*,,90F,"Family Offenses, Nonviolent",B,group_b,II,part_ii,other,approximate,2010-01-01,,LAPD crime code 954. Contributing to the delinquency of a minor.
+lax_v1,lax,CRM-956,*,,90Z,All Other Offenses,B,group_b,II,part_ii,other,approximate,2010-01-01,,"LAPD crime code 956. Lewd letters or telephone calls, without a threat."

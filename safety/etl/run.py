@@ -38,6 +38,7 @@ schedule plus `hourly --all` weekly (deploy/systemd/safety-etl*@.timer):
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
 import re
@@ -53,7 +54,13 @@ from safety import PIPELINE_VERSION
 from safety.db import connect, wait_for_db
 from safety.etl import boundary as boundary_loader
 from safety.etl import census, gold, transform, validate, withdrawn
-from safety.etl.adapters import ADAPTERS, SourceConfig, get_adapter
+from safety.etl.adapters import (
+    ADAPTERS,
+    HISTORY_DATASETS,
+    PRIMARY_HISTORY_START,
+    SourceConfig,
+    get_adapter,
+)
 from safety.etl.adapters.base import NormalizedIncident, RawChunk, SourceAdapter
 from safety.etl.bronze import LocalBronzeStore, build_manifest
 from safety.etl.windows import backfill_window, months_before
@@ -892,15 +899,35 @@ WHERE source_id = %s
   AND mode   = ANY(%s)
   AND status = ANY(%s)
   AND window_start IS NOT NULL
+  AND (%s::text IS NULL OR dataset = %s)
+  AND NOT (dataset = ANY(%s))
 """
 
 
-def history_covered_from(conn: psycopg.Connection, source_id: str) -> datetime | None:
-    """The oldest date any completed incident or history pull asked for."""
+def history_covered_from(
+    conn: psycopg.Connection,
+    source_id: str,
+    *,
+    dataset: str | None = None,
+    exclude: tuple[str, ...] = (),
+) -> datetime | None:
+    """The oldest date any completed incident or history pull asked for.
+
+    `dataset` narrows it to one dataset and `exclude` leaves some out: a city
+    with older datasets (HISTORY_DATASETS) tracks how far each one has got
+    separately from its current dataset.
+    """
     with conn.cursor() as cur:
         cur.execute(
             _COVERED_FROM_SQL,
-            (source_id, list(_HISTORY_MODES), list(_COMPLETED_STATUSES)),
+            (
+                source_id,
+                list(_HISTORY_MODES),
+                list(_COMPLETED_STATUSES),
+                dataset,
+                dataset,
+                list(exclude),
+            ),
         )
         row = cur.fetchone()
     return row["covered_from"] if row else None
@@ -932,16 +959,43 @@ def history_slices(
 
 def history_remaining(
     conn: psycopg.Connection, config: SourceConfig, slice_months: int | None = None
-) -> list[tuple[datetime, datetime]]:
-    if config.history_start_date is None:
+) -> list[tuple[str, datetime, datetime]]:
+    """(dataset, since, until) for every slice still to load, newest first.
+
+    The city's current dataset first, back to its own start; then each older
+    dataset in HISTORY_DATASETS from its last day back to its first. Each part
+    resumes from its own completed pulls. None of it reaches past the city's
+    history_start_date.
+    """
+    floor = config.history_start_date
+    if floor is None:
         return []
-    covered = history_covered_from(conn, config.source_id)
+    older = HISTORY_DATASETS.get(config.source_id, ())
+    covered = history_covered_from(
+        conn, config.source_id, exclude=tuple(d for d, _, _ in older)
+    )
     if covered is None:
         return []
     months = slice_months or HISTORY_SLICE_MONTHS.get(
         config.source_id, DEFAULT_HISTORY_SLICE_MONTHS
     )
-    return history_slices(covered, config.history_start_date, months)
+    primary_floor = max(floor, PRIMARY_HISTORY_START.get(config.source_id, floor))
+    remaining = [
+        (config.incident_dataset, since, until)
+        for since, until in history_slices(covered, primary_floor, months)
+    ]
+    for dataset, start, end in older:
+        if end <= floor:
+            continue
+        # Never read: start from its last day, which history_slices pads by one.
+        cursor = history_covered_from(conn, config.source_id, dataset=dataset) or (
+            datetime(end.year, end.month, end.day, tzinfo=timezone.utc) - timedelta(days=1)
+        )
+        remaining.extend(
+            (dataset, since, until)
+            for since, until in history_slices(cursor, max(start, floor), months)
+        )
+    return remaining
 
 
 def cmd_history(args: argparse.Namespace) -> int:
@@ -976,14 +1030,21 @@ def cmd_history(args: argparse.Namespace) -> int:
         remaining = history_remaining(conn, config, args.slice_months)
         deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes else None
         outcomes: list[dict[str, Any]] = []
-        for since, until in remaining[: args.max_slices or None]:
+        for dataset, since, until in remaining[: args.max_slices or None]:
             if deadline is not None and outcomes and time.monotonic() > deadline:
                 break
             if outcomes and args.pause_seconds:
                 time.sleep(args.pause_seconds)
-            outcome = _ingest(conn, config, mode="history", since=since, until=until)
+            outcome = _ingest(
+                conn,
+                dataclasses.replace(config, incident_dataset=dataset),
+                mode="history",
+                since=since,
+                until=until,
+            )
             outcomes.append(
                 {
+                    "dataset": dataset,
                     "since": since.date().isoformat(),
                     "until": until.date().isoformat(),
                     "status": outcome["status"],
@@ -1023,7 +1084,6 @@ def cmd_reprocess(args: argparse.Namespace) -> int:
     """
     with connect() as conn:
         config = SourceConfig.load(conn, args.city)
-        adapter = get_adapter(config)
         with conn.cursor() as cur:
             if args.pull_id is None:
                 # Replaying the most recent snapshot is the common case by far,
@@ -1052,6 +1112,9 @@ def cmd_reprocess(args: argparse.Namespace) -> int:
             target = args.pull_id if args.pull_id is not None else "any pull"
             print(f"No stored bronze snapshot for {target}", file=sys.stderr)
             return 1
+        # A history pull may come from an older dataset with its own reader.
+        config = dataclasses.replace(config, incident_dataset=original["dataset"])
+        adapter = get_adapter(config)
         log.info(
             "replaying pull %s (%s)", original["pull_id"], original["bronze_uri"]
         )

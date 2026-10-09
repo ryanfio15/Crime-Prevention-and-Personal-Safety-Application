@@ -13,6 +13,7 @@ directly. These tests assert that convention, not a UTC conversion.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -21,7 +22,8 @@ import pytest
 
 from safety.etl.adapters import SourceConfig, get_adapter
 from safety.etl.adapters.austin import AustinEsriAdapter
-from safety.etl.adapters.los_angeles import LosAngelesSocrataAdapter
+from safety.etl import location
+from safety.etl.adapters.los_angeles import LosAngelesLegacyAdapter, LosAngelesSocrataAdapter
 from safety.etl.adapters.philadelphia import PhiladelphiaCartoAdapter
 from safety.etl.adapters.washington_dc import WashingtonDcEsriAdapter
 
@@ -198,6 +200,41 @@ def test_lax_invalid_time_and_zero_coordinates():
     assert n.occurred_precision == "date"  # 2400 is not a clock time
     assert n.occurred_local_hour is None
     assert n.occurred_at == _wall(2024, 3, 1)
+    assert (n.latitude, n.longitude, n.coordinate_source) == (None, None, "missing")
+
+
+def _legacy(name: str):
+    records = json.loads((FIXTURES / "lax.json").read_text())
+    config = dataclasses.replace(_config("lax"), incident_dataset="63jg-8b9z")
+    return get_adapter(config).normalize(records[name])
+
+
+def test_lax_legacy_dataset_gets_its_own_reader():
+    for dataset in ("63jg-8b9z", "2nrs-mtv8"):
+        config = dataclasses.replace(_config("lax"), incident_dataset=dataset)
+        assert type(get_adapter(config)) is LosAngelesLegacyAdapter
+    assert type(get_adapter(_config("lax"))) is LosAngelesSocrataAdapter
+
+
+def test_lax_legacy_record():
+    n = _legacy("legacy")
+    assert n.source_incident_id == "001307355"
+    assert n.occurred_at == _wall(2010, 2, 20, 13, 50)
+    assert n.occurred_local_hour == 13
+    assert n.occurred_precision == "exact"
+    # LAPD's 510 is a stolen vehicle, NIBRS's is bribery: the scheme is in the key.
+    assert (n.raw_offense_code, n.raw_offense_text) == ("CRM-510", "VEHICLE - STOLEN")
+    assert n.raw_source_category == "Part 1"
+    assert n.location_block == "300 E GAGE AV"
+    assert n.location_type == location.bucket("STREET")
+    assert n.district == "Newton"
+    assert (n.latitude, n.longitude) == (33.9825, -118.2695)
+
+
+def test_lax_legacy_missing_code_time_and_coordinates():
+    n = _legacy("legacy_no_code")
+    assert n.raw_offense_code is None
+    assert n.occurred_precision == "date"
     assert (n.latitude, n.longitude, n.coordinate_source) == (None, None, "missing")
 
 

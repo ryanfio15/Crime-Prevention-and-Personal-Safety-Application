@@ -231,11 +231,14 @@ and a CI database test checks that both give the same layers. `refresh_all` repo
 | Washington DC | 2008-01-01 | same yearly layers; 2008 does not separate theft from vehicles |
 | Seattle | 2008-01-01 | same dataset; before May 2019 SPD converted older records to NIBRS codes (crosswalk rows marked `approximate`) |
 | Austin | 2021-10-01 | the CrimeViewer services begin 2021-09-23; older Austin data has no coordinates |
-| Los Angeles | 2024-10-01 | unchanged for now: older LAPD data is in other datasets with their own codes |
+| Los Angeles | 2010-01-01 | three datasets, read newest first: NIBRS (`k7nn-b2ep`) back to January 2024, then LAPD's legacy "Crime Data" for 2020–2024 (`2nrs-mtv8`) and 2010–2019 (`63jg-8b9z`). Both systems are read for 2024, when LAPD moved over gradually. The legacy rows are one per report under LAPD's own crime codes, stored as `CRM-<code>` because the numbers collide with NIBRS codes, and mapped by hand (migration 019) |
+
+A city's older datasets are listed in `safety/etl/adapters/__init__.py` (`HISTORY_DATASETS`, `DATASET_ADAPTERS`). The
+history load gives each dataset its own reader and tracks how far back each has got from its own pulls.
 
 ### Migrations
 
-There are 18 forward-only SQL files in `db/migrations/`, run by `python -m safety.migrate`:
+There are 19 forward-only SQL files in `db/migrations/`, run by `python -m safety.migrate`:
 - Each file is applied once, in its own transaction.
 - An edited file that was already applied makes migrate refuse to run.
 - A Postgres advisory lock serializes concurrent runs, waiting up to `MIGRATE_LOCK_WAIT_SECONDS` (600 s).
