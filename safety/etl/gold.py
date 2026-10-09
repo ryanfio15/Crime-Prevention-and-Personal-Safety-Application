@@ -605,7 +605,8 @@ def _build_safety_aggregate(
     cur: psycopg.Cursor, source_id: str, scheme: Scheme
 ) -> None:
     """Severity-weighted sums per bucket for one scheme: the weight lookup runs
-    once per incident here instead of once per incident per window."""
+    once per distinct offense here (_weight), not once per incident per window."""
+    _build_weight_table(cur, source_id, scheme.version)
     cur.execute("DROP TABLE IF EXISTS _safety_agg")
     cur.execute(
         f"""
@@ -623,7 +624,7 @@ def _build_safety_aggregate(
                    COALESCE(w.weight, 1.0) AS weight
             FROM silver.incident i
             JOIN _period p ON p.d = i.occurred_local_date
-            {_WEIGHT_LOOKUP}
+            {_WEIGHT_JOIN}
             WHERE i.source_id = %(source_id)s
         ) x
         CROSS JOIN LATERAL (VALUES {_res_rows(scheme.resolutions)}) AS res(h3_res, h3_index)
@@ -878,6 +879,44 @@ _WEIGHT_LOOKUP = """
     ) w ON true
 """
 
+# The lookup above depends only on an incident's offense fields, and a city has
+# a few thousand distinct combinations of them against millions of incidents.
+# Run per incident it was most of a gold refresh: ~0.03 ms a probe, 3.6 million
+# probes for Los Angeles, on every pass that weighs incidents. So it is resolved
+# once per combination into _weight, and the passes hash-join to that instead.
+#
+# The join keys stand NULL in for chr(1), because a hash join cannot match NULL
+# to NULL. The lookup itself runs on the original values, so the sentinel only
+# has to be absent from the data, never from the weight table.
+_WEIGHT_KEYS = ("product_category", "raw_offense_text", "nibrs_code", "severity_bucket")
+
+_WEIGHT_TABLE_SQL = f"""
+CREATE TEMP TABLE _weight ON COMMIT DROP AS
+SELECT
+    {", ".join(f"COALESCE(i.{k}, chr(1)) AS {k}" for k in _WEIGHT_KEYS)},
+    w.weight, w.sourced, i.n
+FROM (
+    SELECT {", ".join(_WEIGHT_KEYS)}, count(*) AS n
+    FROM silver.incident
+    WHERE source_id = %(source_id)s
+    GROUP BY {", ".join(_WEIGHT_KEYS)}
+) i
+{_WEIGHT_LOOKUP}
+"""
+
+_WEIGHT_JOIN = "LEFT JOIN _weight w ON " + " AND ".join(
+    f"w.{k} = COALESCE(i.{k}, chr(1))" for k in _WEIGHT_KEYS
+)
+
+
+def _build_weight_table(cur: psycopg.Cursor, source_id: str, scheme: str | None) -> None:
+    """_weight: one row per distinct offense in this city, with its weight under
+    `scheme` (none when the scheme is None, so every incident weighs 1.0)."""
+    cur.execute("DROP TABLE IF EXISTS _weight")
+    cur.execute(_WEIGHT_TABLE_SQL, {"source_id": source_id, "scheme": scheme})
+    cur.execute("ANALYZE _weight")
+
+
 _SAFETY_WEIGHTED_DIRECT = """
     SELECT
         i.{h3_column} AS h3_index,
@@ -916,13 +955,18 @@ INSERT INTO gold.cell_safety (
 )
 """ + SAFETY_RANKED
 
+# Counted per distinct offense, then looked up, for the reason _weight exists.
 _COVERAGE_SQL = f"""
 SELECT
-    count(*)                                        AS total,
-    count(*) FILTER (WHERE w.sourced IS TRUE)       AS sourced
-FROM silver.incident i
+    COALESCE(sum(i.n), 0)                               AS total,
+    COALESCE(sum(i.n) FILTER (WHERE w.sourced IS TRUE), 0) AS sourced
+FROM (
+    SELECT {", ".join(_WEIGHT_KEYS)}, count(*) AS n
+    FROM silver.incident
+    WHERE source_id = %(source_id)s
+    GROUP BY {", ".join(_WEIGHT_KEYS)}
+) i
 {_WEIGHT_LOOKUP}
-WHERE i.source_id = %(source_id)s
 """
 
 
@@ -958,12 +1002,16 @@ SELECT
     i.severity_bucket,
     CASE WHEN i.product_category = 'violent' THEN 'violent' ELSE 'non_violent' END
         AS track,
-    count(*)::int AS incidents
-FROM silver.incident i
+    sum(i.n)::int AS incidents
+FROM (
+    SELECT {", ".join(_WEIGHT_KEYS)}, raw_offense_code, count(*) AS n
+    FROM silver.incident
+    WHERE source_id = %(source_id)s
+    GROUP BY {", ".join(_WEIGHT_KEYS)}, raw_offense_code
+) i
 {_WEIGHT_LOOKUP}
-WHERE i.source_id = %(source_id)s
-  -- Matched nothing more specific than the bucket, or matched nothing at all.
-  AND (w.sourced IS NOT TRUE)
+-- Matched nothing more specific than the bucket, or matched nothing at all.
+WHERE w.sourced IS NOT TRUE
 GROUP BY 1, 2, 3, 4, 5
 ORDER BY incidents DESC
 """
@@ -1308,9 +1356,10 @@ def refresh_cell_hour_safety(
         _require_exposure(conn, source_id, scheme, HOURLY_RESOLUTIONS)
     written = 0
     with conn.cursor() as cur:
+        _build_weight_table(cur, source_id, scheme.version)
         for res in HOURLY_RESOLUTIONS:
             sql = _HOUR_SAFETY_SQL.format(
-                h3_column=_h3_column(res), weight_lookup=_WEIGHT_LOOKUP
+                h3_column=_h3_column(res), weight_lookup=_WEIGHT_JOIN
             )
             # Every window, not just the in-scope ones: the DELETE is what makes
             # narrowing HOURLY_WINDOWS reclaim disk instead of stranding rows no
@@ -1723,10 +1772,11 @@ def refresh_cell_daily(
 
     columns = ", ".join(_DAILY_COLUMNS)
     with conn.cursor() as cur:
+        _build_weight_table(cur, source_id, scheme)
         cur.execute("DROP TABLE IF EXISTS _daily")
         cur.execute(
             _DAILY_BUILD_SQL.format(
-                weight_lookup=_WEIGHT_LOOKUP, res_rows=_res_rows(DAILY_RESOLUTIONS)
+                weight_lookup=_WEIGHT_JOIN, res_rows=_res_rows(DAILY_RESOLUTIONS)
             ),
             {"source_id": source_id, "floor": floor, "anchor": anchor, "scheme": scheme},
         )
