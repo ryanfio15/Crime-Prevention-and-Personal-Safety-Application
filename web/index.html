@@ -49,18 +49,24 @@
     <select id="f-city"></select>
   </label>
 
-  <label class="field">
-    <span class="field-label">Time window</span>
-    <!-- Filled from the city's own window list (web/windows.js): 3/6/9
-         months, then years back to its oldest stored incident. -->
-    <select id="f-window">
-      <option value="last_1y" selected>Last 12 months</option>
+  <!-- Two calendar dates drive the map (web/windows.js). The calendar runs from
+       the city's oldest stored day to today; the presets are the city's stored
+       windows (3/6/9 months, then years) and fill both dates in one click. -->
+  <div class="field field-range" role="group" aria-labelledby="f-range-label">
+    <span class="field-label" id="f-range-label">Dates</span>
+    <div class="range-inputs">
+      <input type="date" id="f-from" aria-label="From date" required>
+      <span class="range-sep" aria-hidden="true">–</span>
+      <input type="date" id="f-to" aria-label="To date" required>
+    </div>
+    <select id="f-preset" aria-label="Quick range">
+      <option value="custom">Custom dates</option>
     </select>
-    <!-- Filled by syncActivityScope: why an option is disabled at this cell
-         size, a window that starts before the city's data does, and any
-         recording change the window reaches back into. -->
+    <!-- Filled by syncActivityScope: where the data stops, what a preset is
+         missing at this cell size, and any recording change the range reaches
+         back into. -->
     <span class="field-note" id="f-window-note"></span>
-  </label>
+  </div>
 
   <label class="field">
     <span class="field-label">Offense category</span>

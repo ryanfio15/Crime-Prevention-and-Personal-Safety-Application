@@ -112,7 +112,7 @@ sequenceDiagram
   N->>A: proxy (zone safety_api, 10 r/s)
   A->>D: gold.city_snapshot ⨝ reference.source_registry
   A-->>B: cities[]
-  B->>N: GET /api/v1/cells?city&res&window&category
+  B->>N: GET /api/v1/cells?city&res&(window | from&to)&category
   N->>A: proxy (zone safety_cells, 2 r/s)
   A->>D: SELECT max(last_refreshed_at) … WHERE source_id = city
   A->>C: entry for (key, stamp)?
@@ -176,7 +176,7 @@ ingestion `run.py:360-558`, and the gold rebuild `safety/etl/gold.py:1698-1779`.
 |---|---|---|
 | **Bronze** | Files: `I/data/bronze/source_id=<id>/dataset=<ds>/pull_date=<YYYY-MM-DD>/pull_<NNNNNN>/{manifest.json,*.gz}` | Raw responses, gzipped byte-for-byte. Used for audit and `reprocess`. **Never pruned, never backed up.** |
 | **Silver** | `silver.incident`, partitioned LIST(`source_id`) then RANGE(`occurred_year`); partitions created on demand | One normalized row per incident, with H3 r8/r9/r10, offense class mapped through the crosswalk, and local hour |
-| **Gold** | `gold.*`: `cell_geometry`, `cell_activity`, `cell_safety`, `cell_hour_safety`, `cell_hour_profile`, `cell_monthly`, `cell_offense_mix`, `cell_exposure`, `cell_neighbor`, `city_snapshot`, `city_window` | Per-city, per-cell rollups, and the windows each city is built for. **The only tables the map reads.** Rebuilt delete-then-insert; these are ordinary tables, not materialized views |
+| **Gold** | `gold.*`: `cell_geometry`, `cell_activity`, `cell_safety`, `cell_hour_safety`, `cell_hour_profile`, `cell_monthly`, `cell_offense_mix`, `cell_daily`, `cell_exposure`, `cell_neighbor`, `city_snapshot`, `city_window` | Per-city, per-cell rollups, and the windows each city is built for. **The only tables the map reads** (one exception: a cell's offense list for a custom date range, below). Rebuilt delete-then-insert, except `cell_daily`, which is written as a difference; these are ordinary tables, not materialized views |
 | Reference | `reference.*`: `source_registry`, `offense_crosswalk`, `city_boundary`, `severity_scheme`, `offense_severity_weight`, `census_block`, `source_series_caveat` | Per-city config, the `enabled` and `history_*` settings, recording-change caveats, crosswalks loaded from `reference/crosswalk/*.csv` on every migrate |
 | Bookkeeping | `etl.*`: `pull_run`, `validation_issue`, `staging_incident` (UNLOGGED), `ops_run`, `withdrawn_incident` | Pull history, data-quality issues, the ops retry ledger, and a 90-day archive of rows withdrawn upstream |
 | Migrations | `public.schema_migration(filename, applied_at, checksum)` | Applied files with SHA-256 checksums |
@@ -209,6 +209,23 @@ stops at the first window that reaches the city's oldest stored date (`gold.reso
   - resolution 10: `last_1y` and `last_2y`, category `all` only.
 - **Caveats.** `reference.source_series_caveat` lists periods recorded differently from today (Seattle before
   May 2019, DC in 2008). A window that reaches into one carries its caveat text, shown under the window control.
+- **Custom date ranges** (migration 020). The map's controls are two calendar dates: by default from one year
+  before today to today, and anything from `city_snapshot.selectable_start` (the oldest stored day on or after the
+  floor) to today, a single day included. The windows above are presets that fill both dates in. The API takes
+  `from`/`to` in place of `window`:
+  - a range equal to a stored window (once `to` is clamped to the newest reported day) is served as that window,
+    from its stored rows, time-of-day layer included;
+  - any other range is ranked on request. `gold.cell_daily` holds sparse per-cell, per-day counts and
+    severity-weighted sums at r8/r9. The API sums it over the range and runs the same ranking SQL the ETL uses
+    for the stored windows (`safety/ranking_sql.py`), so the two cannot drift. Results go through the stamped cache,
+    keyed by the dates;
+  - not served for custom ranges: resolution 10 (no daily rollup there) and the time-of-day layer. The safety
+    ranking follows `SAFETY_MAX_WINDOW_YEARS`, and is ranked only while `city_snapshot.daily_scheme_version` is
+    the city's active scheme;
+  - a cell's top offenses for a custom range are read from silver for that one cell (indexed), because a daily
+    rollup of offense text would be several times the size of `cell_daily`;
+  - a city whose gold predates `cell_daily` has no `selectable_start`; it refuses custom ranges and the map
+    offers only its presets.
 - **Legacy names.** Until a later contract migration, gold also writes `last_90d`, `last_12m` and `last_24m` as copies of
   `last_3m`, `last_1y` and `last_2y` (`GOLD_LEGACY_WINDOWS`), so the previous release still has a map after a
   rollback. The API accepts the old names as aliases, and a city not rebuilt since migration 018 is served its four
@@ -312,15 +329,15 @@ All routes are `GET` with no authentication. nginx limits `/api/v1/cells` to 2 r
 |---|---|---|
 | `/api/v1/health` | — | `status`, deployed `commit`, `pipeline_version`, data timestamps, `incidents`, cache stats |
 | `/api/v1/version` | `city` | Refresh stamp that browsers poll |
-| `/api/v1/cities` | — | Cities that have a snapshot, each with its `windows` list and `default_window` |
+| `/api/v1/cities` | — | Cities that have a snapshot, each with its `windows` list, `default_window`, `selectable_start`, `coverage_end`, `custom_range_resolutions` and `series_caveats` |
 | `/api/v1/cities/{source_id}` | — | One city's metadata and windows; 404 if unknown |
 | `/api/v1/categories` | `city`=phl | Categories, tiers, windows and resolutions |
 | `/api/v1/quality` | `city`=phl | Validation issues, recent pulls, provenance mix |
-| `/api/v1/cells` | `city`=phl, `res`=8, `window`=last_1y, `category`=all, `min_count`=0, `hour`, `measure`, `bbox` | Whole-city GeoJSON layer. A window the city does not have is a 400; legacy names are aliases |
-| `/api/v1/cells/ring` | `h3` (required), `k`=1 (0–6) | A cell and its neighbours |
-| `/api/v1/cells/lookup` | `lat`, `lng` (required), `res`=8 | Point → cell detail |
-| `/api/v1/cells/{h3_index}` | `window`, `hour` | One cell's detail |
-| `/api/v1/summary` | `city`=phl, `window`, `res` | City totals |
+| `/api/v1/cells` | `city`=phl, `res`=8, `window`=last_1y or `from`+`to` (YYYY-MM-DD), `category`=all, `min_count`=0, `hour`, `measure`, `bbox` | Whole-city GeoJSON layer. A window the city does not have is a 400; legacy names are aliases. See [custom date ranges](#time-windows) |
+| `/api/v1/cells/ring` | `h3` (required), `k`=1 (0–6), `window` or `from`+`to` | A cell and its neighbours |
+| `/api/v1/cells/lookup` | `lat`, `lng` (required), `res`=8, `window` or `from`+`to` | Point → cell detail |
+| `/api/v1/cells/{h3_index}` | `window` or `from`+`to`, `hour` | One cell's detail |
+| `/api/v1/summary` | `city`=phl, `window` or `from`+`to`, `res` | City totals |
 | `/api/v1/methodology` | `city`=phl | Methodology text |
 | `/docs`, `/redoc`, `/openapi.json` | — | Served when `ENABLE_DOCS=true` (the default). Public on prod today |
 | `/` | — | Static `web/` |

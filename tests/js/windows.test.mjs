@@ -8,7 +8,11 @@ import vm from "node:vm";
 const src = readFileSync(new URL("../../web/windows.js", import.meta.url), "utf8");
 const ctx = {};
 vm.runInNewContext(src, ctx);
-const { findWindow, pickWindow, windowBuiltAt, windowNote } = ctx;
+const {
+  findWindow, pickWindow, windowBuiltAt, windowNote,
+  addDays, yearsBefore, spanDays, defaultRange, clampRange, effectiveEnd,
+  presetFor, presetRange, rangeNote,
+} = ctx;
 
 const w = (id, span, extra = {}) => ({
   id,
@@ -76,4 +80,85 @@ test("the note says partial, counts-only and caveats", () => {
   assert.match(note, /Counts only/);
   assert.match(note, /Seattle records before May 2019/);
   assert.match(windowNote(w("last_3m", 92), 10), /Not built at this cell size/);
+});
+
+// ---------------------------------------------------------------- date ranges
+
+const win = (id, start, end, extra = {}) => ({
+  ...w(id, spanDays({ from: start, to: end }), extra),
+  start,
+  end,
+});
+// Objects from the vm context have that realm's Object.prototype, which
+// deepStrictEqual counts as a difference; compare plain copies.
+const plain = (o) => ({ ...o });
+
+const PHL = {
+  coverage_end: "2026-10-02",
+  selectable_start: "2006-01-01",
+  custom_range_resolutions: [8, 9],
+  series_caveats: [],
+  windows: [
+    win("last_3m", "2026-07-03", "2026-10-02"),
+    win("last_1y", "2025-10-03", "2026-10-02", { hourly: true, res10: true }),
+  ],
+};
+
+test("date arithmetic stays on calendar days", () => {
+  assert.equal(addDays("2026-03-08", 1), "2026-03-09"); // a US DST change
+  assert.equal(addDays("2025-12-31", 1), "2026-01-01");
+  assert.equal(yearsBefore("2024-02-29", 1), "2023-02-28");
+  assert.equal(spanDays({ from: "2026-10-09", to: "2026-10-09" }), 1);
+  assert.equal(spanDays({ from: "2025-10-10", to: "2026-10-09" }), 365);
+});
+
+test("the default range is the year up to today, like last_1y", () => {
+  const range = defaultRange("2026-10-09");
+  assert.equal(range.from, "2025-10-10");
+  assert.equal(range.to, "2026-10-09");
+});
+
+test("clamping orders the dates and keeps them inside the city's bounds", () => {
+  assert.deepEqual(plain(clampRange({ from: "2026-05-01", to: "2026-04-01" }, null, null)), {
+    from: "2026-04-01", to: "2026-05-01",
+  });
+  assert.deepEqual(plain(clampRange({ from: "1999-01-01", to: "2030-01-01" }, "2006-01-01", "2026-10-09")), {
+    from: "2006-01-01", to: "2026-10-09",
+  });
+  const day = { from: "2026-02-03", to: "2026-02-03" };
+  assert.deepEqual(plain(clampRange(day, "2006-01-01", "2026-10-09")), day);
+});
+
+test("the end stops where the data does, never before the start", () => {
+  assert.equal(effectiveEnd({ from: "2026-01-01", to: "2026-10-09" }, "2026-10-02"), "2026-10-02");
+  assert.equal(effectiveEnd({ from: "2026-10-05", to: "2026-10-09" }, "2026-10-02"), "2026-10-05");
+  assert.equal(effectiveEnd({ from: "2026-01-01", to: "2026-02-01" }, "2026-10-02"), "2026-02-01");
+});
+
+test("a preset is matched through the end clamp, and only exactly", () => {
+  const filled = presetRange(PHL.windows[1], "2026-10-09");
+  assert.deepEqual(plain(filled), { from: "2025-10-03", to: "2026-10-09" });
+  assert.equal(presetFor(filled, PHL.windows, PHL.coverage_end).id, "last_1y");
+  assert.equal(presetFor({ from: "2025-10-03", to: "2026-10-02" }, PHL.windows, PHL.coverage_end).id, "last_1y");
+  assert.equal(presetFor({ from: "2025-10-04", to: "2026-10-09" }, PHL.windows, PHL.coverage_end), null);
+  assert.equal(presetFor(defaultRange("2026-10-09"), PHL.windows, PHL.coverage_end), null);
+});
+
+test("the range note says where the data stops, and what a range lacks", () => {
+  const today = "2026-10-09";
+  assert.match(rangeNote(defaultRange(today), PHL, 8), /Data reported through Oct 2, 2026\./);
+  assert.equal(rangeNote({ from: "2025-01-01", to: "2025-12-31" }, PHL, 8), "");
+  assert.match(rangeNote({ from: "2026-02-03", to: "2026-02-03" }, PHL, 8), /few incidents per cell/);
+  assert.match(rangeNote({ from: "2025-01-01", to: "2025-12-31" }, PHL, 10), /not served at this cell size/);
+  // A preset says what its stored window says.
+  assert.match(rangeNote({ from: "2026-07-03", to: today }, PHL, 10), /Not built at this cell size/);
+});
+
+test("a caveat shows only for a range that reaches into its period", () => {
+  const SEA = {
+    ...PHL,
+    series_caveats: [{ from: "2008-01-01", to: "2019-05-01", text: "Seattle records before May 2019 ..." }],
+  };
+  assert.match(rangeNote({ from: "2018-01-01", to: "2020-01-01" }, SEA, 8), /Seattle records/);
+  assert.doesNotMatch(rangeNote({ from: "2019-05-01", to: "2020-01-01" }, SEA, 8), /Seattle records/);
 });

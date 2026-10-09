@@ -26,4 +26,6 @@ Layout mirrors the layered architecture in the design doc (S5):
 # the new names (ops._gold_reason).
 # phase2.2.0: the 30-day window is retired, and the oldest window follows how
 # far back the pulls reached rather than the oldest (possibly cold-case) date.
-PIPELINE_VERSION = "phase2.2.0"
+# phase2.3.0: gold.cell_daily, the daily rollup the map's custom date ranges
+# are ranked from. The bump is what gets every city rebuilt with it.
+PIPELINE_VERSION = "phase2.3.0"

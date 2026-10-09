@@ -30,6 +30,7 @@ from safety.h3grid import (
     cells_covering,
     grid_disk,
 )
+from safety.ranking_sql import ACTIVITY_RANKED, SAFETY_RANKED
 
 log = logging.getLogger(__name__)
 
@@ -696,78 +697,12 @@ _ACTIVITY_COUNTS_AGG = """
 """
 
 _ACTIVITY_SQL = """
-WITH counts AS (
-{counts}
-),
-universe AS (
-    SELECT h3_index, area_km2
-    FROM gold.cell_geometry
-    WHERE source_id = %(source_id)s AND h3_res = %(h3_res)s
-),
-joined AS (
-    SELECT
-        u.h3_index,
-        u.area_km2,
-        COALESCE(c.c_all, 0)             AS c_all,
-        COALESCE(c.c_violent, 0)         AS c_violent,
-        COALESCE(c.c_property, 0)        AS c_property,
-        COALESCE(c.c_quality_of_life, 0) AS c_quality_of_life,
-        COALESCE(c.c_other, 0)           AS c_other
-    FROM universe u
-    LEFT JOIN counts c USING (h3_index)
-),
-unpivoted AS (
-    SELECT h3_index, area_km2, category, n
-    FROM joined
-    CROSS JOIN LATERAL (VALUES
-        ('all',             c_all),
-        ('violent',         c_violent),
-        ('property',        c_property),
-        ('quality_of_life', c_quality_of_life),
-        ('other',           c_other)
-    ) AS v(category, n)
-    -- Narrowed at resolution 10; see ACTIVITY_CATEGORIES. Filtered here, ahead
-    -- of the window functions below, which is both cheaper and safe: every
-    -- percentile partitions by category, so dropping whole categories cannot
-    -- move the ranking of the ones that remain.
-    WHERE category = ANY(%(categories)s)
-),
-ranked AS (
-    SELECT
-        h3_index,
-        category,
-        n,
-        n::double precision / area_km2 AS density,
-        -- S3.3: position within this city's own distribution for this window
-        -- and category. Ties (notably the block of zero-incident cells) all
-        -- receive the same, lowest, percentile.
-        percent_rank() OVER (PARTITION BY category ORDER BY n::double precision / area_km2) AS pr,
-        rank()         OVER (PARTITION BY category ORDER BY n::double precision / area_km2 DESC) AS rnk,
-        count(*)       OVER (PARTITION BY category) AS cell_total
-    FROM unpivoted
-)
 INSERT INTO gold.cell_activity (
     source_id, h3_index, h3_res, time_window, category,
     window_start, window_end, incident_count, incidents_per_km2,
     city_rank, city_cell_total, percentile, activity_tier, refreshed_at
 )
-SELECT
-    %(source_id)s, h3_index, %(h3_res)s, %(time_window)s, category,
-    %(window_start)s, %(window_end)s, n, density,
-    rnk, cell_total, pr,
-    CASE
-        -- Tier 0 is "nothing was reported here", which is a different
-        -- statement from "this is the quietest fifth of the city" (S2).
-        WHEN n = 0     THEN 0
-        WHEN pr < 0.20 THEN 1
-        WHEN pr < 0.40 THEN 2
-        WHEN pr < 0.60 THEN 3
-        WHEN pr < 0.80 THEN 4
-        ELSE 5
-    END,
-    now()
-FROM ranked
-"""
+""" + ACTIVITY_RANKED
 
 
 def refresh_cell_activity(
@@ -972,123 +907,6 @@ _SAFETY_WEIGHTED_AGG = """
 """
 
 _SAFETY_SQL = """
-WITH weighted AS (
-{weighted}
-),
-universe AS (
-    -- Area and exposure travel together from here down. The ranking divides by
-    -- whichever one the scheme names; area_km2 stays in scope regardless,
-    -- because weighted_per_km2 is still written and is still true.
-    --
-    -- Area is the poorer denominator and that is the point of the exposure
-    -- column: a cell's weighted total scales with how many people are in it,
-    -- so ranking on area alone reports where the city is busy as much as where
-    -- it is dangerous.
-    SELECT
-        g.h3_index,
-        g.area_km2,
-        CASE WHEN %(per_capita)s
-             THEN COALESCE(e.residents, 0) + COALESCE(e.jobs, 0) * %(jobs_weight)s
-             ELSE g.area_km2
-        END AS exposure
-    FROM gold.cell_geometry g
-    LEFT JOIN gold.cell_exposure e
-           ON e.source_id = g.source_id
-          AND e.h3_index  = g.h3_index
-          AND e.h3_res    = g.h3_res
-    WHERE g.source_id = %(source_id)s AND g.h3_res = %(h3_res)s
-),
-joined AS (
-    SELECT
-        u.h3_index,
-        u.area_km2,
-        u.exposure,
-        COALESCE(x.n_violent, 0)     AS n_violent,
-        COALESCE(x.n_non_violent, 0) AS n_non_violent,
-        COALESCE(x.w_violent, 0)     AS w_violent,
-        COALESCE(x.w_non_violent, 0) AS w_non_violent
-    FROM universe u
-    LEFT JOIN weighted x USING (h3_index)
-),
-unpivoted AS (
-    SELECT h3_index, area_km2, exposure, track, n, w
-    FROM joined
-    CROSS JOIN LATERAL (VALUES
-        ('violent',     n_violent,     w_violent),
-        ('non_violent', n_non_violent, w_non_violent)
-    ) AS v(track, n, w)
-),
-city AS (
-    -- The rate each cell is shrunk toward: this track's citywide weighted
-    -- offense per unit of exposure.
-    SELECT track, sum(w) / NULLIF(sum(exposure), 0) AS city_rate
-    FROM unpivoted
-    GROUP BY track
-),
-adjusted AS (
-    SELECT
-        u.h3_index, u.area_km2, u.exposure, u.track, u.n, u.w,
-        -- Poisson-gamma posterior rate: the cell's own weighted total plus
-        -- eb_prior worth of citywide-average offense, over its own exposure
-        -- plus that same prior.
-        --
-        -- The prior has to be an exposure rather than a count. A cell with no
-        -- incidents was still watched for the whole window, so zero is evidence
-        -- of a low rate, not missing information -- shrinking by n/(n+k) instead
-        -- sends every empty cell to the citywide mean, which ranked a cell with
-        -- six assaults safer than a cell with none.
-        --
-        -- With a population denominator the prior earns a second job: it is what
-        -- keeps a cell whose ambient population rounds to nothing from dividing
-        -- by zero. As exposure falls away the posterior tends to
-        -- city_rate + w/prior, which is bounded. That is why the airport and the
-        -- middle of Fairmount Park can be ranked at all rather than pinned to
-        -- the bottom by arithmetic.
-        (u.w + COALESCE(c.city_rate, 0) * %(eb_prior)s)
-            / NULLIF(u.exposure + %(eb_prior)s, 0) AS adj
-    FROM unpivoted u
-    JOIN city c USING (track)
-),
-neighbor_mean AS (
-    -- Grouped join rather than a correlated LATERAL, for the same reason the
-    -- hourly build uses one: the LATERAL form re-scans `adjusted` once per row.
-    -- At resolution 8 that is 1,102 rows and costs about two seconds; at
-    -- resolution 10 it is 49,540 and cost two minutes per window, which was
-    -- most of a Philadelphia gold refresh and would have been most of six.
-    -- Computing every cell's neighbour mean in one pass is the same arithmetic.
-    SELECT nbr.h3_index, x.track, avg(x.adj) AS mean_adj
-    FROM gold.cell_neighbor nbr
-    JOIN adjusted x ON x.h3_index = nbr.neighbor_h3
-    WHERE nbr.source_id = %(source_id)s AND nbr.h3_res = %(h3_res)s
-    GROUP BY 1, 2
-),
-blended AS (
-    SELECT
-        a.h3_index, a.area_km2, a.exposure, a.track, a.n, a.w, a.adj,
-        -- Risk does not stop at a hexagon edge. A cell with no in-universe
-        -- neighbours keeps its own value rather than being pulled toward zero.
-        CASE WHEN nm.mean_adj IS NULL THEN a.adj
-             ELSE %(self_weight)s * a.adj + (1 - %(self_weight)s) * nm.mean_adj
-        END AS smoothed
-    FROM adjusted a
-    LEFT JOIN neighbor_mean nm
-           ON nm.h3_index = a.h3_index AND nm.track = a.track
-),
-ranked AS (
-    SELECT
-        b.*,
-        -- Hazen midrank, ordered so the *lowest* weighted total scores highest:
-        -- 1.0 is the safest cell. Tie blocks sit at the centre of their own
-        -- range, so the score never degenerates to exactly 0 or 1.
-        (
-            (rank() OVER (PARTITION BY b.track ORDER BY b.smoothed DESC)
-             + (count(*) OVER (PARTITION BY b.track, b.smoothed) - 1) / 2.0)
-            - 0.5
-        ) / count(*) OVER (PARTITION BY b.track) AS pct,
-        rank()   OVER (PARTITION BY b.track ORDER BY b.smoothed DESC) AS rnk,
-        count(*) OVER (PARTITION BY b.track) AS cell_total
-    FROM blended b
-)
 INSERT INTO gold.cell_safety (
     source_id, h3_index, h3_res, time_window, track, scheme_version,
     window_start, window_end, incident_count,
@@ -1096,28 +914,7 @@ INSERT INTO gold.cell_safety (
     exposure, weighted_per_1k,
     safety_percentile, safety_rank, city_cell_total, safety_tier, refreshed_at
 )
-SELECT
-    %(source_id)s, h3_index, %(h3_res)s, %(time_window)s, track, %(scheme)s,
-    %(window_start)s, %(window_end)s, n,
-    w, w / area_km2, smoothed,
-    -- Both NULL for an area scheme: that row's denominator is area_km2, and a
-    -- per-1,000-people figure would be a number it never computed.
-    CASE WHEN %(per_capita)s THEN exposure END,
-    CASE WHEN %(per_capita)s THEN w / NULLIF(exposure / 1000.0, 0) END,
-    pct, rnk, cell_total,
-    CASE
-        -- Tier 0 is "nothing of this track was reported here", which is not the
-        -- same claim as "this is among the safest quarter of the city": an
-        -- absence of reports can be an absence of reporting (S13).
-        WHEN n = 0      THEN 0
-        WHEN pct < 0.25 THEN 1
-        WHEN pct < 0.50 THEN 2
-        WHEN pct < 0.75 THEN 3
-        ELSE 4
-    END,
-    now()
-FROM ranked
-"""
+""" + SAFETY_RANKED
 
 _COVERAGE_SQL = f"""
 SELECT
@@ -1855,6 +1652,128 @@ def refresh_cell_detail(
 
 
 # ---------------------------------------------------------------------------
+# Daily rollup: what the API sums to rank a date range nobody precomputed
+# ---------------------------------------------------------------------------
+
+# Resolution 10 is left out on purpose. Nearly every incident is its own
+# (cell, day) there, so it would roughly double the table, for a cell size the
+# map only serves over a year or more (ACTIVITY_WINDOWS[10]) -- which the stored
+# windows already cover. Mirrored by safety.api.repository.DAILY_RESOLUTIONS.
+DAILY_RESOLUTIONS = (8, 9)
+
+_DAILY_BUILD_SQL = """
+CREATE TEMP TABLE _daily ON COMMIT DROP AS
+SELECT
+    res.h3_res::smallint AS h3_res,
+    x.d                  AS day,
+    res.h3_index,
+    count(*)::int                                                         AS c_all,
+    count(*) FILTER (WHERE x.product_category = 'violent')::int         AS c_violent,
+    count(*) FILTER (WHERE x.product_category = 'property')::int        AS c_property,
+    count(*) FILTER (WHERE x.product_category = 'quality_of_life')::int AS c_quality_of_life,
+    count(*) FILTER (WHERE x.product_category = 'other')::int           AS c_other,
+    COALESCE(sum(x.weight) FILTER (WHERE x.product_category =  'violent'), 0)::double precision
+        AS w_violent,
+    COALESCE(sum(x.weight) FILTER (WHERE x.product_category <> 'violent'), 0)::double precision
+        AS w_non_violent
+FROM (
+    SELECT i.h3_r8, i.h3_r9, i.product_category, i.occurred_local_date AS d,
+           COALESCE(w.weight, 1.0) AS weight
+    FROM silver.incident i
+    {weight_lookup}
+    WHERE i.source_id = %(source_id)s
+      AND i.occurred_local_date BETWEEN %(floor)s AND %(anchor)s
+) x
+CROSS JOIN LATERAL (VALUES {res_rows}) AS res(h3_res, h3_index)
+WHERE res.h3_index IS NOT NULL
+GROUP BY 1, 2, 3
+"""
+
+_DAILY_COLUMNS = (
+    "c_all", "c_violent", "c_property", "c_quality_of_life", "c_other",
+    "w_violent", "w_non_violent",
+)
+
+
+def refresh_cell_daily(
+    conn: psycopg.Connection, source_id: str, windows: list[Window]
+) -> int:
+    """Rebuild gold.cell_daily for this city, and the snapshot fields it backs.
+
+    Written as a difference against what is stored rather than delete-then-
+    insert. The table holds a row per active cell per day of the city's whole
+    history, and an incremental refresh changes a few recent days of it;
+    rewriting all of it every six hours would be almost entirely churn (dead
+    tuples, WAL) for rows that came out the same.
+
+    Runs after refresh_city_snapshot, in the same transaction: it sets
+    selectable_start and daily_scheme_version on the snapshot row, which has to
+    exist first.
+    """
+    anchor = windows[0].end
+    floor = history_floor(conn, source_id) or min(w.start for w in windows)
+    scheme = active_scheme(conn, source_id)
+    if scheme is not None:
+        try:
+            get_scheme(conn, scheme)
+        except LookupError:
+            log.warning("%s: active scheme '%s' is not loaded; cell_daily is unweighted",
+                        source_id, scheme)
+            scheme = None
+
+    columns = ", ".join(_DAILY_COLUMNS)
+    with conn.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS _daily")
+        cur.execute(
+            _DAILY_BUILD_SQL.format(
+                weight_lookup=_WEIGHT_LOOKUP, res_rows=_res_rows(DAILY_RESOLUTIONS)
+            ),
+            {"source_id": source_id, "floor": floor, "anchor": anchor, "scheme": scheme},
+        )
+        cur.execute("ANALYZE _daily")
+        cur.execute(
+            """
+            DELETE FROM gold.cell_daily d
+            WHERE d.source_id = %s
+              AND NOT EXISTS (
+                    SELECT 1 FROM _daily n
+                    WHERE n.h3_res = d.h3_res AND n.day = d.day AND n.h3_index = d.h3_index)
+            """,
+            (source_id,),
+        )
+        removed = cur.rowcount
+        cur.execute(
+            f"""
+            INSERT INTO gold.cell_daily (source_id, h3_res, day, h3_index, {columns})
+            SELECT %s, h3_res, day, h3_index, {columns} FROM _daily
+            ON CONFLICT (source_id, h3_res, day, h3_index) DO UPDATE SET
+                {", ".join(f"{c} = EXCLUDED.{c}" for c in _DAILY_COLUMNS)}
+            WHERE ({", ".join(f"cell_daily.{c}" for c in _DAILY_COLUMNS)})
+                  IS DISTINCT FROM
+                  ({", ".join(f"EXCLUDED.{c}" for c in _DAILY_COLUMNS)})
+            """,
+            (source_id,),
+        )
+        written = cur.rowcount
+        cur.execute(
+            """
+            UPDATE gold.city_snapshot SET
+                daily_scheme_version = %(scheme)s,
+                selectable_start = (
+                    SELECT min(day) FROM gold.cell_daily
+                    WHERE source_id = %(source_id)s AND h3_res = %(res)s)
+            WHERE source_id = %(source_id)s
+            """,
+            {"source_id": source_id, "scheme": scheme, "res": DAILY_RESOLUTIONS[0]},
+        )
+    log.info(
+        "cell_daily %s..%s scheme=%s -> %s rows written or changed, %s removed",
+        floor, anchor, scheme, written, removed,
+    )
+    return written
+
+
+# ---------------------------------------------------------------------------
 # City snapshot (design doc S12b)
 # ---------------------------------------------------------------------------
 
@@ -2273,8 +2192,9 @@ def refresh_all(
         conn, source_id, ALL_HOURS_TABLES + (HOURLY_TABLES if include_hourly else ())
     )
     refresh_city_snapshot(conn, source_id, pipeline_version, coverage, hour_share)
+    daily_rows = refresh_cell_daily(conn, source_id, windows)
     conn.commit()
-    lap("snapshot_and_commit")
+    lap("snapshot_daily_and_commit")
     log.info("gold refresh for %s took %s", source_id, timings)
 
     return {
@@ -2292,6 +2212,7 @@ def refresh_all(
         "severity_weight_coverage": round(coverage, 4) if coverage is not None else None,
         "cell_monthly_rows": monthly_rows,
         "cell_offense_mix_rows": mix_rows,
+        "cell_daily_rows_changed": daily_rows,
         "windows": [w.name for w in windows],
         "timings_seconds": timings,
     }

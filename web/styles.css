@@ -157,6 +157,30 @@ select:focus-visible, .btn:focus-visible {
 }
 .btn[aria-pressed="true"] { border-color: var(--series-1); color: var(--series-1); }
 
+/* Date range. Two calendar inputs on one line, the preset list beneath them, so
+   the field reads as one choice of period. */
+.range-inputs { display: flex; align-items: center; gap: 6px; }
+.range-sep { color: var(--text-muted); }
+
+.range-inputs input[type="date"] {
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--page);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.range-inputs input[type="date"]:hover { border-color: rgba(11, 11, 11, 0.28); }
+.range-inputs input[type="date"]:focus-visible {
+  outline: 2px solid var(--series-1);
+  outline-offset: 1px;
+}
+.range-inputs input[type="date"]:disabled { opacity: 0.55; cursor: not-allowed; }
+.field-range .field-note { max-width: 34ch; }
+
 /* Time-of-day control.
    Marked as a development affordance rather than dressed to match the filters
    beside it: in production the hour comes from the user's clock, and this input

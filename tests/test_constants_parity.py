@@ -71,3 +71,46 @@ def test_aliases_resolve_both_ways():
 @pytest.mark.parametrize("res", [8, 9, 10])
 def test_activity_scope_matches(res):
     assert repo.activity_scope(res) == gold.activity_scope(res)
+
+
+# ------------------------------------------------------- custom ranges (020)
+
+
+def test_daily_rollup_scope_matches():
+    assert repo.DAILY_RESOLUTIONS == gold.DAILY_RESOLUTIONS
+    # A range is ranked on both tracks wherever it is served.
+    assert set(repo.DAILY_RESOLUTIONS) <= set(gold.SAFETY_RESOLUTIONS)
+    assert repo.OFFENSE_MIX_DEPTH == gold.OFFENSE_MIX_DEPTH
+
+
+def test_range_window_is_not_a_window_name():
+    assert repo.canonical_window(repo.RANGE_WINDOW) is None
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"scheme_version": "nscs_v1", "exposure_kind": "area_km2", "eb_prior_km2": 0.4,
+         "eb_prior_persons": None, "self_weight": 0.6, "jobs_weight": 1.0},
+        {"scheme_version": "pc_v1", "exposure_kind": "ambient_population", "eb_prior_km2": 0.4,
+         "eb_prior_persons": 250.0, "self_weight": 0.6, "jobs_weight": 0.5},
+    ],
+)
+def test_range_scheme_params_match_the_etl(row):
+    # The API ranks a range with safety.ranking_sql.scheme_params; the ETL ranks
+    # the stored windows with gold.Scheme. Same parameters, or the two disagree.
+    from safety.ranking_sql import scheme_params
+
+    scheme = gold._as_scheme(row)
+    assert scheme_params(row) == {
+        "scheme": scheme.version,
+        "eb_prior": scheme.eb_prior,
+        "self_weight": scheme.self_weight,
+        "per_capita": scheme.per_capita,
+        "jobs_weight": scheme.jobs_weight,
+    }
+
+
+def test_range_label():
+    assert repo.range_label(date(2025, 2, 3), date(2025, 2, 3)) == "3 Feb 2025"
+    assert repo.range_label(date(2025, 3, 1), date(2025, 10, 9)) == "1 Mar 2025 – 9 Oct 2025"

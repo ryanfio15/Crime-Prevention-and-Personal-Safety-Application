@@ -19,6 +19,7 @@ import math
 import threading
 from collections import OrderedDict
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
@@ -357,6 +358,19 @@ def _with_windows(conn, record: dict[str, Any]) -> dict[str, Any]:
         **record,
         "windows": windows,
         "default_window": (default or (windows[-1] if windows else {"id": None}))["id"],
+        # For a custom range: the calendar runs from selectable_start (on the
+        # record; NULL until the city is rebuilt with gold.cell_daily) and the
+        # data stops at coverage_end. The caveats are matched to whatever range
+        # the client picks.
+        "custom_range_resolutions": (
+            list(repo.DAILY_RESOLUTIONS) if record.get("selectable_start") else []
+        ),
+        "series_caveats": cached_json(
+            conn,
+            ("caveats", record["source_id"]),
+            lambda: repo.series_caveats(conn, record["source_id"]),
+            record["source_id"],
+        ),
     }
 
 
@@ -430,6 +444,100 @@ def _resolve_window(conn, city: str | None, window: str) -> dict[str, Any]:
             f"{', '.join(w['id'] for w in windows)}",
         )
     return match
+
+
+def _resolve_range(
+    conn, city: str | None, start: date | None, end: date | None
+) -> tuple[dict[str, Any], repo.DateRange | None]:
+    """The served window, or the custom range, two calendar dates name.
+
+    A range that equals one of the city's stored windows is served as that
+    window -- the presets on the map always are -- so it keeps everything the
+    stored build carries, the time-of-day layer included. Anything else is
+    ranked on request from gold.cell_daily (repo.DateRange).
+
+    `end` may run past the newest reported date (the map defaults to today);
+    it is clamped there, so "today" and "the day the data stops" are one cache
+    entry. `start` may not run before the oldest date the city holds.
+    """
+    if start is None or end is None:
+        raise HTTPException(400, "from and to go together: both dates, YYYY-MM-DD")
+    if start > end:
+        raise HTTPException(400, "from must be on or before to")
+    # A day of slack: the browser picks "today" in its own time zone.
+    if end > date.today() + timedelta(days=1):
+        raise HTTPException(400, "to cannot be in the future")
+    record = repo.get_city(conn, city) if city else None
+    if record is None:
+        raise HTTPException(400, f"no serving data for city '{city}'")
+    first = record.get("selectable_start")
+    if first is None:
+        raise HTTPException(
+            400,
+            f"custom date ranges are not built for '{city}' yet; use one of its "
+            "windows (see /api/v1/cities)",
+        )
+    if start < first:
+        raise HTTPException(
+            400, f"from must be on or after {first.isoformat()}, the oldest date '{city}' holds"
+        )
+    last = record["coverage_end"]
+    clamped = max(start, min(end, last))
+
+    for window in city_windows(conn, city):
+        if window.get("start") == start.isoformat() and window.get("end") == clamped.isoformat():
+            return window, None
+
+    span_days = (clamped - start).days + 1
+    limit = settings.safety_max_window_years
+    safety = limit is None or span_days <= limit * 366
+    served = {
+        "id": None,
+        "label": repo.range_label(start, clamped),
+        "start": start.isoformat(),
+        "end": clamped.isoformat(),
+        "span_days": span_days,
+        "hourly": False,
+        "res10": False,
+        "safety": safety,
+    }
+    return served, repo.DateRange(start, clamped, safety)
+
+
+def _resolve_period(
+    conn, city: str | None, window: str, start: date | None, end: date | None
+) -> tuple[dict[str, Any], repo.DateRange | None]:
+    """`from`/`to` when either is given, otherwise the named window."""
+    if start is not None or end is not None:
+        return _resolve_range(conn, city, start, end)
+    return _resolve_window(conn, city, window), None
+
+
+def _validate_range(res: int, date_range: repo.DateRange | None, hour: int | None) -> None:
+    """What a custom range cannot be served with, said before the generic checks
+    (which would blame a window the request never named)."""
+    if date_range is None:
+        return
+    if res not in repo.DAILY_RESOLUTIONS:
+        raise HTTPException(
+            400,
+            f"custom date ranges are served at res {list(repo.DAILY_RESOLUTIONS)}; "
+            f"at res {res} pick one of the city's windows -- a cell that size holds "
+            "too little over most ranges to rank, and it is not rolled up by day",
+        )
+    if hour is not None:
+        raise HTTPException(
+            400,
+            "the time-of-day layer is built for the stored last-12-months window "
+            "only; pick that window rather than a custom range to use an hour",
+        )
+
+
+def _period_key(served: dict[str, Any], date_range: repo.DateRange | None):
+    """The cache-key part for a window or a range."""
+    if date_range is None:
+        return served["id"]
+    return ("range", date_range.start.isoformat(), date_range.end.isoformat())
 
 
 def _validate_layer(res: int, window: dict[str, Any], category: str) -> None:
@@ -540,9 +648,21 @@ def cells(
     bbox: str | None = Query(
         None, description="Viewport filter as 'west,south,east,north' in WGS84 degrees"
     ),
+    from_: date | None = Query(
+        None,
+        alias="from",
+        description="Custom range start, YYYY-MM-DD (with `to`; replaces `window`).",
+    ),
+    to: date | None = Query(
+        None, description="Custom range end, YYYY-MM-DD, inclusive (with `from`)."
+    ),
 ) -> Response:
-    """The H3 hexagon layer as GeoJSON, coloured client-side from `count`."""
-    served = _resolve_window(conn, city, window)
+    """The H3 hexagon layer as GeoJSON, coloured client-side from `count`.
+
+    For a stored window (`window`), or for any two dates (`from`, `to`).
+    """
+    served, date_range = _resolve_period(conn, city, window, from_, to)
+    _validate_range(res, date_range, hour)
     _validate_layer(res, served, category)
     _validate_hour(hour, res, served)
     window = served["id"]
@@ -564,7 +684,10 @@ def cells(
         if not all(math.isfinite(v) for v in parsed_bbox):
             raise HTTPException(400, "bbox values must be finite numbers")
 
-    key = ("cells", city, res, window, category, min_count, hour, parsed_bbox)
+    key = (
+        "cells", city, res, _period_key(served, date_range), category, min_count, hour,
+        parsed_bbox,
+    )
     payload = cached(
         conn,
         key,
@@ -584,6 +707,7 @@ def cells(
                     min_count=min_count,
                     hour=hour,
                     bbox=parsed_bbox,
+                    date_range=date_range,
                 ),
                 default=str,
             ).encode("utf-8"),
@@ -617,6 +741,14 @@ def cells_ring(
     k: int = Query(1, ge=0, le=6),
     window: str = repo.DEFAULT_WINDOW,
     category: str = "all",
+    from_: date | None = Query(
+        None,
+        alias="from",
+        description="Custom range start, YYYY-MM-DD (with `to`; replaces `window`).",
+    ),
+    to: date | None = Query(
+        None, description="Custom range end, YYYY-MM-DD, inclusive (with `from`)."
+    ),
 ) -> dict[str, Any]:
     """S10: activity for a cell plus its k-ring of neighbours.
 
@@ -625,18 +757,30 @@ def cells_ring(
     """
     if not is_valid_cell(h3):
         raise HTTPException(400, f"'{h3}' is not a valid H3 index")
-    served = _resolve_window(conn, repo.cell_source(conn, h3), window)
-    _validate_layer(cell_resolution(h3), served, category)
+    source = repo.cell_source(conn, h3)
+    res = cell_resolution(h3)
+    served, date_range = _resolve_period(conn, source, window, from_, to)
+    _validate_range(res, date_range, None)
+    _validate_layer(res, served, category)
     window = served["id"]
 
     indexes = grid_disk(h3, k)
-    rows = repo.cell_ring(conn, h3_indexes=indexes, time_window=window, category=category)
+    rows = repo.cell_ring(
+        conn,
+        h3_indexes=indexes,
+        time_window=window,
+        category=category,
+        date_range=date_range,
+        source_id=source,
+        h3_res=res,
+    )
     return {
         "origin": h3,
         "k": k,
         "requested": len(indexes),
         "resolved": len(rows),
-        "window": window,
+        "window": window if date_range is None else repo.RANGE_WINDOW,
+        "range": served if date_range else None,
         "category": category,
         "cells": rows,
     }
@@ -649,6 +793,14 @@ def cells_lookup(
     lng: float = Query(..., ge=-180, le=180),
     res: int = 8,
     window: str = repo.DEFAULT_WINDOW,
+    from_: date | None = Query(
+        None,
+        alias="from",
+        description="Custom range start, YYYY-MM-DD (with `to`; replaces `window`).",
+    ),
+    to: date | None = Query(
+        None, description="Custom range end, YYYY-MM-DD, inclusive (with `from`)."
+    ),
 ) -> dict[str, Any]:
     """Resolve a coordinate to its cell and return that cell's rollup.
 
@@ -659,9 +811,19 @@ def cells_lookup(
     if res not in repo.VALID_RESOLUTIONS:
         raise HTTPException(400, f"res must be one of {list(repo.VALID_RESOLUTIONS)}")
     cell = cells_for_point(lat, lng)[res]
-    served = _resolve_window(conn, repo.cell_source(conn, cell), window)
+    source = repo.cell_source(conn, cell)
+    if source is None:
+        return {
+            "h3": cell,
+            "in_coverage": False,
+            "message": "That location falls outside the covered city boundary.",
+        }
+    served, date_range = _resolve_period(conn, source, window, from_, to)
+    _validate_range(res, date_range, None)
     _validate_layer(res, served, "all")
-    detail = repo.cell_detail(conn, h3_index=cell, time_window=served["id"])
+    detail = repo.cell_detail(
+        conn, h3_index=cell, time_window=served["id"], date_range=date_range
+    )
     if detail is None:
         return {
             "h3": cell,
@@ -677,14 +839,26 @@ def cell(
     h3_index: str,
     window: str = repo.DEFAULT_WINDOW,
     hour: int | None = Query(None, ge=0, le=23),
+    from_: date | None = Query(
+        None,
+        alias="from",
+        description="Custom range start, YYYY-MM-DD (with `to`; replaces `window`).",
+    ),
+    to: date | None = Query(
+        None, description="Custom range end, YYYY-MM-DD, inclusive (with `from`)."
+    ),
 ) -> dict[str, Any]:
     if not is_valid_cell(h3_index):
         raise HTTPException(400, f"'{h3_index}' is not a valid H3 index")
-    served = _resolve_window(conn, repo.cell_source(conn, h3_index), window)
+    source = repo.cell_source(conn, h3_index)
+    if source is None and (from_ is not None or to is not None):
+        raise HTTPException(404, f"cell '{h3_index}' is not in the covered area")
+    served, date_range = _resolve_period(conn, source, window, from_, to)
+    _validate_range(cell_resolution(h3_index), date_range, hour)
     _validate_hour(hour, cell_resolution(h3_index), served)
 
     detail = repo.cell_detail(
-        conn, h3_index=h3_index, time_window=served["id"], hour=hour
+        conn, h3_index=h3_index, time_window=served["id"], hour=hour, date_range=date_range
     )
     if detail is None:
         raise HTTPException(404, f"cell '{h3_index}' is not in the covered area")
@@ -697,15 +871,27 @@ def summary(
     city: str = "phl",
     window: str = repo.DEFAULT_WINDOW,
     res: int = 8,
+    from_: date | None = Query(
+        None,
+        alias="from",
+        description="Custom range start, YYYY-MM-DD (with `to`; replaces `window`).",
+    ),
+    to: date | None = Query(
+        None, description="Custom range end, YYYY-MM-DD, inclusive (with `from`)."
+    ),
 ) -> dict[str, Any]:
-    served = _resolve_window(conn, city, window)
+    served, date_range = _resolve_period(conn, city, window, from_, to)
+    _validate_range(res, date_range, None)
     _validate_layer(res, served, "all")
     window = served["id"]
     return {
         "city": city,
-        "window": window,
-        "window_label": repo.window_label(window),
-        "totals": repo.city_totals(conn, source_id=city, time_window=window, h3_res=res),
+        "window": window if date_range is None else repo.RANGE_WINDOW,
+        "window_label": served["label"] if date_range else repo.window_label(window),
+        "range": served if date_range else None,
+        "totals": repo.city_totals(
+            conn, source_id=city, time_window=window, h3_res=res, date_range=date_range
+        ),
     }
 
 

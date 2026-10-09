@@ -1400,6 +1400,9 @@ def cmd_safety(args: argparse.Namespace) -> int:
         rows, coverage = gold.refresh_safety_layer(conn, args.city, windows, args.scheme)
         gold.write_legacy_windows(conn, args.city, ("cell_safety",))
         gold.refresh_city_snapshot(conn, args.city, PIPELINE_VERSION, coverage)
+        # The daily rollup carries the active scheme's weights, so a retuned
+        # scheme has to reach the custom date ranges too.
+        gold.refresh_cell_daily(conn, args.city, windows)
         conn.commit()
 
     print(

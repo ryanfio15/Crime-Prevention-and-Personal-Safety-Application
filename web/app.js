@@ -373,8 +373,28 @@ const ACTIVITY_CATEGORIES = { 10: ["all"] };
 
 const activityCategories = (res) => ACTIVITY_CATEGORIES[res] ?? null;
 
-/** The selected window's entry from the city's list, or null before it loads. */
-const currentWindow = () => findWindow(state.cityRecord?.windows, state.window);
+/** The stored window the selected dates are exactly, or null for a custom
+    range (and before the city record loads). */
+const currentPreset = () =>
+  presetFor(state.range, state.cityRecord?.windows, state.cityRecord?.coverage_end);
+
+const todayIso = () => localIso(new Date());
+
+/** ?from=&to= from a shared link, or null. */
+function initialRange() {
+  const params = new URLSearchParams(location.search);
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  const from = params.get("from");
+  const to = params.get("to");
+  return iso.test(from ?? "") && iso.test(to ?? "") ? clampRange({ from, to }) : null;
+}
+
+/** The request's period. A preset goes by its window id, so it is served from
+    the stored build (hourly layer and all); anything else goes as the dates. */
+function periodParams() {
+  const preset = currentPreset();
+  return preset ? { window: preset.id } : { from: state.range.from, to: state.range.to };
+}
 
 /** "20:00–21:00". The last block reads 23:00–24:00, not 23:00–00:00. */
 const hourLabel = (hour) =>
@@ -393,9 +413,14 @@ const state = {
   /* The selected city's snapshot row, so the header, the frame and the
      methodology sheet all read from one place. */
   cityRecord: null,
-  /* A window id from the city's list (windows.js). ?window= wins on first load;
-     the list itself arrives with the city record. */
-  window: new URLSearchParams(location.search).get("window") || DEFAULT_WINDOW,
+  /* The two dates the map shows, {from, to} as ISO strings (windows.js).
+     ?from=&to= win on first load; otherwise renderRangeControls fills it in
+     once the city record arrives -- from a legacy ?window= link if there is
+     one, else the year up to today. */
+  range: initialRange(),
+  pendingWindow: new URLSearchParams(location.search).get("window"),
+  // Set across a city switch when the dates were a preset (selectCity).
+  carryPreset: null,
   category: "all",
   res: 8,
   scale: "safety",
@@ -606,7 +631,7 @@ async function loadLayer({ quiet = false } = {}) {
   const params = new URLSearchParams({
     city: state.city,
     res: String(state.res),
-    window: state.window,
+    ...periodParams(),
     category: state.category,
   });
   if (state.hour !== null) params.set("hour", String(state.hour));
@@ -667,8 +692,15 @@ async function loadFreshness({ refit = false } = {}) {
   const response = await fetch(`${API}/cities/${encodeURIComponent(state.city)}`);
   if (!response.ok) return;
   const city = await response.json();
+  // A preset carries over as a preset, read against the outgoing record: after
+  // a refresh "last 12 months" ends on a newer day, and another city's ends on
+  // its own, so the old dates would match none of the new windows.
+  // renderRangeControls finds the nearest (pickWindow). Custom dates carry over
+  // as dates, clamped to what the city holds.
+  const preset = currentPreset();
+  state.carryPreset = preset ? { id: preset.id, span: preset.span_days } : null;
   state.cityRecord = city;
-  renderWindowOptions();
+  renderRangeControls();
 
   // Frame the city from its own stored bounding box rather than a hardcoded
   // centre, so a second city needs no client change (design doc S11). `refit`
@@ -753,7 +785,7 @@ async function loadCities() {
  * Everything keyed to a place is dropped rather than carried across: an H3 index
  * belongs to exactly one city, so a selected cell, a hovered cell and a cached
  * ramp domain are all meaningless the moment the city changes. The filters --
- * window, category, cell size, hour -- are not place-specific and do carry over,
+ * dates, category, cell size, hour -- are not place-specific and do carry over,
  * which is what someone comparing two cities on the same terms would want.
  *
  * What deliberately does *not* happen is any comparison between the two. Every
@@ -763,9 +795,6 @@ async function loadCities() {
  */
 async function selectCity(sourceId) {
   if (sourceId === state.city) return;
-  // How wide the outgoing window is, so renderWindowOptions can find the
-  // nearest one if the new city's history is shorter.
-  state.windowSpan = currentWindow()?.span_days ?? null;
   state.city = sourceId;
   closeDetail();
   // The stamp is per city now, so carrying the old one across would read as "the
@@ -798,7 +827,8 @@ async function selectCity(sourceId) {
 function renderHeadlineStat(detail) {
   const value = $("d-count");
   const label = $("d-count-label");
-  const windowLabel = detail.window_label.toLowerCase();
+  // "last 12 months" reads in a sentence; "1 Mar 2025 – 9 Oct 2025" keeps its capitals.
+  const windowLabel = detail.range ? detail.window_label : detail.window_label.toLowerCase();
 
   const rel = state.scale === "safety" ? relativeRate(state.selected) : null;
 
@@ -825,10 +855,11 @@ async function selectCell(h3) {
   map.setFeatureState({ source: "cells", id: h3 }, { selected: true });
 
   const hourParam = state.hour === null ? "" : `&hour=${state.hour}`;
+  const period = new URLSearchParams(periodParams());
   const [detail, ring] = await Promise.all([
-    fetch(`${API}/cells/${encodeURIComponent(h3)}?window=${state.window}${hourParam}`)
+    fetch(`${API}/cells/${encodeURIComponent(h3)}?${period}${hourParam}`)
       .then((r) => (r.ok ? r.json() : null)),
-    fetch(`${API}/cells/ring?h3=${encodeURIComponent(h3)}&k=1&window=${state.window}&category=all`)
+    fetch(`${API}/cells/ring?h3=${encodeURIComponent(h3)}&k=1&${period}&category=all`)
       .then((r) => (r.ok ? r.json() : null)),
   ]);
   if (!detail) return;
@@ -1486,7 +1517,7 @@ function repaint() {
  */
 function syncHourAvailability() {
   const ok =
-    HOURLY_RESOLUTIONS.includes(state.res) && Boolean(currentWindow()?.hourly);
+    HOURLY_RESOLUTIONS.includes(state.res) && Boolean(currentPreset()?.hourly);
   const field = $("f-hour-field");
   field.setAttribute("aria-disabled", String(!ok));
   $("f-hour").disabled = !ok;
@@ -1498,7 +1529,9 @@ function syncHourAvailability() {
   }
   if (!ok) {
     $("f-hour-note").textContent =
-      "Not built at this cell size / window — too few incidents per hour.";
+      currentPreset() || !HOURLY_RESOLUTIONS.includes(state.res)
+        ? "Not built at this cell size / window — too few incidents per hour."
+        : "Built for the stored last-12-months range only — pick that preset.";
   } else if (state.hour === null) {
     $("f-hour-note").textContent = "All hours";
   } else if (state.meta && !state.meta.hour_known_share) {
@@ -1543,97 +1576,148 @@ function syncSafetyAvailability() {
 }
 
 /**
- * Fill the window control from the city's own list (windows.js).
+ * Fill the date controls from the city record (windows.js).
  *
- * Runs whenever the city record arrives: on load, on a city switch, and when a
- * refresh grows the history by a year. Keeps the selected window if the city
- * has it, otherwise picks the nearest (pickWindow), and records the choice in
- * the URL so a shared link opens on the same window.
+ * Runs whenever the record arrives: on load, on a city switch, and when a
+ * refresh moves the data's newest day. Settles the dates first -- a carried
+ * preset becomes the new city's nearest one, a legacy ?window= link becomes its
+ * window's dates, nothing at all becomes the year up to today -- then clamps them
+ * to what this city holds and fills the preset list.
  */
-function renderWindowOptions() {
-  const windows = state.cityRecord?.windows ?? [];
-  const chosen = pickWindow(
-    windows,
-    state.window,
-    state.windowSpan ?? currentWindow()?.span_days,
-    state.cityRecord?.default_window
+function renderRangeControls() {
+  const city = state.cityRecord;
+  const windows = city?.windows ?? [];
+  const today = todayIso();
+
+  if (state.carryPreset) {
+    const { id, span } = state.carryPreset;
+    const chosen = pickWindow(windows, id, span, city?.default_window);
+    if (chosen) state.range = presetRange(chosen, today);
+    state.carryPreset = null;
+  } else if (!state.range) {
+    const linked = findWindow(windows, state.pendingWindow);
+    state.range = linked ? presetRange(linked, today) : defaultRange(today);
+  }
+  state.pendingWindow = null;
+
+  // The calendar starts on the city's oldest stored day. Before the city is
+  // rebuilt with the daily rollup there is no such day on the record and no
+  // custom range either; the presets still reach back as far as they go.
+  const min = city?.selectable_start ?? windows.at(-1)?.start ?? null;
+  for (const input of [$("f-from"), $("f-to")]) {
+    input.min = min ?? "";
+    input.max = today;
+  }
+
+  $("f-preset").replaceChildren(
+    new Option("Custom dates", "custom"),
+    ...windows.map((w) => new Option(w.partial ? `${w.label} (partial)` : w.label, w.id))
   );
-  state.windowSpan = null;
-  $("f-window").replaceChildren(
-    ...windows.map((w) => {
-      const option = document.createElement("option");
-      option.value = w.id;
-      option.textContent = w.partial ? `${w.label} (partial)` : w.label;
-      return option;
-    })
-  );
-  if (chosen) setWindow(chosen.id);
+  // Custom dates into a city that serves none: its default preset, not whichever
+  // preset the clamped dates happen to land on.
+  if (!city?.custom_range_resolutions?.length && !currentPreset()) {
+    const fallback =
+      findWindow(windows, city?.default_window) || findWindow(windows, DEFAULT_WINDOW);
+    if (fallback) state.range = presetRange(fallback, today);
+  }
+  setRange(clampRange(state.range, min, today));
   syncActivityScope();
 }
 
-/** Select a window: state, control and URL together. Does not reload. */
-function setWindow(id) {
-  state.window = id;
-  $("f-window").value = id;
+/** Select dates: state, controls and URL together. Does not reload. */
+function setRange(range) {
+  state.range = range;
+  $("f-from").value = range.from;
+  $("f-to").value = range.to;
+  $("f-preset").value = currentPreset()?.id ?? "custom";
   const url = new URL(location.href);
-  url.searchParams.set("window", id);
+  url.searchParams.set("from", range.from);
+  url.searchParams.set("to", range.to);
+  url.searchParams.delete("window");
   history.replaceState(null, "", url);
 }
 
+/** Whether the server ranks custom dates at this cell size for this city. */
+const customRangeServed = () =>
+  (state.cityRecord?.custom_range_resolutions ?? []).includes(state.res);
+
 /**
- * Gate the window and category controls on what is built at this cell size.
+ * Gate the date and category controls on what is served at this cell size.
  *
- * Same principle as syncHourAvailability and syncSafetyAvailability, applied to
- * the two controls that have always been free: at resolution 10 the layer only
- * exists for the one- and two-year windows and the combined category. Coerces
- * the current selection rather than leaving one that is about to 400 -- the
- * narrowing keeps the default view (last 12 months, all incidents) at every
+ * Same principle as syncHourAvailability and syncSafetyAvailability. At
+ * resolution 10 the layer exists only for the one- and two-year presets and
+ * the combined category, and custom dates are not served at all (there is no
+ * daily rollup that fine). Coerces the current selection rather than leaving
+ * one that is about to 400 -- the city's default preset is built at every
  * resolution, so there is always something to fall back to.
  *
  * Every caller reloads the layer straight afterwards, so a coerced selection is
  * picked up by that fetch rather than needing one of its own.
  */
 function syncActivityScope() {
-  const windows = state.cityRecord?.windows ?? [];
+  const city = state.cityRecord;
+  const windows = city?.windows ?? [];
   const categories = activityCategories(state.res);
+  const custom = customRangeServed();
 
-  for (const option of $("f-window").options) {
+  for (const option of $("f-preset").options) {
     const win = findWindow(windows, option.value);
-    option.disabled = Boolean(win) && !windowBuiltAt(win, state.res);
+    option.disabled = win ? !windowBuiltAt(win, state.res) : !custom;
   }
+  $("f-from").disabled = !custom;
+  $("f-to").disabled = !custom;
   for (const option of $("f-category").options) {
     option.disabled = categories !== null && !categories.includes(option.value);
   }
 
-  const win = currentWindow();
-  if (win && !windowBuiltAt(win, state.res)) {
+  const preset = currentPreset();
+  if (state.range && (preset ? !windowBuiltAt(preset, state.res) : !custom)) {
     const fallback =
-      findWindow(windows, state.cityRecord?.default_window) || findWindow(windows, DEFAULT_WINDOW);
-    if (fallback) setWindow(fallback.id);
+      findWindow(windows, city?.default_window) || findWindow(windows, DEFAULT_WINDOW);
+    if (fallback) setRange(presetRange(fallback, todayIso()));
   }
   if (categories && !categories.includes(state.category)) {
     state.category = "all";
     $("f-category").value = state.category;
   }
 
+  const note = rangeNote(state.range, city, state.res);
   $("f-window-note").textContent =
     state.res === 10
-      ? "Only the 12-month and 2-year windows are built for cells this small. " +
-        windowNote(currentWindow(), state.res)
-      : windowNote(currentWindow(), state.res);
+      ? `Only the 12-month and 2-year presets are built for cells this small. ${note}`.trim()
+      : note;
   $("f-category-note").textContent = categories
     ? "A cell this small is empty in most single categories."
     : "";
 }
 
+/** The dates changed: re-gate the controls, then redraw the map and the panel. */
+function onRangeChange(range) {
+  setRange(clampRange(range, $("f-from").min || null, $("f-to").max || null));
+  syncActivityScope();
+  syncHourAvailability();
+  if (state.selected) selectCell(state.selected);
+  loadLayer();
+}
+
 function wireControls() {
   $("f-city").onchange = (e) => selectCity(e.target.value);
-  $("f-window").onchange = (e) => {
-    setWindow(e.target.value);
-    syncActivityScope();
-    syncHourAvailability();
-    if (state.selected) selectCell(state.selected);
-    loadLayer();
+  $("f-preset").onchange = (e) => {
+    const win = findWindow(state.cityRecord?.windows, e.target.value);
+    // "Custom dates" changes nothing by itself; the calendars are the control.
+    if (!win) {
+      $("f-from").focus();
+      return;
+    }
+    onRangeChange(presetRange(win, todayIso()));
+  };
+  // `change`, not `input`: it fires once a whole date is chosen, not on every
+  // keystroke of one being typed. An emptied input is ignored rather than sent.
+  $("f-from").onchange = (e) => {
+    if (e.target.value) onRangeChange({ from: e.target.value, to: state.range.to });
+  };
+  $("f-to").onchange = (e) => {
+    if (e.target.value) onRangeChange({ from: state.range.from, to: e.target.value });
   };
   $("f-category").onchange = (e) => {
     state.category = e.target.value;
@@ -1641,7 +1725,7 @@ function wireControls() {
   };
   $("f-res").onchange = (e) => {
     state.res = Number(e.target.value);
-    // Before syncHourAvailability, which reads state.window: the new resolution
+    // Before syncHourAvailability, which reads the preset: the new resolution
     // may have just moved it.
     syncActivityScope();
     syncHourAvailability();

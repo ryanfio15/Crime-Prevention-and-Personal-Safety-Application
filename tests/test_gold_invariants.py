@@ -609,3 +609,176 @@ def test_floor_follows_pull_coverage_not_stray_old_dates(built):
         with conn.cursor() as cur:
             cur.execute("DELETE FROM etl.pull_run WHERE pull_id = %s", (pull_id,))
         conn.commit()
+
+
+# ------------------------------------------------------- custom ranges (020)
+
+
+def _daily(conn):
+    return {
+        (r["h3_res"], r["day"], r["h3_index"]): r
+        for r in _rows(
+            conn,
+            "SELECT * FROM gold.cell_daily WHERE source_id = %s",
+            (SOURCE,),
+        )
+    }
+
+
+def test_daily_rollup_conserves_incidents(built):
+    # gold.refresh_cell_daily: every incident from the floor to the anchor is in
+    # exactly one row per daily resolution, and the categories add up to it.
+    conn = built["conn"]
+    daily = _daily(conn)
+    assert {res for res, _, _ in daily} == set(gold.DAILY_RESOLUTIONS)
+    for res in gold.DAILY_RESOLUTIONS:
+        rows = [r for (rr, _, _), r in daily.items() if rr == res]
+        assert sum(r["c_all"] for r in rows) == N_ROWS, res
+    for row in daily.values():
+        assert row["c_all"] == (
+            row["c_violent"] + row["c_property"] + row["c_quality_of_life"] + row["c_other"]
+        )
+    per_day = Counter(r["date"] for r in built["rows"])
+    by_day = Counter()
+    for (res, day, _), row in daily.items():
+        if res == 8:
+            by_day[day] += row["c_all"]
+    assert by_day == per_day
+
+
+def test_selectable_start_is_the_oldest_stored_day(built):
+    conn = built["conn"]
+    oldest = min(r["date"] for r in built["rows"])
+    assert _scalar(
+        conn, "SELECT selectable_start FROM gold.city_snapshot WHERE source_id = %s", (SOURCE,)
+    ) == oldest
+
+
+def test_daily_rebuild_writes_only_what_changed(built):
+    conn = built["conn"]
+    before = _daily(conn)
+    try:
+        assert gold.refresh_cell_daily(conn, SOURCE, built["windows"]) == 0
+        # A withdrawn record: its (cell, day) rows shrink or go, nothing else moves.
+        gone = built["rows"][1]
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM silver.incident WHERE source_id = %s AND incident_key = %s",
+                (SOURCE, gone["key"]),
+            )
+        gold.refresh_cell_daily(conn, SOURCE, built["windows"])
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM gold.cell_daily WHERE source_id = %s", (SOURCE,))
+            after = {(r["h3_res"], r["day"], r["h3_index"]): r for r in cur.fetchall()}
+    finally:
+        conn.rollback()
+    for res in gold.DAILY_RESOLUTIONS:
+        key = (res, gone["date"], gone[f"r{res}"])
+        if before[key]["c_all"] == 1:
+            assert key not in after
+        else:
+            assert after[key]["c_all"] == before[key]["c_all"] - 1
+    changed = {k for k in before if before[k] != after.get(k)}
+    assert len(changed) == len(gold.DAILY_RESOLUTIONS)
+
+
+def _features(document):
+    return {f["id"]: f["properties"] for f in document["features"]}
+
+
+@pytest.mark.parametrize("res", gold.DAILY_RESOLUTIONS)
+def test_range_equal_to_a_window_ranks_like_the_stored_window(built, res):
+    # The API's range path sums gold.cell_daily and runs safety.ranking_sql; the
+    # ETL ranked the stored window with the same SQL over its own aggregates.
+    # Over the same dates the two must agree: counts and the activity ranking
+    # exactly, the severity-weighted ranking to float rounding.
+    from safety.api import repository as repo
+
+    conn = built["conn"]
+    try:
+        # Serve the scheme the fixture built (see `built`), and roll the daily
+        # weights up under it.
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE reference.source_registry SET severity_scheme_version = %s "
+                "WHERE source_id = %s",
+                (AREA_SCHEME, SOURCE),
+            )
+        gold.refresh_cell_daily(conn, SOURCE, built["windows"])
+        assert repo.range_scheme(conn, SOURCE) is not None
+
+        compared = 0
+        for window in built["windows"]:
+            for category in ("all", "violent"):
+                stored = repo.cells_geojson(
+                    conn, source_id=SOURCE, h3_res=res, time_window=window.name,
+                    category=category,
+                )
+                ranged = repo.cells_geojson(
+                    conn, source_id=SOURCE, h3_res=res, time_window=window.name,
+                    category=category,
+                    date_range=repo.DateRange(window.start, window.end),
+                )
+                a, b = _features(stored), _features(ranged)
+                assert a.keys() == b.keys() and a, (window.name, category)
+                assert ranged["metadata"]["total_count"] == stored["metadata"]["total_count"]
+                differing = 0
+                for h3, p in a.items():
+                    q = b[h3]
+                    for field in ("count", "per_km2", "percentile", "tier", "rank", "of_cells"):
+                        assert p[field] == q[field], (window.name, category, h3, field)
+                    for field in ("sw_violent", "sw_nonviolent"):
+                        assert abs((p[field] or 0) - (q[field] or 0)) <= 0.1, (h3, field)
+                    for field in ("safety_violent", "safety_nonviolent"):
+                        assert p[field] is not None and q[field] is not None, (h3, field)
+                        if abs(p[field] - q[field]) > 1e-4:
+                            differing += 1
+                assert differing <= len(a) * 0.02, (window.name, category, differing)
+                compared += 1
+        assert compared
+    finally:
+        conn.rollback()
+
+
+def test_single_day_range_counts_that_day(built):
+    from safety.api import repository as repo
+
+    conn = built["conn"]
+    day = Counter(r["date"] for r in built["rows"]).most_common(1)[0][0]
+    try:
+        totals = repo.city_totals(
+            conn, source_id=SOURCE, time_window="", h3_res=8,
+            date_range=repo.DateRange(day, day),
+        )
+        doc = repo.cells_geojson(
+            conn, source_id=SOURCE, h3_res=8, time_window="", category="all",
+            date_range=repo.DateRange(day, day),
+        )
+    finally:
+        conn.rollback()
+    expected = sum(1 for r in built["rows"] if r["date"] == day)
+    assert next(t for t in totals if t["category"] == "all")["incident_count"] == expected
+    assert doc["metadata"]["total_count"] == expected
+    # Every cell in the universe is ranked, the empty ones at tier 0.
+    assert all(f["properties"]["tier"] == 0 for f in doc["features"]
+               if f["properties"]["count"] == 0)
+
+
+def test_range_cell_detail_matches_the_stored_window(built):
+    from safety.api import repository as repo
+
+    conn = built["conn"]
+    window = next(w for w in built["windows"] if w.name == "last_1y")
+    cell = Counter(r["r9"] for r in built["rows"]).most_common(1)[0][0]
+    try:
+        stored = repo.cell_detail(conn, h3_index=cell, time_window=window.name)
+        ranged = repo.cell_detail(
+            conn, h3_index=cell, time_window=window.name,
+            date_range=repo.DateRange(window.start, window.end),
+        )
+    finally:
+        conn.rollback()
+    assert ranged["headline"] == stored["headline"]
+    assert ranged["by_category"] == stored["by_category"]
+    assert [dict(r) for r in ranged["top_offenses"]] == [dict(r) for r in stored["top_offenses"]]
+    assert ranged["by_hour"] == [] and ranged["range"]["from"] == window.start.isoformat()
