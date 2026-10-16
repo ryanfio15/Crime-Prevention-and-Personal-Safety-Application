@@ -1,0 +1,22 @@
+# Weekly rebuild of the time-of-day layers for one instance: the six-hourly
+# pull (safety-etl@) passes --skip-hourly.
+
+[Unit]
+Description=Safety time-of-day layer rebuild (%i)
+# A failure logs a critical alert to the journal (safety-notify@.service).
+OnFailure=safety-notify@%N.service
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=safety
+Group=safety
+WorkingDirectory=/srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/current
+# The release is read-only to safety (deploy/lib/release.sh).
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Shares the per-instance ETL lock with safety-ops@ (see there).
+ExecStart=/usr/bin/flock -w 21600 /srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/data/.etl.lock /srv/safety/Crime-Prevention-and-Personal-Safety-Application/%i/current/.venv/bin/python -m safety.etl.run hourly --all
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full

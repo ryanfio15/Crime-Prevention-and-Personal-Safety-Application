@@ -3,16 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Philadelphia reported-incident activity &middot; Phase 1</title>
+<!-- Replaced from the selected city's snapshot on load; this is the pre-boot value. -->
+<title>Reported-incident activity</title>
 <link rel="preconnect" href="https://basemaps.cartocdn.com">
-<link href="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.css" rel="stylesheet">
+<!-- Third-party assets are pinned to an exact version AND to its hash
+     (subresource integrity): if unpkg ever served different bytes for these
+     URLs, the browser refuses them instead of running them. When bumping a
+     version, recompute each hash and update both together:
+       curl -sSfL <url> | openssl dgst -sha384 -binary | openssl base64 -A
+     crossorigin="anonymous" is required for SRI on a cross-origin fetch; unpkg
+     answers with access-control-allow-origin: *. Same-origin files (styles.css,
+     html.js, windows.js, app.js) need no integrity attribute. -->
+<link href="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.css" rel="stylesheet"
+      integrity="sha384-gNYNsUmuZqDYiT3gbirWTV5K7rt71RoveS/yXAaU09d4ZUmeDVTD3XoqB6uJAIFR"
+      crossorigin="anonymous">
 <link href="styles.css" rel="stylesheet">
 </head>
 <body>
 
 <header class="topbar">
   <div class="brand">
-    <h1>Philadelphia &mdash; reported incident activity</h1>
+    <h1 id="city-heading">Reported incident activity</h1>
     <p class="subtitle">
       Crime incidents reported to police, aggregated into H3 hexagonal cells.
       <button type="button" class="linkish" data-open-methodology>How to read this</button>
@@ -28,15 +39,34 @@
 
 <!-- One filter row above everything it scopes; every view re-renders off the same slice. -->
 <div class="filters" role="group" aria-label="Map filters">
-  <label class="field">
-    <span class="field-label">Time window</span>
-    <select id="f-window">
-      <option value="last_30d">Last 30 days</option>
-      <option value="last_90d">Last 90 days</option>
-      <option value="last_12m" selected>Last 12 months</option>
-      <option value="last_24m">Last 24 months</option>
-    </select>
+  <!-- Populated from /api/v1/cities, and hidden while only one city has data:
+       a dropdown with one entry is a control that cannot do anything. Every
+       figure on this page is relative to the selected city's own distribution
+       (design doc S3.3), so switching changes the reference class, not the
+       viewport -- values are never comparable across two cities. -->
+  <label class="field" id="f-city-field" hidden>
+    <span class="field-label">City</span>
+    <select id="f-city"></select>
   </label>
+
+  <!-- Two calendar dates drive the map (web/windows.js). The calendar runs from
+       the city's oldest stored day to today; the presets are the city's stored
+       windows (3/6/9 months, then years) and fill both dates in one click. -->
+  <div class="field field-range" role="group" aria-labelledby="f-range-label">
+    <span class="field-label" id="f-range-label">Dates</span>
+    <div class="range-inputs">
+      <input type="date" id="f-from" aria-label="From date" required>
+      <span class="range-sep" aria-hidden="true">–</span>
+      <input type="date" id="f-to" aria-label="To date" required>
+    </div>
+    <select id="f-preset" aria-label="Quick range">
+      <option value="custom">Custom dates</option>
+    </select>
+    <!-- Filled by syncActivityScope: where the data stops, what a preset is
+         missing at this cell size, and any recording change the range reaches
+         back into. -->
+    <span class="field-note" id="f-window-note"></span>
+  </div>
 
   <label class="field">
     <span class="field-label">Offense category</span>
@@ -47,6 +77,7 @@
       <option value="quality_of_life">Quality of life</option>
       <option value="other">Other</option>
     </select>
+    <span class="field-note" id="f-category-note"></span>
   </label>
 
   <label class="field">
@@ -58,19 +89,6 @@
     </select>
   </label>
 
-<<<<<<< Updated upstream
-  <!-- Follows the city's clock by default ("Now"), advancing on the hour.
-       Typing an hour pins it, which is how any hour other than the current one
-       can be inspected; "All hours" turns the time-of-day layer off. -->
-  <div class="field field-hour" id="f-hour-field">
-    <span class="field-label" id="f-hour-label">Time of day</span>
-    <div class="hour-input">
-      <input type="time" id="f-hour" step="3600" aria-labelledby="f-hour-label">
-      <button type="button" class="linkish" id="f-hour-now" aria-pressed="true">Now</button>
-      <button type="button" class="linkish" id="f-hour-clear" aria-pressed="false">All hours</button>
-    </div>
-    <span class="field-note" id="f-hour-note">All hours</span>
-=======
   <!-- The city's current local time, kept live (web/hours.js); the map shows the
        hour block it falls in. Underneath, whether this hour has historically
        been busier or quieter than the city's average hour -- stored counts,
@@ -80,7 +98,6 @@
     <output class="hour-clock" id="f-hour" aria-labelledby="f-hour-label">&mdash;</output>
     <span class="field-note" id="f-hour-note"></span>
     <div class="hour-trend" id="f-hour-trend" aria-live="polite" hidden></div>
->>>>>>> Stashed changes
   </div>
 
   <div class="field">
@@ -114,7 +131,7 @@
 
 <main class="layout">
   <section class="map-pane">
-    <div id="map" role="application" aria-label="Map of Philadelphia with hexagonal cells shaded by reported incident count"></div>
+    <div id="map" role="application" aria-label="Map with hexagonal cells shaded by reported incident count"></div>
 
     <div class="legend" id="legend" aria-hidden="true">
       <div class="legend-title" id="legend-title">Reported incidents per cell</div>
@@ -123,9 +140,9 @@
       <div class="legend-foot" id="legend-foot"></div>
     </div>
 
-    <div class="map-tooltip" id="tooltip" hidden></div>
 
-    <div class="loading" id="loading" hidden>Loading&hellip;</div>
+    <!-- A live region, so a load error that stays on screen is announced. -->
+    <div class="loading" id="loading" role="status" aria-live="polite" hidden>Loading&hellip;</div>
   </section>
 
   <!-- Detail panel: opens on cell click. -->
@@ -253,10 +270,6 @@
   <div id="methodology-body">Loading&hellip;</div>
 </dialog>
 
-<<<<<<< Updated upstream
-<script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"></script>
-<script src="https://unpkg.com/h3-js@4.2.1/dist/h3-js.umd.js"></script>
-=======
 <script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"
         integrity="sha384-81ppUWZZO+pveTPk4qU9cZuScEFULHfuOMHVJHFZ7xVBlWQTG1zsPrVIMGAl1WMb"
         crossorigin="anonymous"></script>
@@ -266,7 +279,6 @@
 <script src="html.js"></script>
 <script src="windows.js"></script>
 <script src="hours.js"></script>
->>>>>>> Stashed changes
 <script src="app.js"></script>
 </body>
 </html>

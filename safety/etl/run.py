@@ -7,35 +7,63 @@ a CLI so Phase 1 has no scheduler dependency:
 
     python -m safety.etl.run backfill    --city phl [--months 24]
     python -m safety.etl.run incremental --city phl
+    python -m safety.etl.run incremental --all --due-only --skip-hourly
     python -m safety.etl.run reprocess   --city phl --pull-id 3
     python -m safety.etl.run census      --city phl
     python -m safety.etl.run gold        --city phl
+    python -m safety.etl.run hourly      --all
+    python -m safety.etl.run weights     --city phl
     python -m safety.etl.run status
 
 Schedules themselves are configuration, not code (S8.2): each source's cadence
 lives in reference.source_registry, and `incremental` is safe to run more often
 than a source actually publishes -- "checked, nothing new" is the normal case
 for a bi-weekly source like Los Angeles.
+
+Three flags turn that into something a scheduler can drive, and the deployed
+configuration is `incremental --all --due-only --skip-hourly` on a few-hourly
+schedule plus `hourly --all` weekly (deploy/systemd/safety-etl*@.timer):
+
+* `--all` runs every enabled source, stalest first, and does not let one city's
+  outage stop the other five -- which matters more than it sounds, because six
+  independent government portals have six independent bad days.
+* `--due-only` skips sources whose cadence says they cannot have new data yet, so
+  the schedule only has to decide how often to *ask*. This is what keeps cadence
+  in the registry rather than smeared across six cron expressions.
+* `--skip-hourly` leaves the time-of-day layers out of the frequent run. They
+  are the most expensive thing the pipeline builds and the slowest-moving, since
+  both their windows are a year or wider.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
+import re
 import sys
 import time
+from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
 import psycopg
 
 from safety import PIPELINE_VERSION
 from safety.db import connect, wait_for_db
-from safety.etl import census, gold, transform, validate
-from safety.etl.adapters import SourceConfig, get_adapter
+from safety.etl import boundary as boundary_loader
+from safety.etl import census, gold, transform, validate, withdrawn
+from safety.etl.adapters import (
+    ADAPTERS,
+    HISTORY_DATASETS,
+    PRIMARY_HISTORY_START,
+    SourceConfig,
+    get_adapter,
+)
 from safety.etl.adapters.base import NormalizedIncident, RawChunk, SourceAdapter
-from safety.etl.adapters.philadelphia import default_backfill_window
 from safety.etl.bronze import LocalBronzeStore, build_manifest
+from safety.etl.windows import backfill_window, months_before
 from safety.config import settings
 
 log = logging.getLogger("safety.etl")
@@ -158,7 +186,15 @@ def _mark_source_failure(conn: psycopg.Connection, source_id: str, status: str, 
 def ensure_boundary(
     conn: psycopg.Connection, adapter: SourceAdapter, config: SourceConfig, force: bool = False
 ) -> None:
-    """Fetch and store the city coverage polygon (S3.1) if not already present."""
+    """Fetch and store the city coverage polygon (S3.1) if not already present.
+
+    Two ways a city can get one. An adapter that knows a boundary layer on its
+    own portal returns it from `fetch_boundary` -- Philadelphia does, building
+    the police-jurisdiction polygon S3.1 explicitly allows. An adapter that
+    returns None falls through to the shared TIGER/Line PLACE loader, which is
+    where the other five get theirs. See safety/etl/boundary.py for why that is
+    one loader rather than five portal integrations.
+    """
     with conn.cursor() as cur:
         cur.execute(
             "SELECT 1 AS present FROM reference.city_boundary WHERE source_id = %s",
@@ -169,6 +205,11 @@ def ensure_boundary(
         return
 
     started = time.monotonic()
+    chunk = adapter.fetch_boundary()
+    if chunk is None:
+        _ensure_place_boundary(conn, config)
+        return
+
     pull_id = _open_pull(
         conn,
         source_id=config.source_id,
@@ -179,11 +220,6 @@ def ensure_boundary(
         crosswalk_version=config.crosswalk_version,
     )
     try:
-        chunk = adapter.fetch_boundary()
-        if chunk is None:
-            _finish_pull(conn, pull_id, status="no_new_data", started=started)
-            return
-
         store = LocalBronzeStore()
         pull = store.open_pull(config.source_id, "boundary", pull_id)
         pull.write_chunk(chunk)
@@ -246,6 +282,65 @@ def ensure_boundary(
         raise
 
 
+def _ensure_place_boundary(conn: psycopg.Connection, config: SourceConfig) -> None:
+    """Load the coverage polygon from TIGER/Line PLACE (safety/etl/boundary.py).
+
+    Gets its own etl.pull_run row and its own bronze snapshot, the same standing
+    a police department's data gets: "what did the source publish on this date"
+    is the same question here, and the polygon is the denominator of every
+    percentile in the city.
+    """
+    started = time.monotonic()
+    pull_id = _open_pull(
+        conn,
+        source_id=config.source_id,
+        dataset=boundary_loader.DATASET,
+        mode="boundary",
+        since=None,
+        until=None,
+        crosswalk_version=config.crosswalk_version,
+    )
+    try:
+        chunk = boundary_loader.fetch_place_file(config)
+        store = LocalBronzeStore()
+        pull = store.open_pull(config.source_id, boundary_loader.DATASET, pull_id)
+        pull.write_chunk(chunk)
+        pull.write_manifest(
+            build_manifest(
+                source_id=config.source_id,
+                dataset=boundary_loader.DATASET,
+                pull_id=pull_id,
+                mode="boundary",
+                since=None,
+                until=None,
+                chunks=[chunk],
+                pipeline_version=PIPELINE_VERSION,
+                crosswalk_version=config.crosswalk_version,
+                attribution=boundary_loader.ATTRIBUTION,
+            )
+        )
+        chosen = boundary_loader.load_boundary(conn, chunk.payload, config)
+        _finish_pull(
+            conn,
+            pull_id,
+            status="succeeded",
+            started=started,
+            bronze_uri=pull.uri,
+            bronze_bytes=pull.total_bytes,
+            fetched=1,
+            valid=1,
+        )
+        log.info(
+            "%s coverage area %.1f km2 from %s",
+            config.source_id,
+            chosen["area_km2"],
+            chosen["namelsad"],
+        )
+    except Exception as exc:
+        _finish_pull(conn, pull_id, status="failed", started=started, error=str(exc))
+        raise
+
+
 def _city_bbox(
     conn: psycopg.Connection, source_id: str
 ) -> tuple[float, float, float, float] | None:
@@ -276,7 +371,14 @@ def _ingest(
     mode: str,
     since: datetime,
     until: datetime,
-) -> dict[str, int | str]:
+    reconcile: bool = False,
+) -> dict[str, Any]:
+    """Fetch, validate and promote one pull.
+
+    `reconcile` (incrementals with a watermark only, never a backfill or a bronze
+    replay) also compares the revision window with silver and handles records
+    withdrawn upstream (safety/etl/withdrawn.py, F13).
+    """
     adapter = get_adapter(config)
     ensure_boundary(conn, adapter, config)
     bbox = _city_bbox(conn, config.source_id)
@@ -378,6 +480,30 @@ def _ingest(
             log.error("pull %s BLOCKED before promotion: %s", pull_id, result.block_reason)
             return {"pull_id": pull_id, "status": "blocked", "upserted": 0}
 
+        # --- withdrawn upstream: assess before promotion (F13) ---------------
+        # Before promotion so `prior` is what silver held for the window. Every
+        # normalised record counts as seen, valid or not: a record the validator
+        # rejected is still upstream.
+        assessment = None
+        reconcile_mode = withdrawn.resolve_mode(settings.withdrawn_reconcile)
+        if reconcile and reconcile_mode != "off":
+            try:
+                assessment = withdrawn.assess(
+                    conn,
+                    adapter,
+                    config.source_id,
+                    config.incident_dataset,
+                    {r.source_incident_id for r in records},
+                    since,
+                    until,
+                )
+            except Exception:
+                conn.rollback()  # read-only; nothing of this pull is lost
+                log.exception(
+                    "withdrawn-upstream assessment failed for pull %s; ingest unaffected", pull_id
+                )
+            conn.commit()
+
         # --- transform + promote -------------------------------------------
         transform.stage_records(
             conn,
@@ -404,6 +530,10 @@ def _ingest(
         transform.clear_staging(conn, pull_id)
         conn.commit()
 
+        withdrawn_outcome = None
+        if assessment is not None:
+            withdrawn_outcome = _reconcile_safely(conn, pull_id, assessment, reconcile_mode)
+
         _finish_pull(
             conn,
             pull_id,
@@ -423,6 +553,7 @@ def _ingest(
             "fetched": fetched,
             "rejected": result.rejected,
             "upserted": upserted,
+            "withdrawn": withdrawn_outcome,
         }
 
     except Exception as exc:
@@ -430,6 +561,249 @@ def _ingest(
         _finish_pull(conn, pull_id, status="failed", started=started, error=repr(exc))
         _mark_source_failure(conn, config.source_id, "failed", repr(exc))
         raise
+
+
+def _reconcile_safely(
+    conn: psycopg.Connection, pull_id: int, assessment: withdrawn.Assessment, mode: str
+) -> dict[str, Any]:
+    """Apply the withdrawn-upstream outcome in its own transaction; never raises."""
+    try:
+        outcome = withdrawn.apply(conn, pull_id, assessment, mode)
+        conn.commit()
+        return outcome
+    except Exception:
+        # A failed statement aborts the whole transaction; without this rollback
+        # the _finish_pull after it would fail and mark an already-committed pull
+        # as failed.
+        conn.rollback()
+        log.exception("withdrawn-upstream reconcile failed for pull %s; ingest unaffected", pull_id)
+        return {"action": "error"}
+
+
+def _prune_safely(conn: psycopg.Connection, source_id: str, days: int) -> int | None:
+    """Drop archived withdrawn rows past retention, in its own transaction; never raises."""
+    try:
+        pruned = withdrawn.prune(conn, source_id, days)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        log.exception("pruning etl.withdrawn_incident for %s failed; continuing", source_id)
+        return None
+    if pruned:
+        log.info("pruned %s archived withdrawn row(s) for %s older than %s days", pruned, source_id, days)
+    return pruned
+
+
+# ---------------------------------------------------------------------------
+# Running across several cities
+# ---------------------------------------------------------------------------
+
+
+# How long a source's published cadence says to wait between looks. S8.2 puts
+# cadence in the registry rather than in job code precisely so this table is the
+# only place it lives -- a scheduler then only has to ask "is anyone due?".
+#
+# Keys must cover reference.source_registry.expected_cadence's CHECK constraint
+# (002_reference.sql). Adding a value there without adding it here is survivable
+# -- is_due() pulls an unrecognised cadence rather than skipping it silently, and
+# says so -- but it means that source is checked on every tick.
+_CADENCE_DAYS = {
+    "daily": 1.0,
+    "weekly": 7.0,
+    "biweekly": 14.0,
+    "annual": 365.0,
+    # A rolling "last N days" feed republishes continuously, so it is always
+    # worth a look. S8.2 wants these checked more often than the others, and with
+    # a scheduler firing every few hours that is what a zero interval produces.
+    "rolling": 0.0,
+}
+
+# Fraction of the interval after which a source counts as due. Below 1.0 on
+# purpose: a scheduler fires on its own rhythm, not the source's, so requiring a
+# full interval would push a daily source to nearly every other day whenever the
+# cron tick landed just short. At 0.8 a daily source becomes due after ~19 hours,
+# which any sub-daily schedule then picks up once per day.
+_DUE_FRACTION = 0.8
+
+# Only these modes count as "having looked" for cadence purposes. A census or
+# boundary pull writes an etl.pull_run row too, and letting one of those suppress
+# an incident pull would be wrong.
+_INCIDENT_MODES = ("backfill", "incremental")
+
+# And only these outcomes. A pull that reached the source and came back -- with
+# rows or with nothing -- is a completed look; anything else is not.
+#
+# 'failed' and 'blocked' are deliberately absent, and getting this wrong is worse
+# than it sounds. A source that 404s, times out, or changes its export format
+# overnight would otherwise count as checked and be left alone for a full cadence
+# interval, so a transient outage at 03:00 would mean no data until tomorrow --
+# with a scheduler running every six hours and precisely the condition a retry
+# would fix.
+#
+# 'running' is absent too, for the opposite reason. A container killed mid-pull
+# leaves its row at 'running' forever; counting that as a look would suppress
+# every retry indefinitely. The cost is that a genuinely in-flight pull does not
+# block a second one, which needs a run to overrun its own interval -- 19 hours
+# against a twelve-minute refresh. The benign failure is the right one to pick.
+_COMPLETED_STATUSES = ("succeeded", "no_new_data")
+
+_SOURCES_SQL = f"""
+SELECT
+    r.source_id,
+    r.expected_cadence,
+    r.last_success_at,
+    -- When an incident pull last *completed*, which is a different question from
+    -- when one last succeeded. `last_success_at` only moves on a succeeded pull,
+    -- and `_ingest` returns early with 'no_new_data' without touching it -- the
+    -- normal outcome for a bi-weekly source. Keying "due" on success would
+    -- therefore leave Los Angeles permanently overdue and checked every single
+    -- tick, which is the exact waste this flag exists to avoid.
+    --
+    -- Completed, though, not merely started: see _COMPLETED_STATUSES for why a
+    -- failed pull must not count as a look.
+    checks.last_checked_at,
+    EXTRACT(EPOCH FROM (now() - checks.last_checked_at)) / 86400.0 AS days_since_check
+FROM reference.source_registry r
+CROSS JOIN LATERAL (
+    SELECT max(started_at) AS last_checked_at
+    FROM etl.pull_run p
+    WHERE p.source_id = r.source_id
+      AND p.mode   = ANY(%(modes)s)
+      AND p.status = ANY(%(statuses)s)
+) checks
+WHERE r.enabled
+ORDER BY checks.last_checked_at ASC NULLS FIRST, r.source_id
+"""
+
+
+def enabled_sources(conn: psycopg.Connection, due_only: bool = False) -> list[str]:
+    """Enabled sources, stalest first.
+
+    Ordered by when each was last looked at rather than alphabetically, so a run
+    cut short -- a timeout, a container restart, a platform redeploy -- has spent
+    its time on the cities that needed it most. NULLS FIRST puts a city that has
+    never loaded at the front, which is where it belongs.
+
+    With `due_only`, sources whose published cadence says they cannot have new
+    data yet are skipped. That is what lets one scheduled job cover six sources
+    on five different cadences: the schedule decides how often to *ask*, and the
+    registry decides who actually gets pulled (S8.2).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            _SOURCES_SQL,
+            {
+                "modes": list(_INCIDENT_MODES),
+                "statuses": list(_COMPLETED_STATUSES),
+            },
+        )
+        rows = cur.fetchall()
+
+    if not due_only:
+        return [row["source_id"] for row in rows]
+
+    due: list[str] = []
+    for row in rows:
+        ok, reason = is_due(row["expected_cadence"], row["days_since_check"])
+        log.log(
+            logging.WARNING if "unknown cadence" in reason else logging.INFO,
+            "%s %s: %s",
+            row["source_id"],
+            "is due" if ok else "not due",
+            reason,
+        )
+        if ok:
+            due.append(row["source_id"])
+    return due
+
+
+def is_due(cadence: str | None, days_since_check: float | None) -> tuple[bool, str]:
+    """Whether a source's cadence says it is worth pulling, and why.
+
+    Pure, so the arithmetic can be exercised without a database. Returns the
+    decision and a human-readable reason, which the caller logs -- a schedule
+    that quietly skips a city is indistinguishable from one that is broken.
+    """
+    interval = _CADENCE_DAYS.get(cadence or "")
+    if interval is None:
+        # A cadence the table does not know is a registry problem, not a reason to
+        # skip a city. Pull it, and say why it was pulled.
+        return True, f"unknown cadence {cadence!r}; pulling rather than skipping"
+
+    if days_since_check is None:
+        return True, "never pulled"
+
+    threshold = interval * _DUE_FRACTION
+    detail = (
+        f"last checked {days_since_check * 24:.1f}h ago, cadence "
+        f"{cadence!r} waits {threshold * 24:.1f}h"
+    )
+    return days_since_check >= threshold, detail
+
+
+def _fan_out(args: argparse.Namespace, one: Callable[[argparse.Namespace], int]) -> int:
+    """Run a single-city command across every enabled source.
+
+    One city's failure must not stop the other five. A source can be down, or
+    have changed its export format overnight, and that is a normal Tuesday for
+    six independent government portals -- so each is attempted, failures are
+    collected, and the summary names them. The exit code is non-zero if any
+    city failed, so a scheduler still notices.
+    """
+    due_only = getattr(args, "due_only", False)
+    with connect() as conn:
+        sources = enabled_sources(conn, due_only=due_only)
+
+    if not sources:
+        if due_only:
+            # Not a failure, and importantly not reported as one: with a schedule
+            # firing more often than any source publishes, "nobody is due" is the
+            # normal outcome of most runs. Exiting non-zero here would light up a
+            # platform's failure alerting several times a day.
+            print(
+                json.dumps({"attempted": [], "skipped": "no source is due"}, indent=2)
+            )
+            return 0
+        print("No enabled sources in reference.source_registry.", file=sys.stderr)
+        return 1
+
+    log.info("running across %s source(s): %s", len(sources), ", ".join(sources))
+    failures: dict[str, str] = {}
+    for source_id in sources:
+        per_city = argparse.Namespace(**{**vars(args), "city": source_id, "all": False})
+        try:
+            if one(per_city) != 0:
+                failures[source_id] = "command returned non-zero"
+        except Exception as exc:
+            # Logged with a traceback, recorded, and moved past. The per-city
+            # failure is already durable in etl.pull_run and the registry's
+            # last_error by the time it reaches here.
+            log.exception("%s failed", source_id)
+            failures[source_id] = repr(exc)
+
+    print(
+        json.dumps(
+            {
+                "attempted": sources,
+                "succeeded": [s for s in sources if s not in failures],
+                "failed": failures,
+            },
+            indent=2,
+            default=str,
+        )
+    )
+    return 1 if failures else 0
+
+
+def _fannable(one: Callable[[argparse.Namespace], int]) -> Callable[[argparse.Namespace], int]:
+    """Wrap a single-city command so `--all` fans it out over every source."""
+
+    def dispatch(args: argparse.Namespace) -> int:
+        if getattr(args, "all", False):
+            return _fan_out(args, one)
+        return one(args)
+
+    return dispatch
 
 
 # ---------------------------------------------------------------------------
@@ -442,10 +816,15 @@ def cmd_backfill(args: argparse.Namespace) -> int:
     with connect() as conn:
         config = SourceConfig.load(conn, args.city)
         _require_enabled(config)
-        since, until = default_backfill_window(months)
+        since, until = backfill_window(months, config)
         outcome = _ingest(conn, config, mode="backfill", since=since, until=until)
         if outcome["status"] == "succeeded":
-            stats = gold.refresh_all(conn, config.source_id, PIPELINE_VERSION)
+            stats = gold.refresh_all(
+                conn,
+                config.source_id,
+                PIPELINE_VERSION,
+                include_hourly=not args.skip_hourly,
+            )
             outcome.update(stats)
     print(json.dumps(outcome, indent=2, default=str))
     return 0
@@ -459,7 +838,7 @@ def cmd_incremental(args: argparse.Namespace) -> int:
         until = datetime.now(timezone.utc) + timedelta(days=1)
         if config.last_success_watermark is None:
             log.info("no watermark for %s; falling back to a full backfill", config.source_id)
-            since, until = default_backfill_window(settings.backfill_months)
+            since, until = backfill_window(settings.backfill_months, config)
         else:
             # S8.3: re-read behind the watermark and upsert, because these
             # agencies revise and reclassify after initial publication.
@@ -467,12 +846,233 @@ def cmd_incremental(args: argparse.Namespace) -> int:
                 days=config.revision_lookback_days
             )
 
-        outcome = _ingest(conn, config, mode="incremental", since=since, until=until)
+        outcome = _ingest(
+            conn,
+            config,
+            mode="incremental",
+            since=since,
+            until=until,
+            # Not on the backfill fallback: a 24-month re-read is not a revision window.
+            reconcile=config.last_success_watermark is not None,
+        )
+        # Every run, whatever the outcome and the mode (F13 retention, 90 days).
+        _prune_safely(conn, config.source_id, settings.withdrawn_retention_days)
         if outcome["status"] == "succeeded":
-            stats = gold.refresh_all(conn, config.source_id, PIPELINE_VERSION)
+            stats = gold.refresh_all(
+                conn,
+                config.source_id,
+                PIPELINE_VERSION,
+                include_hourly=not args.skip_hourly,
+            )
             outcome.update(stats)
     print(json.dumps(outcome, indent=2, default=str))
     return 0
+
+
+# ---------------------------------------------------------------------------
+# History: a city's full published record, a slice at a time
+# ---------------------------------------------------------------------------
+#
+# The backfill loads a trailing 24 months; `history` walks back from the oldest
+# date already covered to registry.history_start_date (migration 018), one
+# slice per pull. Slices keep memory bounded -- _ingest holds a whole pull in
+# memory before validating it -- and make the load resumable for free: coverage
+# is read back from etl.pull_run each run, so a failed or interrupted slice is
+# simply the next one tried. A slice that finds nothing (`no_new_data`, a year
+# the dataset does not reach) still counts as covered.
+#
+# History pulls never touch the watermark (_mark_source_success takes the max),
+# never reconcile withdrawn records, and are their own mode, so they neither
+# count as the cadence's "last looked" nor skew a backfill's volume median.
+
+# Months per slice. Chicago publishes up to ~46,000 incidents a month in the
+# early 2000s; three months of that is ~140,000 records in memory at once.
+HISTORY_SLICE_MONTHS = {"chi": 3}
+DEFAULT_HISTORY_SLICE_MONTHS = 6
+
+_HISTORY_MODES = ("backfill", "incremental", "history")
+
+_COVERED_FROM_SQL = """
+SELECT min(window_start) AS covered_from
+FROM etl.pull_run
+WHERE source_id = %s
+  AND mode   = ANY(%s)
+  AND status = ANY(%s)
+  AND window_start IS NOT NULL
+  AND (%s::text IS NULL OR dataset = %s)
+  AND NOT (dataset = ANY(%s))
+"""
+
+
+def history_covered_from(
+    conn: psycopg.Connection,
+    source_id: str,
+    *,
+    dataset: str | None = None,
+    exclude: tuple[str, ...] = (),
+) -> datetime | None:
+    """The oldest date any completed incident or history pull asked for.
+
+    `dataset` narrows it to one dataset and `exclude` leaves some out: a city
+    with older datasets (HISTORY_DATASETS) tracks how far each one has got
+    separately from its current dataset.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            _COVERED_FROM_SQL,
+            (
+                source_id,
+                list(_HISTORY_MODES),
+                list(_COMPLETED_STATUSES),
+                dataset,
+                dataset,
+                list(exclude),
+            ),
+        )
+        row = cur.fetchone()
+    return row["covered_from"] if row else None
+
+
+def history_slices(
+    covered_from: datetime, floor: date, slice_months: int
+) -> list[tuple[datetime, datetime]]:
+    """Fetch windows from `covered_from` back to `floor`, newest first.
+
+    Newest first so the city's window list grows a year at a time as the load
+    proceeds, rather than with a hole in the middle. Padded a day each side,
+    as backfill_window is: chunk boundaries are UTC and the sources report
+    local dates, and re-reading a day is an upsert.
+    """
+    floor_ts = datetime(floor.year, floor.month, floor.day, tzinfo=timezone.utc)
+    slices = []
+    cursor = covered_from
+    while cursor > floor_ts:
+        # cursor + 1 day: after the padding the cursor sits on the last day of a
+        # month, and months_before counts that month as one of the n, which
+        # would quietly stretch every slice after the first by a month.
+        start = months_before(cursor + timedelta(days=1), slice_months)
+        since = max(floor_ts, start - timedelta(days=1))
+        slices.append((since, cursor + timedelta(days=1)))
+        cursor = since
+    return slices
+
+
+def history_remaining(
+    conn: psycopg.Connection, config: SourceConfig, slice_months: int | None = None
+) -> list[tuple[str, datetime, datetime]]:
+    """(dataset, since, until) for every slice still to load, newest first.
+
+    The city's current dataset first, back to its own start; then each older
+    dataset in HISTORY_DATASETS from its last day back to its first. Each part
+    resumes from its own completed pulls. None of it reaches past the city's
+    history_start_date.
+    """
+    floor = config.history_start_date
+    if floor is None:
+        return []
+    older = HISTORY_DATASETS.get(config.source_id, ())
+    covered = history_covered_from(
+        conn, config.source_id, exclude=tuple(d for d, _, _ in older)
+    )
+    if covered is None:
+        return []
+    months = slice_months or HISTORY_SLICE_MONTHS.get(
+        config.source_id, DEFAULT_HISTORY_SLICE_MONTHS
+    )
+    primary_floor = max(floor, PRIMARY_HISTORY_START.get(config.source_id, floor))
+    remaining = [
+        (config.incident_dataset, since, until)
+        for since, until in history_slices(covered, primary_floor, months)
+    ]
+    for dataset, start, end in older:
+        if end <= floor:
+            continue
+        # Never read: start from its last day, which history_slices pads by one.
+        cursor = history_covered_from(conn, config.source_id, dataset=dataset) or (
+            datetime(end.year, end.month, end.day, tzinfo=timezone.utc) - timedelta(days=1)
+        )
+        remaining.extend(
+            (dataset, since, until)
+            for since, until in history_slices(cursor, max(start, floor), months)
+        )
+    return remaining
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    """Load older slices of a city's published history until a budget runs out.
+
+    Refuses unless the registry says this instance may (history_enabled), so a
+    deploy or a stray `--all` cannot start a twenty-year load on its own. Gold is
+    rebuilt once at the end, and only if this run finished the city's history:
+    until then the six-hourly incremental's own refresh picks up each new year,
+    and rebuilding thirty windows after every slice would be most of the cost.
+    """
+    with connect() as conn:
+        config = SourceConfig.load(conn, args.city)
+        _require_enabled(config)
+        if not config.history_enabled and not args.force:
+            print(
+                f"history is not enabled for {config.source_id} on this instance. "
+                "Turn it on with:\n"
+                f"  python -m safety.etl.run enable --city {config.source_id} --history\n"
+                "or pass --force for a one-off run.",
+                file=sys.stderr,
+            )
+            return 1
+        if history_covered_from(conn, config.source_id) is None:
+            print(
+                f"{config.source_id} has no completed backfill yet; run "
+                f"`backfill --city {config.source_id}` first.",
+                file=sys.stderr,
+            )
+            return 1
+
+        remaining = history_remaining(conn, config, args.slice_months)
+        deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes else None
+        outcomes: list[dict[str, Any]] = []
+        for dataset, since, until in remaining[: args.max_slices or None]:
+            if deadline is not None and outcomes and time.monotonic() > deadline:
+                break
+            if outcomes and args.pause_seconds:
+                time.sleep(args.pause_seconds)
+            outcome = _ingest(
+                conn,
+                dataclasses.replace(config, incident_dataset=dataset),
+                mode="history",
+                since=since,
+                until=until,
+            )
+            outcomes.append(
+                {
+                    "dataset": dataset,
+                    "since": since.date().isoformat(),
+                    "until": until.date().isoformat(),
+                    "status": outcome["status"],
+                    "upserted": outcome.get("upserted", 0),
+                }
+            )
+            if outcome["status"] not in _COMPLETED_STATUSES:
+                # A blocked slice is a data problem worth a human; do not walk
+                # past it into older years and leave a hole behind.
+                break
+
+        left = history_remaining(conn, config, args.slice_months)
+        summary: dict[str, Any] = {
+            "city": config.source_id,
+            "history_start_date": str(config.history_start_date),
+            "slices_run": outcomes,
+            "slices_left": len(left),
+            "covered_from": str(history_covered_from(conn, config.source_id)),
+        }
+        if not left and outcomes and not args.no_gold:
+            summary.update(
+                gold.refresh_all(
+                    conn, config.source_id, PIPELINE_VERSION, include_hourly=False
+                )
+            )
+    print(json.dumps(summary, indent=2, default=str))
+    blocked = [o for o in outcomes if o["status"] not in _COMPLETED_STATUSES]
+    return 1 if blocked else 0
 
 
 def cmd_reprocess(args: argparse.Namespace) -> int:
@@ -484,7 +1084,6 @@ def cmd_reprocess(args: argparse.Namespace) -> int:
     """
     with connect() as conn:
         config = SourceConfig.load(conn, args.city)
-        adapter = get_adapter(config)
         with conn.cursor() as cur:
             if args.pull_id is None:
                 # Replaying the most recent snapshot is the common case by far,
@@ -494,7 +1093,11 @@ def cmd_reprocess(args: argparse.Namespace) -> int:
                     """
                     SELECT * FROM etl.pull_run
                     WHERE source_id = %s AND bronze_uri IS NOT NULL
-                      AND status = 'succeeded' AND mode <> 'boundary'
+                      AND status = 'succeeded'
+                      -- Incident pulls only. Census and boundary pulls write
+                      -- bronze too, and replaying a LODES archive through an
+                      -- incident adapter fails on the first byte.
+                      AND mode IN ('backfill', 'incremental')
                     ORDER BY pull_id DESC LIMIT 1
                     """,
                     (args.city,),
@@ -509,6 +1112,9 @@ def cmd_reprocess(args: argparse.Namespace) -> int:
             target = args.pull_id if args.pull_id is not None else "any pull"
             print(f"No stored bronze snapshot for {target}", file=sys.stderr)
             return 1
+        # A history pull may come from an older dataset with its own reader.
+        config = dataclasses.replace(config, incident_dataset=original["dataset"])
+        adapter = get_adapter(config)
         log.info(
             "replaying pull %s (%s)", original["pull_id"], original["bronze_uri"]
         )
@@ -593,6 +1199,12 @@ def cmd_census(args: argparse.Namespace) -> int:
     """
     with connect() as conn:
         config = SourceConfig.load(conn, args.city)
+        # The boundary has to exist before the blocks land: census.load_blocks
+        # trims the county prefilter down to the blocks actually inside the city,
+        # and without a boundary it cannot, leaving every citywide population
+        # figure describing the counties instead. Cheap and idempotent when the
+        # boundary is already stored.
+        ensure_boundary(conn, get_adapter(config), config)
         store = LocalBronzeStore()
         loaded: dict[str, int] = {}
 
@@ -665,7 +1277,11 @@ def cmd_census(args: argparse.Namespace) -> int:
         # The cell universe has to exist before anything can be apportioned into
         # it. On a first run it will not, and that is a `gold` refresh away --
         # which itself calls back into this, so the ordering resolves either way.
-        cells = gold.refresh_cell_exposure(conn, config.source_id)
+        #
+        # rebuild=True because the blocks were just reloaded: a gold refresh only
+        # tops up the cells that have no figure yet, which is the right default
+        # when the denominator has not moved and the wrong one here.
+        cells = gold.refresh_cell_exposure(conn, config.source_id, rebuild=True)
 
     print(
         json.dumps(
@@ -678,6 +1294,33 @@ def cmd_census(args: argparse.Namespace) -> int:
                     f"python -m safety.etl.run safety --city {args.city} "
                     "  # rebuild the ranking on the new denominator"
                 ),
+            },
+            indent=2,
+            default=str,
+        )
+    )
+    return 0
+
+
+def cmd_release_geometry(args: argparse.Namespace) -> int:
+    """Reclaim the census block polygons once the exposure layer is built.
+
+    A disk-space command, not a pipeline stage: nothing downstream needs it run,
+    and running it costs a TIGER re-download before the apportionment can be
+    redone. Worth it on a small volume, where six metros of block geometry is
+    the largest reference data in the database and the serving layer never reads
+    a byte of it.
+    """
+    with connect() as conn:
+        config = SourceConfig.load(conn, args.city)
+        released = census.release_block_geometry(conn, config.source_id)
+
+    print(
+        json.dumps(
+            {
+                "city": args.city,
+                "blocks_released": released,
+                "restore": f"python -m safety.etl.run census --city {args.city}",
             },
             indent=2,
             default=str,
@@ -735,7 +1378,9 @@ def _replay_reference(
 
 def cmd_gold(args: argparse.Namespace) -> int:
     with connect() as conn:
-        stats = gold.refresh_all(conn, args.city, PIPELINE_VERSION)
+        stats = gold.refresh_all(
+            conn, args.city, PIPELINE_VERSION, include_hourly=not args.skip_hourly
+        )
     print(json.dumps(stats, indent=2, default=str))
     return 0
 
@@ -751,9 +1396,13 @@ def cmd_safety(args: argparse.Namespace) -> int:
         anchor = gold.data_anchor(conn, args.city)
         if anchor is None:
             raise LookupError(f"no silver rows for '{args.city}'; nothing to rank")
-        windows = gold.resolve_windows(anchor)
+        windows = gold.city_windows(conn, args.city, anchor)
         rows, coverage = gold.refresh_safety_layer(conn, args.city, windows, args.scheme)
+        gold.write_legacy_windows(conn, args.city, ("cell_safety",))
         gold.refresh_city_snapshot(conn, args.city, PIPELINE_VERSION, coverage)
+        # The daily rollup carries the active scheme's weights, so a retuned
+        # scheme has to reach the custom date ranges too.
+        gold.refresh_cell_daily(conn, args.city, windows)
         conn.commit()
 
     print(
@@ -782,10 +1431,11 @@ def cmd_hourly(args: argparse.Namespace) -> int:
         anchor = gold.data_anchor(conn, args.city)
         if anchor is None:
             raise LookupError(f"no silver rows for '{args.city}'; nothing to rank")
-        windows = gold.resolve_windows(anchor)
+        windows = gold.city_windows(conn, args.city, anchor)
         rows, profile_rows, share = gold.refresh_hourly_layer(
             conn, args.city, windows, args.scheme
         )
+        gold.write_legacy_windows(conn, args.city, gold.HOURLY_TABLES)
         gold.refresh_city_snapshot(
             conn, args.city, PIPELINE_VERSION, hour_coverage_share=share
         )
@@ -900,7 +1550,21 @@ def cmd_safety_compare(args: argparse.Namespace) -> int:
         versus = cur.fetchone()
 
     if not summary or not summary["cells"]:
-        print(f"No overlapping cells for schemes '{args.a}' and '{args.b}'. Build both first.")
+        # The usual cause is now a deliberate one: a superseded scheme is
+        # disabled in schemes.csv so the pipeline stops keeping a second complete
+        # copy of the ranking, and `python -m safety.migrate` reclaims the rows it
+        # had written. Building one on demand is the supported way back -- `safety
+        # --scheme` takes a disabled scheme precisely so a comparison can be
+        # re-run -- with the caveat that the next migrate will prune it again.
+        print(
+            f"No overlapping cells for schemes '{args.a}' and '{args.b}'.\n"
+            f"Build both first, e.g.:\n"
+            f"  python -m safety.etl.run safety --city {args.city} --scheme {args.a}\n"
+            f"  python -m safety.etl.run safety --city {args.city} --scheme {args.b}\n"
+            "A scheme disabled in reference/severity/schemes.csv still builds when "
+            "named explicitly, but `python -m safety.migrate` prunes its rows again "
+            "afterwards; re-enable it there if you want it kept."
+        )
         return 1
 
     print(f"{args.city} res={args.res} window={args.window} track={args.track}")
@@ -924,6 +1588,167 @@ def cmd_safety_compare(args: argparse.Namespace) -> int:
         print(
             f"  {row['h3_index']:<18} {row['incident_count']:>5} "
             f"{row['pct_a']:>8.4f} {row['pct_b']:>8.4f} {row['shift']:>+8.4f}"
+        )
+    return 0
+
+
+def _readiness(conn: psycopg.Connection, config: SourceConfig) -> list[str]:
+    """What is still missing before this source can produce a correct map.
+
+    Checked rather than trusted, because the failure mode of enabling too early
+    is not a crash. A city with no crosswalk loads perfectly happily and files
+    every incident as product_category 'other', severity_bucket 'unknown' --
+    a complete, plausible, wrong map. That is the one outcome worth a gate.
+    """
+    problems: list[str] = []
+
+    if config.source_id not in ADAPTERS:
+        problems.append(
+            f"no adapter registered for '{config.source_id}'; implemented: "
+            f"{sorted(ADAPTERS)}"
+        )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*)::int AS n FROM reference.offense_crosswalk
+            WHERE source_id = %s AND crosswalk_version = %s
+            """,
+            (config.source_id, config.crosswalk_version),
+        )
+        mapped = cur.fetchone()["n"]
+    if not mapped:
+        problems.append(
+            f"no crosswalk rows for '{config.source_id}' at version "
+            f"'{config.crosswalk_version}'. Add "
+            f"reference/crosswalk/{config.source_id}_*.csv and re-run "
+            "`python -m safety.migrate`. Without it every incident is "
+            "classified 'other'/'unknown' and the map is quietly wrong"
+        )
+
+    if not config.state_fips:
+        problems.append(
+            f"no state_fips for '{config.source_id}', so neither the coverage "
+            "boundary nor the population denominator can be loaded"
+        )
+
+    return problems
+
+
+def cmd_enable(args: argparse.Namespace) -> int:
+    """Enable or disable a source, so onboarding never needs database access.
+
+    Exists because the alternative was telling an operator to run SQL, and a
+    hosted database often has no query console at all -- the advice was
+    unfollowable exactly where it was needed.
+    """
+    with connect() as conn:
+        config = SourceConfig.load(conn, args.city)
+        target = not args.off
+
+        if args.history:
+            # Per instance, since prod and dev keep separate registries: dev
+            # loads and measures first (docs/OPERATIONS.md).
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE reference.source_registry
+                       SET history_enabled = %s, updated_at = now()
+                     WHERE source_id = %s
+                    """,
+                    (target, config.source_id),
+                )
+            conn.commit()
+            state = "on" if target else "off"
+            print(
+                f"history load {state} for {config.source_id} ({config.city_name}), back to "
+                f"{config.history_start_date or 'its backfill floor'}."
+            )
+            if target:
+                print(
+                    "safety.ops loads it in time-boxed runs (the hourly safety-ops@ timer, or "
+                    "after a deploy), or now with:\n"
+                    f"  python -m safety.etl.run history --city {config.source_id}"
+                )
+            return 0
+
+        if target and not args.force:
+            problems = _readiness(conn, config)
+            if problems:
+                print(
+                    f"'{config.source_id}' ({config.city_name}) is not ready:",
+                    file=sys.stderr,
+                )
+                for problem in problems:
+                    print(f"  - {problem}", file=sys.stderr)
+                print(
+                    "\nFix these, or pass --force to enable anyway.",
+                    file=sys.stderr,
+                )
+                return 1
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE reference.source_registry
+                   SET enabled = %s, updated_at = now()
+                 WHERE source_id = %s
+                """,
+                (target, config.source_id),
+            )
+        conn.commit()
+
+    verb = "enabled" if target else "disabled"
+    print(f"{config.source_id} ({config.city_name}) {verb}.")
+    if target:
+        print(
+            "The scheduled job will pick it up on its next run -- a source that "
+            "has never been pulled is always due -- or load it now with:\n"
+            "  python -m safety.ops\n"
+            "\n"
+            "which works out what this city is missing (backfill, then the "
+            "population denominator, then the gold rollups) and runs it in "
+            "dependency order. Then check it with:\n"
+            f"  python -m safety.etl.run weights --city {config.source_id}"
+        )
+    return 0
+
+
+def cmd_weights(args: argparse.Namespace) -> int:
+    """Report which offenses are riding a derived weight rather than a published one.
+
+    The companion to `flag_unmapped_offenses`: that one surfaces gaps in the
+    crosswalk, this one surfaces gaps in the severity scale. Both matter more
+    with every city added, because the scale is a fixed 1977 survey of 204
+    criminal events and NIBRS has more offense codes than that -- so a new city
+    tends to arrive with offenses nothing in the table scores.
+    """
+    with connect() as conn:
+        scheme = args.scheme or gold.active_scheme(conn, args.city)
+        if scheme is None:
+            raise SystemExit(
+                f"no severity scheme active for '{args.city}'; run "
+                "python -m safety.migrate first"
+            )
+        coverage = gold.weight_coverage(conn, args.city, scheme)
+        rows = gold.unweighted_offenses(conn, args.city, scheme, args.limit)
+
+    print(f"{args.city} · scheme {scheme}")
+    print(f"  published-weight coverage: {coverage * 100:.1f}% of incidents")
+    if not rows:
+        print("  every offense carries a published weight.")
+        return 0
+
+    print(
+        f"\n  {len(rows)} offense(s) on a derived fallback, busiest first "
+        "(add a weight row keyed on nibrs_code to fix):"
+    )
+    print(f"  {'n':>8}  {'track':<12} {'nibrs':<6} {'bucket':<16} offense")
+    for row in rows:
+        print(
+            f"  {row['incidents']:>8}  {row['track']:<12} "
+            f"{row['nibrs_code'] or '-':<6} {row['severity_bucket']:<16} "
+            f"{row['raw_offense_text'] or row['raw_offense_code'] or '?'}"
         )
     return 0
 
@@ -974,12 +1799,132 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_since(value: str) -> datetime:
+    """`7d`, `12h`, `30m`, or an ISO date/time (UTC when no offset is given)."""
+    match = re.fullmatch(r"(\d+)([dhm])", value)
+    if match:
+        amount, unit = int(match[1]), match[2]
+        delta = {"d": timedelta(days=amount), "h": timedelta(hours=amount), "m": timedelta(minutes=amount)}[unit]
+        return datetime.now(timezone.utc) - delta
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected 7d / 12h / 30m or an ISO date, got {value!r}")
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def cmd_log(args: argparse.Namespace) -> int:
+    """Every pull and every ops step, oldest first, in one timeline.
+
+    `status` answers "what does the pipeline look like now"; this answers "what
+    has it been doing". Both manifests hold the durable record -- the journal
+    only has what ran under systemd, and an ops run started by hand printed to
+    a terminal that is long gone.
+    """
+    params = {
+        "since": args.since,
+        "city": args.city,
+        "failed": args.failed,
+    }
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT * FROM (
+                SELECT started_at, 'pull' AS kind, source_id,
+                       mode || ' ' || dataset AS what, status, duration_seconds,
+                       format('fetched %%s, rejected %%s, upserted %%s',
+                              records_fetched, records_rejected, records_upserted) AS detail,
+                       error
+                FROM etl.pull_run
+                UNION ALL
+                SELECT started_at, 'ops', source_id, task, status, duration_seconds,
+                       reason, error
+                FROM etl.ops_run
+            ) runs
+            WHERE (%(since)s::timestamptz IS NULL OR started_at >= %(since)s)
+              AND (%(city)s::text IS NULL OR source_id = %(city)s)
+              AND (NOT %(failed)s OR status IN ('failed', 'blocked', 'running'))
+            ORDER BY started_at
+            """,
+            params,
+        )
+        rows = cur.fetchall()
+
+    for row in rows:
+        duration = "" if row["duration_seconds"] is None else f"{row['duration_seconds']:.0f}s"
+        print(
+            f"{row['started_at'].astimezone(timezone.utc):%Y-%m-%d %H:%M:%S}Z  "
+            f"{row['kind']:<4}  {row['source_id'] or '-':<6}  {row['what']:<24}  "
+            f"{row['status']:<11}  {duration:>6}  {row['detail'] or ''}"
+        )
+        if row["error"]:
+            for line in row["error"].rstrip().splitlines():
+                print(f"    {line}")
+    print(f"-- {len(rows)} run(s)", file=sys.stderr)
+    return 0
+
+
 def _require_enabled(config: SourceConfig) -> None:
     if not config.enabled:
         raise SystemExit(
             f"source '{config.source_id}' is disabled in reference.source_registry. "
-            "Phase 1 covers Philadelphia only (design doc S14)."
+            "A city is enabled once its adapter, crosswalk and boundary have all "
+            "landed and its first backfill has been read -- see docs/PHASE2.md. "
+            f"Enable it with:\n"
+            f"  python -m safety.etl.run enable --city {config.source_id}\n"
+            "which checks the adapter and crosswalk are actually in place first. "
+            "Deliberately not a SQL statement: a hosted database often has no "
+            "query console, so that advice would be unfollowable where it is "
+            "needed."
         )
+
+
+def _window_name(value: str) -> str:
+    """argparse type for a gold window name; legacy names map to the new ones."""
+    value = gold.LEGACY_WINDOWS.get(value, value)
+    if not gold.WINDOW_PATTERN.match(value):
+        raise argparse.ArgumentTypeError(
+            f"'{value}' is not a window: use last_3m, last_6m, last_9m or last_<N>y"
+        )
+    return value
+
+
+def _add_all_flag(parser: argparse.ArgumentParser, due: bool = False) -> None:
+    """`--all` fans the command out over every enabled source, stalest first."""
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "run for every enabled source instead of one city, stalest first. "
+            "One city's failure does not stop the rest; the exit code is "
+            "non-zero if any failed"
+        ),
+    )
+    if due:
+        parser.add_argument(
+            "--due-only",
+            action="store_true",
+            help=(
+                "with --all, skip sources whose registry cadence says they cannot "
+                "have new data yet. Lets one frequent schedule cover six sources "
+                "on five cadences: the schedule decides how often to ask, the "
+                "registry decides who gets pulled. Exits 0 when nobody is due"
+            ),
+        )
+
+
+def _add_skip_hourly_flag(parser: argparse.ArgumentParser) -> None:
+    """`--skip-hourly` leaves the expensive, slowest-moving layers alone."""
+    parser.add_argument(
+        "--skip-hourly",
+        action="store_true",
+        help=(
+            "do not rebuild the time-of-day layers. They are the most expensive "
+            "part of a gold refresh and the slowest-moving -- both their windows "
+            "are 12 months or wider -- so a frequent incremental is better off "
+            "skipping them and letting `hourly` run on its own slower schedule"
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -989,11 +1934,15 @@ def build_parser() -> argparse.ArgumentParser:
     backfill = sub.add_parser("backfill", help="full trailing-window load")
     backfill.add_argument("--city", default="phl")
     backfill.add_argument("--months", type=int, default=None)
-    backfill.set_defaults(func=cmd_backfill)
+    _add_all_flag(backfill)
+    _add_skip_hourly_flag(backfill)
+    backfill.set_defaults(func=_fannable(cmd_backfill))
 
     incremental = sub.add_parser("incremental", help="pull since the last watermark")
     incremental.add_argument("--city", default="phl")
-    incremental.set_defaults(func=cmd_incremental)
+    _add_all_flag(incremental, due=True)
+    _add_skip_hourly_flag(incremental)
+    incremental.set_defaults(func=_fannable(cmd_incremental))
 
     reprocess = sub.add_parser("reprocess", help="replay a stored bronze snapshot")
     reprocess.add_argument("--city", default="phl")
@@ -1020,18 +1969,30 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="re-read the stored bronze snapshots instead of re-downloading",
     )
-    census_cmd.set_defaults(func=cmd_census)
+    _add_all_flag(census_cmd)
+    census_cmd.set_defaults(func=_fannable(cmd_census))
+
+    release_cmd = sub.add_parser(
+        "release-geometry",
+        help="drop census block polygons after the exposure layer is built (disk only)",
+    )
+    release_cmd.add_argument("--city", default="phl")
+    _add_all_flag(release_cmd)
+    release_cmd.set_defaults(func=_fannable(cmd_release_geometry))
 
     gold_cmd = sub.add_parser("gold", help="refresh gold rollups only")
     gold_cmd.add_argument("--city", default="phl")
-    gold_cmd.set_defaults(func=cmd_gold)
+    _add_all_flag(gold_cmd)
+    _add_skip_hourly_flag(gold_cmd)
+    gold_cmd.set_defaults(func=_fannable(cmd_gold))
 
     safety_cmd = sub.add_parser("safety", help="rebuild the safety ranking only")
     safety_cmd.add_argument("--city", default="phl")
     safety_cmd.add_argument(
         "--scheme", default=None, help="one severity scheme; default is every enabled one"
     )
-    safety_cmd.set_defaults(func=cmd_safety)
+    _add_all_flag(safety_cmd)
+    safety_cmd.set_defaults(func=_fannable(cmd_safety))
 
     hourly_cmd = sub.add_parser(
         "hourly", help="rebuild the time-of-day layers only (needs a current `safety`)"
@@ -1040,7 +2001,39 @@ def build_parser() -> argparse.ArgumentParser:
     hourly_cmd.add_argument(
         "--scheme", default=None, help="one severity scheme; default is every enabled one"
     )
-    hourly_cmd.set_defaults(func=cmd_hourly)
+    _add_all_flag(hourly_cmd)
+    hourly_cmd.set_defaults(func=_fannable(cmd_hourly))
+
+    history_cmd = sub.add_parser(
+        "history",
+        help="load older slices of a city's published history (registry history_start_date)",
+    )
+    history_cmd.add_argument("--city", required=True)
+    history_cmd.add_argument(
+        "--slice-months",
+        type=int,
+        default=None,
+        help=f"months per pull (default {DEFAULT_HISTORY_SLICE_MONTHS}; chi 3)",
+    )
+    history_cmd.add_argument(
+        "--max-slices", type=int, default=None, help="stop after this many pulls"
+    )
+    history_cmd.add_argument(
+        "--max-minutes",
+        type=float,
+        default=None,
+        help="start no new pull after this long (the one running finishes)",
+    )
+    history_cmd.add_argument(
+        "--pause-seconds", type=float, default=5.0, help="between pulls, for the portal's sake"
+    )
+    history_cmd.add_argument(
+        "--no-gold", action="store_true", help="never rebuild gold, even when the history is complete"
+    )
+    history_cmd.add_argument(
+        "--force", action="store_true", help="run even though history_enabled is false"
+    )
+    history_cmd.set_defaults(func=cmd_history)
 
     compare_cmd = sub.add_parser(
         "safety-compare", help="diff two severity schemes on the same data"
@@ -1049,12 +2042,57 @@ def build_parser() -> argparse.ArgumentParser:
     compare_cmd.add_argument("--a", required=True, help="baseline scheme version")
     compare_cmd.add_argument("--b", required=True, help="candidate scheme version")
     compare_cmd.add_argument("--res", type=int, default=8, choices=(8, 9))
-    compare_cmd.add_argument("--window", default="last_12m", choices=gold.TIME_WINDOWS)
+    compare_cmd.add_argument(
+        "--window",
+        default="last_1y",
+        type=_window_name,
+        help="last_3m, last_6m, last_9m or last_<N>y",
+    )
     compare_cmd.add_argument("--track", default="violent", choices=gold.TRACKS)
     compare_cmd.set_defaults(func=cmd_safety_compare)
 
+    enable_cmd = sub.add_parser(
+        "enable", help="enable a city (or --off to disable), checking it is ready first"
+    )
+    enable_cmd.add_argument("--city", required=True)
+    enable_cmd.add_argument(
+        "--off", action="store_true", help="disable instead of enabling"
+    )
+    enable_cmd.add_argument(
+        "--history",
+        action="store_true",
+        help="switch the full-history load on (or with --off, off) instead of the city",
+    )
+    enable_cmd.add_argument(
+        "--force",
+        action="store_true",
+        help="enable despite a missing crosswalk or adapter; the map will be wrong",
+    )
+    enable_cmd.set_defaults(func=cmd_enable)
+
+    weights_cmd = sub.add_parser(
+        "weights", help="which offenses ride a derived severity weight, not a published one"
+    )
+    weights_cmd.add_argument("--city", default="phl")
+    weights_cmd.add_argument(
+        "--scheme", default=None, help="default is the city's active scheme"
+    )
+    weights_cmd.add_argument("--limit", type=int, default=40)
+    _add_all_flag(weights_cmd)
+    weights_cmd.set_defaults(func=_fannable(cmd_weights))
+
     status = sub.add_parser("status", help="registry, recent pulls, data quality")
     status.set_defaults(func=cmd_status)
+
+    log_cmd = sub.add_parser("log", help="every pull and ops step, oldest first")
+    log_cmd.add_argument(
+        "--since", type=_parse_since, help="only runs started since 7d / 12h / 30m or an ISO date"
+    )
+    log_cmd.add_argument("--city", help="only this source_id")
+    log_cmd.add_argument(
+        "--failed", action="store_true", help="only failed, blocked or still-running runs"
+    )
+    log_cmd.set_defaults(func=cmd_log)
 
     return parser
 

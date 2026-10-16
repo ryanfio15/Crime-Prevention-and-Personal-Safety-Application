@@ -1,0 +1,18 @@
+{
+  "normal": {
+    "offense_id": "56000001", "report_number": "2024-000001", "offense_date": "2024-07-04T23:15:00.000",
+    "report_date_time": "2024-07-05T01:00:00.000", "nibrs_offense_code": "13B",
+    "nibrs_offense_code_description": "Simple Assault", "offense_category": "ASSAULT OFFENSES",
+    "block_address": "1XX BLOCK OF PIKE ST", "precinct": "West",
+    "latitude": "47.6097", "longitude": "-122.3422"
+  },
+  "redacted": {
+    "offense_id": "56000002", "offense_date": "2024-07-04T10:00:00.000",
+    "nibrs_offense_code": "11A", "nibrs_offense_code_description": "Rape",
+    "block_address": "REDACTED", "latitude": "REDACTED", "longitude": "REDACTED"
+  },
+  "not_an_offense": {
+    "offense_id": "56000003", "offense_date": "2024-07-04T10:00:00.000",
+    "nibrs_offense_code": "999", "latitude": "47.6", "longitude": "-122.3"
+  }
+}

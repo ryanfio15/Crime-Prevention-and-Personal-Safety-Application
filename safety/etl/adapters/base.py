@@ -39,11 +39,24 @@ class SourceConfig:
     # (safety/etl/census.py). NULL for a city that has had no census load.
     state_fips: str | None
     county_fips: list[str] | None
+    # TIGER/Line PLACE code backing the coverage polygon, resolved by name on
+    # the first boundary load (safety/etl/boundary.py). NULL for a city whose
+    # boundary comes from its own portal, as Philadelphia's does.
+    place_fips: str | None
     attribution_text: str
     terms_url: str | None
     freshness_note: str | None
     location_precision_note: str | None
+    # S12 prose that differs per source rather than per product. The first is the
+    # dominant caveat on the hourly view: Philadelphia publishes a dispatch time,
+    # Seattle an actual offence start time.
+    occurrence_basis_note: str | None
+    denominator_examples_note: str | None
     enabled: bool
+    # How far back `safety.etl.run history` loads the city's published record
+    # (migration 018), and whether it may run on this instance at all.
+    history_start_date: date | None = None
+    history_enabled: bool = False
 
     @classmethod
     def load(cls, conn: psycopg.Connection, source_id: str) -> SourceConfig:
@@ -106,6 +119,17 @@ class SourceAdapter(ABC):
     """Base class for per-source connectors."""
 
     api_type: ClassVar[str]
+
+    # F13: how a withdrawal reconcile (safety/etl/withdrawn.py) maps what
+    # fetch_incidents(since, until) re-reads onto silver. 'occurred' =
+    # silver.occurred_local_date, 'reported' = the UTC date of silver.reported_at;
+    # None = never reconcile (the default: a new adapter must decide, with its
+    # upstream filter field in view).
+    reconcile_basis: ClassVar[str | None] = None
+    # Extra silver column whose values come from independent upstream requests
+    # (an empty one must not look like mass withdrawal); the month of the basis
+    # date is always a stratum.
+    reconcile_stratum: ClassVar[str | None] = None
 
     def __init__(self, config: SourceConfig) -> None:
         self.config = config

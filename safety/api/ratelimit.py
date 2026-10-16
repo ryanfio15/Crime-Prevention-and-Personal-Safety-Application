@@ -1,28 +1,44 @@
 """Per-client request limiting for the public API.
 
-This replaces the nginx `limit_req` zones the self-hosted deployment used. On a
-platform host there is no proxy layer of our own to configure, and the control
-still has to exist somewhere: the API has no authentication, and
-`GET /api/v1/cells` assembles the whole city's hexagon layer as one GeoJSON
-document (`safety/api/main.py:184`). The in-process cache in front of it
-(`main.py:91-113`) absorbs repeated *identical* requests, but `bbox` and
-`min_count` are free-form query parameters and the cache holds 256 entries
-before clearing, so walking those parameters defeats it and puts every request
-back on the database.
+This is the second of two layers. On the host deployment, nginx's `limit_req`
+zones are the first: the prod and dev sites (`/etc/nginx/sites-available/safety`
+and `deploy/nginx/safety-dev.conf`) apply the same two zones below per remote
+address before a request reaches uvicorn. This in-process copy exists because
+the API has no authentication and `GET /api/v1/cells` assembles the whole
+city's hexagon layer as one GeoJSON document (`cells()` in safety/api/main.py),
+so the control has to hold wherever the app runs -- including behind a proxy we
+do not configure (the Docker image, below), or if a request reaches uvicorn
+without passing through nginx's zones.
+
+The response cache in front of `/cells` (`cached()` in main.py, an LRU bounded
+by entry count and a byte budget) absorbs repeated *identical* requests, but
+`bbox` and `min_count` are free-form query parameters, so walking them still
+reaches the database. The limit is what bounds that.
 
 Two zones, because the endpoints are not equally expensive:
 
     GET /api/v1/cells   2 r/s, burst 10   the full-city layer document
     /api/v1/ (rest)     10 r/s, burst 20  cheap, cached, ~5 per page load
 
-The split is by exact path first, then prefix, which mirrors how nginx chose
+The split is by exact path first, then prefix, which mirrors how nginx chooses
 between `location = /api/v1/cells` and `location /api/v1/`: `/cells/ring` and
 `/cells/lookup` land in the loose zone rather than the tight one.
 
 The frontend refetches the layer only on a window, category or resolution change
-(`web/app.js:693-707`) and never on pan or zoom, so a person working the
-controls cannot reach the tight ceiling; burst 10 covers clicking through every
-category in one go. Static assets and `/docs` are not limited at all.
+and never on pan or zoom, so a person working the controls cannot reach the
+tight ceiling; burst 10 covers clicking through every category in one go.
+Static assets and `/docs` are not limited at all.
+
+Who the client is. Buckets are keyed on `scope["client"]`, the address uvicorn
+resolved, never on a header. On the host, uvicorn runs with
+`--proxy-headers --forwarded-allow-ips=127.0.0.1`
+(deploy/systemd/safety-api@.service): nginx appends its peer to
+X-Forwarded-For, and uvicorn walks that list from the right, skipping trusted
+hops, so `scope["client"]` is nginx's real `$remote_addr`. The Docker image
+(Dockerfile) instead trusts `${FORWARDED_ALLOW_IPS:-*}`; with `*` uvicorn takes
+the first X-Forwarded-For element, so the per-client limit there is only as
+trustworthy as the platform proxy's guarantee that it overwrites the header.
+Set FORWARDED_ALLOW_IPS to the platform proxy's address wherever it is known.
 
 Deliberately not carried over: nginx's `limit_conn` (20 concurrent sockets per
 address). Connection-level limiting belongs in a proxy that owns the socket, not
@@ -38,6 +54,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import OrderedDict
 from typing import Any
 
 from starlette.responses import JSONResponse
@@ -51,25 +68,28 @@ _API_RATE, _API_BURST = 10.0, 20
 _CELLS_PATH = "/api/v1/cells"
 _API_PREFIX = "/api/v1/"
 
-# Bucket state keyed by (client, zone). Cleared wholesale rather than evicted
-# entry by entry, matching the cache in main.py -- a clear hands everyone a full
-# bucket, which errs toward letting traffic through rather than blocking it.
-_buckets: dict[tuple[str, str], tuple[float, float]] = {}
+# Bucket state keyed by (client, zone), least recently used first. Bounded by
+# evicting the oldest entries one at a time: clearing the whole dict when it
+# filled up handed every client -- including one mid-burst -- a fresh bucket, so
+# anyone able to present 4096 addresses could reset everyone's limit at will.
+# An evicted client is one that has not been seen for longest, so it would have
+# refilled most of its bucket anyway.
+#
+# No lock: the middleware runs only on the event loop thread, and nothing
+# between a read and the write that follows it awaits.
+_buckets: OrderedDict[tuple[str, str], tuple[float, float]] = OrderedDict()
 _MAX_TRACKED_CLIENTS = 4096
 
 
 def _client_key(scope: Scope) -> str:
-    """Identify the caller, preferring the proxy's view of the origin address.
+    """The caller's address as uvicorn resolved it.
 
-    Only trustworthy because the container is reachable only through the
-    platform's proxy and uvicorn runs with `--proxy-headers`; a directly
-    reachable process could be handed any value here.
+    nginx appends its view of the peer to X-Forwarded-For, and uvicorn
+    (--proxy-headers --forwarded-allow-ips=127.0.0.1) walks that list from
+    the right, skipping trusted hops, and writes the first untrusted address
+    into scope["client"]. The *first* XFF element is whatever the client
+    sent, so keying on it let anyone spend another address's bucket.
     """
-    for name, value in scope.get("headers", []):
-        if name == b"x-forwarded-for":
-            first = value.decode("latin-1").split(",")[0].strip()
-            if first:
-                return first
     client = scope.get("client")
     return client[0] if client else "unknown"
 
@@ -91,10 +111,15 @@ def _consume(key: tuple[str, str], rate: float, capacity: int) -> float:
     tokens = min(float(capacity), tokens + (now - last) * rate)
     if tokens >= 1.0:
         _buckets[key] = (tokens - 1.0, now)
-        return 0.0
+        wait = 0.0
+    else:
+        _buckets[key] = (tokens, now)
+        wait = (1.0 - tokens) / rate
 
-    _buckets[key] = (tokens, now)
-    return (1.0 - tokens) / rate
+    _buckets.move_to_end(key)
+    while len(_buckets) > _MAX_TRACKED_CLIENTS:
+        _buckets.popitem(last=False)
+    return wait
 
 
 class RateLimitMiddleware:
@@ -102,7 +127,7 @@ class RateLimitMiddleware:
 
     Written against the raw ASGI interface rather than BaseHTTPMiddleware: the
     check is a dict lookup and some arithmetic, and it runs on every request
-    including the platform's health probe.
+    under /api/v1/, the health check included.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -119,9 +144,6 @@ class RateLimitMiddleware:
             return
 
         name, rate, capacity = zone
-
-        if len(_buckets) >= _MAX_TRACKED_CLIENTS:
-            _buckets.clear()
 
         wait = _consume((_client_key(scope), name), rate, capacity)
         if wait > 0.0:

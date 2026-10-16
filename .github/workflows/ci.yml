@@ -1,0 +1,231 @@
+# The gate for continuous deployment on the home server: the auto deployer
+# (deploy/autodeploy.sh) installs a pushed commit only once the check run named
+# `ci` on it has concluded `success`. The job id and name are therefore part of
+# that contract -- rename them and nothing deploys -- and there is no matrix,
+# because a matrix would publish `ci (x)` check runs instead of `ci`.
+name: ci
+
+on:
+  push:
+    # remediation/** so review-loop branches are tested on every push, before
+    # anything is fast-forwarded to testing (which deploys dev). The deployer
+    # only reads check runs on the head of main/testing, so runs on other
+    # branches do not change what deploys.
+    branches: [main, testing, "remediation/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    # The same image docker-compose.yml runs, so migrations are exercised
+    # against the PostGIS they will meet in production.
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_USER: safety
+          POSTGRES_PASSWORD: safety_ci_pw
+          POSTGRES_DB: safety
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U safety -d safety"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # safety/config.py defaults to 55432, the port docker-compose.yml
+      # publishes locally; the service container is on the standard one.
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5432"
+      # Every step runs as the non-superuser owner role the host's instances use
+      # (docs/DEPLOY.md "Database roles"). Only the steps that build the host's
+      # starting state override this with POSTGRES_USER=safety, and the superuser
+      # applies only main's migrations -- what the host already has. Every
+      # migration this branch adds is applied as safety_app, so one (or any
+      # runtime path) that quietly needs superuser fails here, not at deploy.
+      POSTGRES_USER: safety_app
+      POSTGRES_PASSWORD: safety_app_ci_pw
+      POSTGRES_DB: safety
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Byte-compile
+        run: python -m compileall -q safety
+      # Importing the entry points catches a missing dependency or a broken
+      # module-level statement that compileall cannot see.
+      - name: Import entry points
+        run: python -c "import safety.api.main, safety.migrate, safety.etl.run"
+      - name: Unit tests (no database)
+        run: python -m pytest -q -m "not db"
+      # The shell expands the glob: Node 22's `node --test <dir>` treats a
+      # directory argument as a module path, not a folder to search.
+      - name: JS unit tests
+        run: |
+          node --check web/app.js
+          node --check web/html.js
+          node --check web/windows.js
+          node --test tests/js/*.test.mjs
+      - name: Migrate CLI parses
+        run: python -m safety.migrate --help
+      # One file per bash -n: given several, it parses the first and treats the
+      # rest as that script's arguments.
+      - name: Deploy scripts parse
+        run: for f in deploy/*.sh deploy/lib/*.sh deploy/git-hooks/*; do bash -n "$f"; done
+      - name: Shellcheck deploy scripts
+        run: shellcheck deploy/*.sh deploy/lib/*.sh deploy/git-hooks/*
+      # As the superuser, and with main's own code: on the host every object
+      # main's migrations created was created by `safety`, and the role switch
+      # has to *transfer* them, so CI starts from exactly that shape. This
+      # branch's new migrations are applied later, as safety_app (P2).
+      - name: Migrate main's schema as the superuser (host shape)
+        env:
+          POSTGRES_USER: safety
+          POSTGRES_PASSWORD: safety_ci_pw
+        run: |
+          git fetch --quiet --depth=1 origin main
+          git worktree add --quiet --detach "$RUNNER_TEMP/base" FETCH_HEAD
+          py=python
+          if ! cmp -s requirements.txt "$RUNNER_TEMP/base/requirements.txt"; then
+            python -m venv "$RUNNER_TEMP/base-venv"
+            "$RUNNER_TEMP/base-venv/bin/pip" install --quiet -r "$RUNNER_TEMP/base/requirements.txt"
+            py="$RUNNER_TEMP/base-venv/bin/python"
+          fi
+          (cd "$RUNNER_TEMP/base" && "$py" -m safety.migrate)
+          # The superuser applied exactly main's migrations, nothing of this branch.
+          n=$(PGPASSWORD=safety_ci_pw psql -h 127.0.0.1 -U safety -d safety -X -Atc "select count(*) from public.schema_migration")
+          want=$(ls "$RUNNER_TEMP/base/db/migrations"/*.sql | wc -l)
+          test "$n" = "$want" || { echo "::error title=Base schema::$n migrations recorded, main has $want"; exit 1; }
+          echo "::notice title=Base schema::main $(git rev-parse --short FETCH_HEAD): $want migrations applied as the superuser"
+      # The host's silver partitions were created by the superuser too.
+      - name: Create superuser-owned partitions (host shape)
+        env:
+          POSTGRES_USER: safety
+          POSTGRES_PASSWORD: safety_ci_pw
+        # `with`, not connect().__enter__(): connect() is a generator context
+        # manager, and once the unreferenced manager is collected its finally
+        # closes the connection under you.
+        run: |
+          python - <<'PY'
+          from safety.db import connect, ensure_partitions
+          with connect() as conn:
+              ensure_partitions(conn, "phl", [2024, 2025])
+              conn.commit()
+          PY
+      # The host's instances move from the bootstrap superuser to a per-environment
+      # owner role with exactly this script (deploy/db-isolate.sh, docs/DEPLOY.md
+      # "Database roles"). Run it here against the same PostGIS image -- which, like
+      # the host, has postgis_topology and the tiger geocoder in POSTGRES_DB -- twice,
+      # because the host run is retried on lock timeouts and must be idempotent.
+      - name: Transfer ownership to the non-superuser role
+        env:
+          PGPASSWORD: safety_ci_pw
+          PGHOST: 127.0.0.1
+          PGUSER: safety
+        run: |
+          psql -d safety -v ON_ERROR_STOP=1 -X -q <<'SQL'
+          CREATE ROLE safety_app LOGIN PASSWORD 'safety_app_ci_pw' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+          ALTER DATABASE safety OWNER TO safety_app;
+          REVOKE CONNECT, TEMPORARY ON DATABASE safety FROM PUBLIC;
+          GRANT CONNECT, TEMPORARY ON DATABASE safety TO safety_app;
+          SQL
+          for pass in 1 2; do
+            out=$(psql -d safety -X -q -At -v from_role=safety -v to_role=safety_app -f deploy/db/transfer-ownership.sql)
+            echo "pass $pass report: ${out:-<empty>}"
+            [ -z "$out" ] || { echo "objects still owned by safety"; exit 1; }
+          done
+          test "$(psql -d safety -X -Atc "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname in ('public','reference','etl','silver','gold') and c.relkind in ('r','p','v','m','S') and c.relowner = 'safety'::regrole and not exists (select 1 from pg_depend d where d.classid='pg_class'::regclass and d.objid=c.oid and d.deptype='e')")" = 0
+          test "$(psql -d safety -X -Atc "select count(*) from pg_namespace where nspname in ('topology','tiger','tiger_data') and nspowner <> 'safety'::regrole")" = 0
+          test "$(PGUSER=safety_app PGPASSWORD=safety_app_ci_pw psql -d safety -X -Atc 'select rolsuper from pg_roles where rolname = current_user')" = f
+      # As safety_app (job env): the host's real case -- the first migrate run by
+      # the new owner role over a schema transferred from the superuser, which
+      # applies whatever this branch adds on top of main.
+      - name: Migrate as the app role (this branch's new migrations)
+        run: |
+          out=$(python -m safety.migrate)
+          printf '%s\n' "$out"
+          applied=$(printf '%s\n' "$out" | sed -n 's/^Applied [0-9]* migration(s): //p')
+          echo "::notice title=Applied as safety_app::${applied:-none}"
+      # Twice: every deploy re-runs migrate against a database that is already
+      # up to date, so this pass is the one that matches production.
+      - name: Migrate again (idempotency)
+        run: python -m safety.migrate
+      # P2: the app role must not be able to apply a migration that needs
+      # superuser, so a branch's new migration that quietly needs it fails here,
+      # not at deploy. A local worktree of HEAD plus one CREATE ROLE migration;
+      # each migration is its own transaction, so the failed file leaves nothing.
+      - name: App role cannot apply a superuser-only migration (P2 self-test)
+        run: |
+          git worktree add --quiet --detach "$RUNNER_TEMP/p2probe" HEAD
+          printf 'CREATE ROLE p2_probe;\n' > "$RUNNER_TEMP/p2probe/db/migrations/999_p2_probe.sql"
+          if (cd "$RUNNER_TEMP/p2probe" && python -m safety.migrate) > "$RUNNER_TEMP/p2probe.log" 2>&1; then
+            echo "::error title=P2 self-test::a CREATE ROLE migration was applied as safety_app"; exit 1
+          fi
+          grep -q 'permission denied to create role' "$RUNNER_TEMP/p2probe.log" ||
+            { cat "$RUNNER_TEMP/p2probe.log"; echo "::error title=P2 self-test::failed for another reason"; exit 1; }
+          echo "P2 self-test: permission denied to create role (expected)"
+          test "$(PGPASSWORD=safety_ci_pw psql -h 127.0.0.1 -U safety -d safety -X -Atc "select (select count(*) from public.schema_migration where filename = '999_p2_probe.sql') + (select count(*) from pg_roles where rolname = 'p2_probe')")" = 0
+          git worktree remove --force "$RUNNER_TEMP/p2probe"
+      # Failures are also raised as annotations, which show on the run page
+      # (and through the check-runs API) without access to the raw logs.
+      - name: Database tests
+        env:
+          SAFETY_TEST_DB: "1"
+        run: |
+          set -o pipefail
+          python -m pytest -q -m db -rfE --tb=line 2>&1 | tee "$RUNNER_TEMP/db-tests.log" || {
+            grep -E '^(FAILED|ERROR) |^/.*:[0-9]+: |^E ' "$RUNNER_TEMP/db-tests.log" | head -10 |
+              while IFS= read -r line; do echo "::error title=Database tests::$line"; done
+            exit 1
+          }
+      # Empty manifests, but it runs the query with every filter combination.
+      - name: Run log query
+        run: |
+          python -m safety.etl.run log
+          python -m safety.etl.run log --since 7d --city phl --failed
+      # The same deploy/lib/smoke.sh the deployer runs against the candidate
+      # and the live port, so a commit that would be rejected on the server is
+      # red here first. "-": nothing is deployed, so no commit to match.
+      - name: Start the app and smoke it
+        run: |
+          python -m uvicorn safety.api.main:app --host 127.0.0.1 --port 8000 \
+            > "$RUNNER_TEMP/uvicorn.log" 2>&1 &
+          deploy/lib/smoke.sh 8000 - || { cat "$RUNNER_TEMP/uvicorn.log"; exit 1; }
+      # Migrations run before a deploy can be rejected and are not undone by a
+      # rollback, so the previous release has to keep working on the migrated
+      # schema (expand/contract, docs/DEPLOY.md). This serves the push's
+      # previous commit against the database the new one just migrated.
+      # Advisory: the previous commit may itself be a broken one that never
+      # deployed (a revert's parent), so a failure warns instead of gating.
+      - name: Previous commit on the migrated schema (advisory)
+        if: >-
+          github.event_name == 'push' &&
+          github.event.before != '0000000000000000000000000000000000000000'
+        continue-on-error: true
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if ! git fetch --quiet --depth=1 origin "$BEFORE"; then
+            echo "::warning::previous commit $BEFORE is not fetchable; skipped"
+            exit 0
+          fi
+          git worktree add --quiet --detach "$RUNNER_TEMP/before" "$BEFORE"
+          python -m venv "$RUNNER_TEMP/before-venv"
+          "$RUNNER_TEMP/before-venv/bin/python" -m pip install --quiet -r "$RUNNER_TEMP/before/requirements.txt"
+          (cd "$RUNNER_TEMP/before" &&
+            exec "$RUNNER_TEMP/before-venv/bin/python" -m uvicorn safety.api.main:app \
+              --host 127.0.0.1 --port 8002) > "$RUNNER_TEMP/before.log" 2>&1 &
+          if ! deploy/lib/smoke.sh 8002 -; then
+            cat "$RUNNER_TEMP/before.log"
+            echo "::warning::previous commit $BEFORE does not serve on this commit's schema"
+            exit 1
+          fi

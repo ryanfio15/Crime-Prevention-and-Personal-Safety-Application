@@ -57,3 +57,11 @@ nscs_v1,non_violent,nibrs_code,90B,0.31,true,"A person is a vagrant. That is, he
 nscs_v1,non_violent,severity_bucket,part_i_property,9.67,false,,Derived: median of the sourced part_i_property weights in this scheme.
 nscs_v1,non_violent,severity_bucket,part_ii,4.12,false,,Derived: median of the sourced part_ii weights on the non-violent track.
 nscs_v1,non_violent,severity_bucket,unknown,4.12,false,,Derived: same as the part_ii fallback.
+nscs_v1,violent,nibrs_code,11B,25.85,false,,"Derived, not published: NSCS Table 29 scores forcible rape but no separate sodomy vignette. Scored as the 11A item on the ground that the survey's rape score is for the act without additional injury, which is the same construction. Revisit with the source document."
+nscs_v1,violent,nibrs_code,11C,25.85,false,,"Derived, not published: same rule as 11B. Sexual assault with an object has no NSCS vignette of its own."
+nscs_v1,non_violent,nibrs_code,23A,3.59,false,,"Derived, not published: NSCS scores theft by dollar value rather than by method, and publishes no pocket-picking vignette. Scored as the mid-range theft item already used for 23H."
+nscs_v1,non_violent,nibrs_code,23B,3.59,false,,"Derived, not published: same rule as 23A. Purse-snatching has no separate vignette."
+nscs_v1,non_violent,nibrs_code,23C,3.59,false,,"Derived, not published: same rule as 23A. Shoplifting is arguably below the mid-range theft item; it is not scored lower here because the survey gives no basis for choosing how much lower."
+nscs_v1,non_violent,nibrs_code,23D,3.59,false,,"Derived, not published: same rule as 23A. Theft from a building has no separate vignette; the $100-from-outside-a-building item behind 23H is the closest."
+nscs_v1,non_violent,nibrs_code,23E,3.59,false,,"Derived, not published: same rule as 23A. Coin-machine theft has no separate vignette."
+nscs_v1,non_violent,nibrs_code,23G,3.59,false,,"Derived, not published: same rule as 23A. Theft of motor vehicle parts has no separate vignette; note this is parts, not the vehicle (240, 10.82)."

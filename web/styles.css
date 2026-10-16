@@ -15,6 +15,7 @@
   --text-primary:   #0b0b0b;
   --text-secondary: #52514e;
   --text-muted:     #898781;
+  --danger:         #b91c1c;   /* errors; 6.1:1 on --page, 6.3:1 on --surface-1 */
   --gridline:       #e1e0d9;
   --baseline:       #c3c2b7;
   --border:         rgba(11, 11, 11, 0.10);
@@ -156,19 +157,6 @@ select:focus-visible, .btn:focus-visible {
 }
 .btn[aria-pressed="true"] { border-color: var(--series-1); color: var(--series-1); }
 
-<<<<<<< Updated upstream
-/* Time-of-day control. Follows the city's clock unless an hour is typed in;
-   the Now / All hours buttons show which of the two is driving the map. */
-.hour-input { display: flex; align-items: center; gap: 8px; }
-.hour-input .linkish[aria-pressed="true"] { color: var(--series-1); font-weight: 600; }
-
-.hour-input input[type="time"] {
-  min-height: 32px;
-  padding: 5px 9px;
-  border: 1px solid rgba(11, 11, 11, 0.28);
-  border-radius: 8px;
-  background: var(--page);
-=======
 /* Date range. Two calendar inputs on one line, the preset list beneath them, so
    the field reads as one choice of period. */
 .range-inputs { display: flex; align-items: center; gap: 6px; }
@@ -200,18 +188,9 @@ select:focus-visible, .btn:focus-visible {
   font-size: 20px;
   font-weight: 600;
   line-height: 32px;
->>>>>>> Stashed changes
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
 }
-<<<<<<< Updated upstream
-.hour-input input[type="time"]:focus-visible {
-  outline: 2px solid var(--series-1);
-  outline-offset: 1px;
-}
-.field-hour[aria-disabled="true"] { opacity: 0.55; }
-.field-hour[aria-disabled="true"] input { pointer-events: none; }
-=======
 .field-hour[aria-disabled="true"] .hour-trend { display: none; }
 
 /* This hour against the average hour: an arrow, the day's 24 blocks with the
@@ -244,7 +223,6 @@ select:focus-visible, .btn:focus-visible {
   background: var(--gridline);
 }
 .trend-bars i[data-now] { width: 5px; background: var(--text-primary); }
->>>>>>> Stashed changes
 
 .field-note {
   font-size: 11px;
@@ -312,6 +290,13 @@ select:focus-visible, .btn:focus-visible {
   z-index: 3;
 }
 
+/* A failed load stays on screen (app.js loadLayer) and must read as an error,
+   not as a stuck "Loading". */
+.loading.is-error {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 /* ---------------------------------------------------------------- legend --- */
 
 .legend {
@@ -375,23 +360,6 @@ select:focus-visible, .btn:focus-visible {
   background: var(--seq-zero);
   border: 1px solid var(--baseline);
 }
-
-/* --------------------------------------------------------------- tooltip --- */
-
-.map-tooltip {
-  position: absolute;
-  z-index: 4;
-  pointer-events: none;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: rgba(252, 252, 251, 0.97);
-  font-size: 12.5px;
-  white-space: nowrap;
-  transform: translate(-50%, calc(-100% - 12px));
-}
-.map-tooltip b { font-variant-numeric: tabular-nums; }
-.map-tooltip small { display: block; color: var(--text-muted); font-size: 11px; }
 
 /* ---------------------------------------------------------- detail panel --- */
 

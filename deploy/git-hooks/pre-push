@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# A push to main deploys prod, so main only ever moves forward to exactly what
+# is already on origin/testing -- the commit dev has been running. Anything
+# else (a local commit, a force-push, a delete, a branch other than testing)
+# is refused here; deploy/promote.sh is the normal way to do the allowed one.
+# Installed by deploy/setup-worktrees.sh.
+set -euo pipefail
+zero=0000000000000000000000000000000000000000
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ "$remote_ref" = refs/heads/main ] || continue
+    if [ "$local_sha" = "$zero" ]; then
+        echo "refusing to delete main" >&2; exit 1
+    fi
+    testing=$(git rev-parse --verify --quiet refs/remotes/origin/testing) || testing=
+    if [ "$local_sha" != "$testing" ]; then
+        echo "refusing to push $local_ref to main: main may only move to origin/testing (${testing:0:7})." >&2
+        echo "push to testing first, let dev deploy it, then run deploy/promote.sh" >&2
+        exit 1
+    fi
+    if [ "$remote_sha" != "$zero" ] && ! git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+        echo "refusing to push to main: not a fast-forward of origin/main" >&2; exit 1
+    fi
+done
