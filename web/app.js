@@ -268,8 +268,10 @@ const state = {
   res: 8,
   scale: "safety",
   track: "violent",
-  // null = all hours. Otherwise the local hour block 0-23.
+  // The city's current local hour block 0-23, or null where the window or cell
+  // size has no hourly layer. Set by syncHourAvailability from the clock.
   hour: null,
+<<<<<<< Updated upstream
   // What drives `hour`: "now" follows the city's clock, "manual" is an hour
   // typed into the control, "all" is the time-of-day layer switched off.
   hourMode: "now",
@@ -278,6 +280,11 @@ const state = {
   // Los Angeles looking at Philadelphia at 15:00 is looking at 18:00 data.
   timezone: null,
   cityName: null,
+=======
+  // The city's 24-block profile behind the this-hour-vs-usual reading, with
+  // the request it answers so a stale one is never read: {key, counts}.
+  hourProfile: null,
+>>>>>>> Stashed changes
   selected: null,
   hovered: null,
   meta: null,
@@ -517,10 +524,20 @@ async function loadLayer({ quiet = false } = {}) {
     map.setPaintProperty("cells-outline", "line-width", outlineWidthExpression());
     renderLegend();
     renderTable();
+<<<<<<< Updated upstream
     // Only now is it known whether the hourly layer exists at all. If "Now"
     // asked for an hour the pipeline never built, fall back to all hours once
     // rather than leaving an empty layer on screen.
     const requestedHour = state.hour;
+=======
+    // Not awaited: the trend is a footnote to the layer, not part of it.
+    loadHourProfile();
+    // The city rate the safety headline is a share of has just moved, and so has
+    // the selected cell's own count if the category changed -- that control
+    // reloads the layer without reopening the panel.
+    if (state.detail) renderHeadlineStat(state.detail);
+    // Only now is it known whether the hourly layer exists at all.
+>>>>>>> Stashed changes
     syncHourAvailability();
     if (state.hour !== requestedHour) loadLayer({ quiet: true });
   } catch (error) {
@@ -691,7 +708,7 @@ function renderHourShare(detail) {
     state.hour === null ? "At this hour" : `At ${hourLabel(state.hour)}`;
 
   if (state.hour === null) {
-    value.textContent = "enter a time of day";
+    value.textContent = "hourly view not built for this range";
     return;
   }
 
@@ -759,7 +776,7 @@ function renderHours(detail) {
     $("d-hour-safety").textContent = dash;
     $("d-hour-delta").textContent = dash;
     $("d-hour-note").textContent =
-      "Enter a time of day to rank this cell within a single hour block.";
+      "The hourly view is built for the last-12-months range only.";
     return;
   }
 
@@ -1282,6 +1299,7 @@ function repaint() {
  */
 function syncHourAvailability() {
   const ok =
+<<<<<<< Updated upstream
     HOURLY_RESOLUTIONS.includes(state.res) && HOURLY_WINDOWS.includes(state.window);
   // Unknown until the first layer arrives; assume built rather than flash a
   // fallback on every page load.
@@ -1319,18 +1337,139 @@ function syncHourAvailability() {
     $("f-hour-note").textContent = "All hours";
   } else if (state.hourMode === "now") {
     $("f-hour-note").textContent = `Now${where} · ${hourLabel(state.hour)}`;
+=======
+    HOURLY_RESOLUTIONS.includes(state.res) && Boolean(currentPreset()?.hourly);
+  $("f-hour-field").setAttribute("aria-disabled", String(!ok));
+
+  // Always the clock: the hour follows the city's time wherever the hourly
+  // layer exists, and the map falls back to all hours where it does not.
+  state.hour = ok ? nowHour() : null;
+  renderClock();
+
+  if (!ok) {
+    $("f-hour-note").textContent =
+      currentPreset() || !HOURLY_RESOLUTIONS.includes(state.res)
+        ? "Hourly view not built at this cell size / window — map shows all hours."
+        : "Hourly view is built for the last-12-months range only — map shows all hours.";
+  } else if (state.meta && !state.meta.hour_known_share) {
+    // An empty layer and a quiet city look identical on the map. Say which.
+    $("f-hour-note").textContent = "No time-of-day data loaded — run the hourly rollup.";
+>>>>>>> Stashed changes
   } else {
-    $("f-hour-note").textContent = `Block ${hourLabel(state.hour)}`;
+    // Whose clock: the hour blocks are the city's local time, not the visitor's.
+    const city = state.cityRecord?.city_name;
+    $("f-hour-note").textContent = city ? `${city} time` : "";
   }
+  renderHourTrend();
   return ok;
 }
 
+<<<<<<< Updated upstream
 function setHourMode(mode, hour = null) {
   state.hourMode = mode;
   if (mode === "manual") state.hour = hour;
+=======
+/** The current hour block on the selected city's clock (web/hours.js). */
+const nowHour = () => cityHour(state.cityRecord?.timezone);
+
+/** The exact current time, to the minute, on the selected city's clock. */
+function renderClock() {
+  $("f-hour").textContent = cityTimeLabel(state.cityRecord?.timezone);
+}
+
+/** The hour changed under the map: redraw it and any open cell. */
+function refreshHour() {
+>>>>>>> Stashed changes
   syncHourAvailability();
   if (state.selected) selectCell(state.selected);
   loadLayer();
+}
+
+/** The /hours request the current controls imply, or null when no hour is shown. */
+function hourProfileParams() {
+  const preset = currentPreset();
+  if (state.hour === null || !preset?.hourly) return null;
+  return new URLSearchParams({
+    city: state.city,
+    window: preset.id,
+    res: String(state.res),
+    category: state.category,
+  });
+}
+
+/** Fetch the city's 24-block profile for the trend, once per distinct request. */
+async function loadHourProfile() {
+  const params = hourProfileParams();
+  const key = params?.toString();
+  if (!params || state.hourProfile?.key === key) {
+    renderHourTrend();
+    return;
+  }
+  try {
+    const response = await fetch(`${API}/hours?${params}`);
+    if (!response.ok) throw new Error(`hours request failed: ${response.status}`);
+    const body = await response.json();
+    state.hourProfile = { key, counts: body.counts };
+  } catch (error) {
+    console.error(error);
+    state.hourProfile = null;
+  }
+  renderHourTrend();
+}
+
+/** "Higher than usual for this time (+38%)": plain text. */
+function usualSentence(reading) {
+  const pct = `${Math.abs(Math.round(reading.change * 100))}%`;
+  return reading.direction === "up"
+    ? `Higher than usual for this time — ${pct} above the average hour`
+    : reading.direction === "down"
+      ? `Lower than usual for this time — ${pct} below the average hour`
+      : "About average for this time of day";
+}
+
+const TREND_ARROWS = { up: "↑", down: "↓", flat: "→" };
+
+/**
+ * Whether reported crime is up or down at this time of day, under the clock.
+ *
+ * The current hour block against the city's average hour, from the stored
+ * hourly profile -- what this time of day has historically looked like, not a
+ * live count. The 24-hour bars put the current block (dark) in context.
+ */
+function renderHourTrend() {
+  const box = $("f-hour-trend");
+  const key = hourProfileParams()?.toString();
+  if (!key || state.hourProfile?.key !== key) {
+    box.hidden = true;
+    return;
+  }
+  const counts = state.hourProfile.counts;
+  const reading = hourVsUsual(counts, state.hour);
+  box.hidden = false;
+  if (!reading) {
+    box.removeAttribute("data-direction");
+    box.textContent = "Too few incidents with a recorded hour to compare.";
+    return;
+  }
+  box.dataset.direction = reading.direction;
+  box.innerHTML = html`<span class="trend-arrow" aria-hidden="true">${
+    TREND_ARROWS[reading.direction]
+  }</span><span class="trend-bars" aria-hidden="true">${counts.map(
+    (n, hour) => html`<i style="height:${Math.max((n / reading.max) * 100, 6)}%"${
+      hour === state.hour ? html` data-now` : ""
+    } title="${hourLabel(hour)}: ${nf.format(n)}"></i>`
+  )}</span><span><b>${usualSentence(reading)}</b><br>Reported incidents citywide at ${hourLabel(
+    state.hour
+  )}, past 12 months.</span>`;
+}
+
+/* Keep the clock on the current minute, and move the map to the next hour
+   block when the time crosses into it. */
+function followClock() {
+  setInterval(() => {
+    renderClock();
+    if (state.hour !== null && nowHour() !== state.hour) refreshHour();
+  }, 5_000);
 }
 
 /**
@@ -1381,6 +1520,141 @@ function syncSafetyAvailability() {
   return ok;
 }
 
+<<<<<<< Updated upstream
+=======
+/**
+ * Fill the date controls from the city record (windows.js).
+ *
+ * Runs whenever the record arrives: on load, on a city switch, and when a
+ * refresh moves the data's newest day. Settles the dates first -- a carried
+ * preset becomes the new city's nearest one, a legacy ?window= link becomes its
+ * window's dates, nothing at all becomes the year up to today -- then clamps them
+ * to what this city holds and fills the preset list.
+ */
+function renderRangeControls() {
+  const city = state.cityRecord;
+  const windows = city?.windows ?? [];
+  const today = todayIso();
+
+  if (state.carryPreset) {
+    const { id, span } = state.carryPreset;
+    const chosen = pickWindow(windows, id, span, city?.default_window);
+    if (chosen) state.range = presetRange(chosen, today);
+    state.carryPreset = null;
+  } else if (!state.range) {
+    const linked = findWindow(windows, state.pendingWindow);
+    // The stored year rather than a year counted back from today: the stored
+    // one ends where the data does, so a computed year never matches it while
+    // the city publishes with any lag -- and only the stored one carries the
+    // hourly layer the time-of-day control opens on.
+    const year = findWindow(windows, DEFAULT_WINDOW);
+    state.range = linked
+      ? presetRange(linked, today)
+      : year ? presetRange(year, today) : defaultRange(today);
+  }
+  state.pendingWindow = null;
+
+  // The calendar starts on the city's oldest stored day. Before the city is
+  // rebuilt with the daily rollup there is no such day on the record and no
+  // custom range either; the presets still reach back as far as they go.
+  const min = city?.selectable_start ?? windows.at(-1)?.start ?? null;
+  for (const input of [$("f-from"), $("f-to")]) {
+    input.min = min ?? "";
+    input.max = today;
+  }
+
+  $("f-preset").replaceChildren(
+    new Option("Custom dates", "custom"),
+    ...windows.map((w) => new Option(w.partial ? `${w.label} (partial)` : w.label, w.id))
+  );
+  // Custom dates into a city that serves none: its default preset, not whichever
+  // preset the clamped dates happen to land on.
+  if (!city?.custom_range_resolutions?.length && !currentPreset()) {
+    const fallback =
+      findWindow(windows, city?.default_window) || findWindow(windows, DEFAULT_WINDOW);
+    if (fallback) state.range = presetRange(fallback, today);
+  }
+  setRange(clampRange(state.range, min, today));
+  syncActivityScope();
+}
+
+/** Select dates: state, controls and URL together. Does not reload. */
+function setRange(range) {
+  state.range = range;
+  $("f-from").value = range.from;
+  $("f-to").value = range.to;
+  $("f-preset").value = currentPreset()?.id ?? "custom";
+  const url = new URL(location.href);
+  url.searchParams.set("from", range.from);
+  url.searchParams.set("to", range.to);
+  url.searchParams.delete("window");
+  history.replaceState(null, "", url);
+}
+
+/** Whether the server ranks custom dates at this cell size for this city. */
+const customRangeServed = () =>
+  (state.cityRecord?.custom_range_resolutions ?? []).includes(state.res);
+
+/**
+ * Gate the date and category controls on what is served at this cell size.
+ *
+ * Same principle as syncHourAvailability and syncSafetyAvailability. At
+ * resolution 10 the layer exists only for the one- and two-year presets and
+ * the combined category, and custom dates are not served at all (there is no
+ * daily rollup that fine). Coerces the current selection rather than leaving
+ * one that is about to 400 -- the city's default preset is built at every
+ * resolution, so there is always something to fall back to.
+ *
+ * Every caller reloads the layer straight afterwards, so a coerced selection is
+ * picked up by that fetch rather than needing one of its own.
+ */
+function syncActivityScope() {
+  const city = state.cityRecord;
+  const windows = city?.windows ?? [];
+  const categories = activityCategories(state.res);
+  const custom = customRangeServed();
+
+  for (const option of $("f-preset").options) {
+    const win = findWindow(windows, option.value);
+    option.disabled = win ? !windowBuiltAt(win, state.res) : !custom;
+  }
+  $("f-from").disabled = !custom;
+  $("f-to").disabled = !custom;
+  for (const option of $("f-category").options) {
+    option.disabled = categories !== null && !categories.includes(option.value);
+  }
+
+  const preset = currentPreset();
+  if (state.range && (preset ? !windowBuiltAt(preset, state.res) : !custom)) {
+    const fallback =
+      findWindow(windows, city?.default_window) || findWindow(windows, DEFAULT_WINDOW);
+    if (fallback) setRange(presetRange(fallback, todayIso()));
+  }
+  if (categories && !categories.includes(state.category)) {
+    state.category = "all";
+    $("f-category").value = state.category;
+  }
+
+  const note = rangeNote(state.range, city, state.res);
+  $("f-window-note").textContent =
+    state.res === 10
+      ? `Only the 12-month and 2-year presets are built for cells this small. ${note}`.trim()
+      : note;
+  $("f-category-note").textContent = categories
+    ? "A cell this small is empty in most single categories."
+    : "";
+}
+
+/** The dates changed: re-gate the controls, then redraw the map and the panel. */
+function onRangeChange(range) {
+  setRange(clampRange(range, $("f-from").min || null, $("f-to").max || null));
+  syncActivityScope();
+  syncHourAvailability();
+  if (state.selected) selectCell(state.selected);
+  loadLayer();
+}
+
+>>>>>>> Stashed changes
 function wireControls() {
   $("f-window").onchange = (e) => {
     state.window = e.target.value;
@@ -1407,6 +1681,7 @@ function wireControls() {
     repaint();
   };
 
+<<<<<<< Updated upstream
   // Any minute within the hour selects that block and pins it, so the map stops
   // following the clock. The note beside the input echoes which block, so 20:45
   // is never ambiguous. Clearing the input goes back to following the clock.
@@ -1421,6 +1696,8 @@ function wireControls() {
   $("f-hour-now").onclick = () => setHourMode("now");
   $("f-hour-clear").onclick = () => setHourMode("all");
 
+=======
+>>>>>>> Stashed changes
   // Both tracks ride along on every feature, so switching is a repaint with no
   // request and no loading state.
   $("f-track").querySelectorAll("[data-track]").forEach((button) => {
@@ -1499,4 +1776,5 @@ function watchForRefresh() {
   const version = await fetch(`${API}/version`).then((r) => r.json()).catch(() => null);
   state.refreshStamp = version ? String(version.last_refreshed_at) : null;
   watchForRefresh();
+  followClock();
 })();

@@ -165,7 +165,12 @@ def list_cities(conn: psycopg.Connection) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute(
             """
+<<<<<<< Updated upstream
             SELECT s.*, r.location_precision_note, r.enabled, r.timezone
+=======
+            SELECT s.*, r.location_precision_note, r.enabled,
+                   r.occurrence_basis_note, r.denominator_examples_note, r.timezone
+>>>>>>> Stashed changes
             FROM gold.city_snapshot s
             JOIN reference.source_registry r USING (source_id)
             ORDER BY s.city_name
@@ -178,7 +183,12 @@ def get_city(conn: psycopg.Connection, source_id: str) -> dict[str, Any] | None:
     with conn.cursor() as cur:
         cur.execute(
             """
+<<<<<<< Updated upstream
             SELECT s.*, r.location_precision_note, r.enabled, r.timezone
+=======
+            SELECT s.*, r.location_precision_note, r.enabled,
+                   r.occurrence_basis_note, r.denominator_examples_note, r.timezone
+>>>>>>> Stashed changes
             FROM gold.city_snapshot s
             JOIN reference.source_registry r USING (source_id)
             WHERE s.source_id = %s
@@ -758,6 +768,36 @@ def cell_ring(
             (h3_indexes, time_window, category),
         )
         return cur.fetchall()
+
+
+def city_hour_profile(
+    conn: psycopg.Connection,
+    *,
+    source_id: str,
+    time_window: str,
+    h3_res: int,
+    category: str,
+) -> list[int]:
+    """The city's whole day: incidents per local hour block, summed over cells.
+
+    What the map's "now" view reads its next-few-hours trend from. Historical
+    counts only -- the same shape the per-cell panel draws, at city scale, so
+    it says when the city is usually busier, not what will happen tonight.
+    """
+    counts = [0] * HOUR_BLOCKS
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT hour_block, sum(incident_count)::int AS incident_count
+            FROM gold.cell_hour_profile
+            WHERE source_id = %s AND time_window = %s AND h3_res = %s AND category = %s
+            GROUP BY hour_block
+            """,
+            (source_id, time_window, h3_res, category),
+        )
+        for row in cur.fetchall():
+            counts[row["hour_block"]] = row["incident_count"]
+    return counts
 
 
 def city_totals(

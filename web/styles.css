@@ -156,6 +156,7 @@ select:focus-visible, .btn:focus-visible {
 }
 .btn[aria-pressed="true"] { border-color: var(--series-1); color: var(--series-1); }
 
+<<<<<<< Updated upstream
 /* Time-of-day control. Follows the city's clock unless an hour is typed in;
    the Now / All hours buttons show which of the two is driving the map. */
 .hour-input { display: flex; align-items: center; gap: 8px; }
@@ -167,20 +168,84 @@ select:focus-visible, .btn:focus-visible {
   border: 1px solid rgba(11, 11, 11, 0.28);
   border-radius: 8px;
   background: var(--page);
+=======
+/* Date range. Two calendar inputs on one line, the preset list beneath them, so
+   the field reads as one choice of period. */
+.range-inputs { display: flex; align-items: center; gap: 6px; }
+.range-sep { color: var(--text-muted); }
+
+.range-inputs input[type="date"] {
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--page);
   color: var(--text-primary);
   font: inherit;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
+.range-inputs input[type="date"]:hover { border-color: rgba(11, 11, 11, 0.28); }
+.range-inputs input[type="date"]:focus-visible {
+  outline: 2px solid var(--series-1);
+  outline-offset: 1px;
+}
+.range-inputs input[type="date"]:disabled { opacity: 0.55; cursor: not-allowed; }
+.field-range .field-note { max-width: 34ch; }
+
+/* Time of day: the city's current time as a read-only clock, not an input. */
+.hour-clock {
+  display: block;
+  min-height: 32px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 32px;
+>>>>>>> Stashed changes
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+<<<<<<< Updated upstream
 .hour-input input[type="time"]:focus-visible {
   outline: 2px solid var(--series-1);
   outline-offset: 1px;
 }
 .field-hour[aria-disabled="true"] { opacity: 0.55; }
 .field-hour[aria-disabled="true"] input { pointer-events: none; }
+=======
+.field-hour[aria-disabled="true"] .hour-trend { display: none; }
 
-/* Echoes the block the entered time actually resolves to, so there is never a
-   question of whether 20:45 means 20:00-21:00. */
+/* This hour against the average hour: an arrow, the day's 24 blocks with the
+   current one dark, and the reading in words, so it is never colour-only. */
+.hour-trend {
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: start;
+  align-items: end;
+  gap: 4px 8px;
+  max-width: 34ch;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.hour-trend[hidden] { display: none; }
+.hour-trend > span:last-child { grid-column: 1 / -1; }
+.hour-trend b { color: var(--text-primary); font-weight: 600; }
+.trend-arrow { font-size: 16px; font-weight: 700; line-height: 1; color: var(--text-primary); }
+.trend-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 20px;
+}
+.trend-bars i {
+  display: block;
+  width: 3px;
+  min-height: 1px;
+  border-radius: 1px 1px 0 0;
+  background: var(--gridline);
+}
+.trend-bars i[data-now] { width: 5px; background: var(--text-primary); }
+>>>>>>> Stashed changes
+
 .field-note {
   font-size: 11px;
   color: var(--text-muted);

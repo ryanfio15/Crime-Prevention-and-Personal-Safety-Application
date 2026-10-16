@@ -58,6 +58,7 @@
     </select>
   </label>
 
+<<<<<<< Updated upstream
   <!-- Follows the city's clock by default ("Now"), advancing on the hour.
        Typing an hour pins it, which is how any hour other than the current one
        can be inspected; "All hours" turns the time-of-day layer off. -->
@@ -69,6 +70,17 @@
       <button type="button" class="linkish" id="f-hour-clear" aria-pressed="false">All hours</button>
     </div>
     <span class="field-note" id="f-hour-note">All hours</span>
+=======
+  <!-- The city's current local time, kept live (web/hours.js); the map shows the
+       hour block it falls in. Underneath, whether this hour has historically
+       been busier or quieter than the city's average hour -- stored counts,
+       not live data or a prediction. -->
+  <div class="field field-hour" id="f-hour-field">
+    <span class="field-label" id="f-hour-label">Time of day</span>
+    <output class="hour-clock" id="f-hour" aria-labelledby="f-hour-label">&mdash;</output>
+    <span class="field-note" id="f-hour-note"></span>
+    <div class="hour-trend" id="f-hour-trend" aria-live="polite" hidden></div>
+>>>>>>> Stashed changes
   </div>
 
   <div class="field">
@@ -241,8 +253,20 @@
   <div id="methodology-body">Loading&hellip;</div>
 </dialog>
 
+<<<<<<< Updated upstream
 <script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/h3-js@4.2.1/dist/h3-js.umd.js"></script>
+=======
+<script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"
+        integrity="sha384-81ppUWZZO+pveTPk4qU9cZuScEFULHfuOMHVJHFZ7xVBlWQTG1zsPrVIMGAl1WMb"
+        crossorigin="anonymous"></script>
+<script src="https://unpkg.com/h3-js@4.2.1/dist/h3-js.umd.js"
+        integrity="sha384-ViAXEmpUtfR6LTFA4VPFElyF4q6ysOu7yi4fs2v5udUWy6l162CdHpDx1SyS870v"
+        crossorigin="anonymous"></script>
+<script src="html.js"></script>
+<script src="windows.js"></script>
+<script src="hours.js"></script>
+>>>>>>> Stashed changes
 <script src="app.js"></script>
 </body>
 </html>
