@@ -1772,11 +1772,23 @@ function setRange(range) {
   state.range = range;
   $("f-from").value = range.from;
   $("f-to").value = range.to;
-  $("f-preset").value = currentPreset()?.id ?? "custom";
+  const preset = currentPreset();
+  $("f-preset").value = preset?.id ?? "custom";
+  // A preset goes into the URL by name, not as its dates. The stored windows
+  // slide forward a day with every data refresh, so dates saved from one would
+  // stop matching it by the next day -- reopening the page from history would
+  // then land on a custom range, which has no hourly layer. ?window= always
+  // means the city's current window; only hand-picked dates are pinned.
   const url = new URL(location.href);
-  url.searchParams.set("from", range.from);
-  url.searchParams.set("to", range.to);
-  url.searchParams.delete("window");
+  if (preset) {
+    url.searchParams.set("window", preset.id);
+    url.searchParams.delete("from");
+    url.searchParams.delete("to");
+  } else {
+    url.searchParams.set("from", range.from);
+    url.searchParams.set("to", range.to);
+    url.searchParams.delete("window");
+  }
   history.replaceState(null, "", url);
 }
 
