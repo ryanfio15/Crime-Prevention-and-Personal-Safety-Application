@@ -193,22 +193,37 @@ select:focus-visible, .btn:focus-visible {
 }
 .field-hour[aria-disabled="true"] .hour-trend { display: none; }
 
-/* This hour against the average hour: an arrow, the day's 24 blocks with the
-   current one dark, and the reading in words, so it is never colour-only. */
+/* Time-of-day risk: the day's 24 blocks (current one dark, lower-risk window
+   blue), then three lines in words -- this hour, the next few, the lower-risk
+   window -- so nothing rests on colour alone. */
 .hour-trend {
-  display: grid;
-  grid-template-columns: auto auto;
-  justify-content: start;
-  align-items: end;
-  gap: 4px 8px;
-  max-width: 34ch;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 36ch;
   font-size: 12px;
   color: var(--text-secondary);
 }
 .hour-trend[hidden] { display: none; }
-.hour-trend > span:last-child { grid-column: 1 / -1; }
 .hour-trend b { color: var(--text-primary); font-weight: 600; }
-.trend-arrow { font-size: 16px; font-weight: 700; line-height: 1; color: var(--text-primary); }
+.trend-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.trend-lines li { display: flex; align-items: baseline; gap: 6px; }
+.trend-arrow {
+  flex: none;
+  width: 1em;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--text-primary);
+}
+.trend-foot { font-size: 10.5px; color: var(--text-muted); }
 .trend-bars {
   display: flex;
   align-items: flex-end;
@@ -222,6 +237,7 @@ select:focus-visible, .btn:focus-visible {
   border-radius: 1px 1px 0 0;
   background: var(--gridline);
 }
+.trend-bars i[data-quiet] { background: var(--series-1); }
 .trend-bars i[data-now] { width: 5px; background: var(--text-primary); }
 
 .field-note {

@@ -1,5 +1,7 @@
-/* Time of day is always "now": the city's current local time, and whether the
-   current hour is historically busier or quieter than the city's average hour.
+/* Time of day is always "now": the city's current local time, whether the
+   current hour is historically busier or quieter than the city's average hour,
+   which way the next few hours usually go, and the comparatively quietest
+   stretch coming up.
 
    Not live data and not a prediction. The hour blocks are the city's own local
    clock (reference.source_registry.timezone), so "now" is read in that zone
@@ -72,7 +74,85 @@
     return { direction, change, count: counts[hour], average, max: Math.max(...counts, 1) };
   }
 
+  /* How far ahead the outlook looks, and how far ahead (and how wide) the
+     lower-risk window search runs. Three-hour stretches: one block is too
+     noisy to point anyone at, and a stretch is something a person can plan
+     around. */
+  const OUTLOOK_SPAN = 3;
+  const WINDOW_HORIZON = 12;
+  const WINDOW_WIDTH = 3;
+
+  /** Mean of `width` blocks from `start`, wrapping past midnight. */
+  function stretchMean(counts, start, width) {
+    let sum = 0;
+    for (let i = 0; i < width; i++) sum += counts[(start + i) % HOUR_BLOCKS];
+    return sum / width;
+  }
+
+  /**
+   * Whether the next `span` blocks are historically busier or quieter than
+   * the current one: the mean of the blocks ahead against this block.
+   *
+   * Returns null when the day holds too little to compare; otherwise the
+   * direction ("up", "down" or "flat") and the change as a fraction of the
+   * current block (null when the current block is empty, where a percentage
+   * would be infinite).
+   */
+  function hourOutlook(counts, hour, { span = OUTLOOK_SPAN, minTotal = MIN_HOUR_EVIDENCE } = {}) {
+    if (!hourVsUsual(counts, hour, { minTotal })) return null;
+    const now = counts[hour];
+    const ahead = stretchMean(counts, (hour + 1) % HOUR_BLOCKS, span);
+    if (now === 0) return { direction: ahead > 0 ? "up" : "flat", change: null, span };
+    const change = ahead / now - 1;
+    const direction =
+      change > USUAL_DEADBAND ? "up" : change < -USUAL_DEADBAND ? "down" : "flat";
+    return { direction, change, span };
+  }
+
+  /**
+   * The comparatively lowest-risk stretch coming up: of every `width`-block
+   * stretch starting within the next `horizon` hours (the current block
+   * included), the one with the fewest incidents historically.
+   *
+   * Returns null when the day holds too little to compare; otherwise its
+   * first block, its end block (exclusive, wrapped), whether it starts now,
+   * and how it compares with the average hour.
+   */
+  function quietestWindow(
+    counts,
+    hour,
+    { horizon = WINDOW_HORIZON, width = WINDOW_WIDTH, minTotal = MIN_HOUR_EVIDENCE } = {}
+  ) {
+    const usual = hourVsUsual(counts, hour, { minTotal });
+    if (!usual) return null;
+    let best = null;
+    for (let offset = 0; offset + width <= horizon; offset++) {
+      const start = (hour + offset) % HOUR_BLOCKS;
+      const mean = stretchMean(counts, start, width);
+      // Strictly lower only: on a tie the earlier stretch wins, which is the
+      // more useful answer to "when, soonest".
+      if (!best || mean < best.mean) best = { start, offset, mean };
+    }
+    return {
+      start: best.start,
+      end: (best.start + width) % HOUR_BLOCKS,
+      startsNow: best.offset === 0,
+      hoursAway: best.offset,
+      vsAverage: best.mean / usual.average - 1,
+      blocks: Array.from({ length: width }, (_, i) => (best.start + i) % HOUR_BLOCKS),
+    };
+  }
+
+  /** "3 AM", "12 PM", "12 AM" -- an hour block's start, as the clock reads it. */
+  function hourName(hour) {
+    const h = ((hour % HOUR_BLOCKS) + HOUR_BLOCKS) % HOUR_BLOCKS;
+    return `${h % 12 === 0 ? 12 : h % 12} ${h < 12 ? "AM" : "PM"}`;
+  }
+
   root.cityHour = cityHour;
   root.cityTimeLabel = cityTimeLabel;
   root.hourVsUsual = hourVsUsual;
+  root.hourOutlook = hourOutlook;
+  root.quietestWindow = quietestWindow;
+  root.hourName = hourName;
 })(globalThis);

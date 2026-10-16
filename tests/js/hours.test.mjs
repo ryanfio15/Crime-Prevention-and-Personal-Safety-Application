@@ -8,7 +8,10 @@ import vm from "node:vm";
 const src = readFileSync(new URL("../../web/hours.js", import.meta.url), "utf8");
 const ctx = { Intl, Date };
 vm.runInNewContext(src, ctx);
-const { cityHour, cityTimeLabel, hourVsUsual } = ctx;
+const { cityHour, cityTimeLabel, hourVsUsual, hourOutlook, quietestWindow, hourName } = ctx;
+// Arrays built inside the vm context have that context's prototype, which
+// deepStrictEqual treats as different; copy into this realm before comparing.
+const plain = (a) => [...a];
 
 const flat = (n) => Array.from({ length: 24 }, () => n);
 
@@ -57,4 +60,51 @@ test("small differences inside the deadband read as flat", () => {
 
 test("too little evidence returns null", () => {
   assert.equal(hourVsUsual(flat(1), 5), null);
+  assert.equal(hourOutlook(flat(1), 5), null);
+  assert.equal(quietestWindow(flat(1), 5), null);
+});
+
+test("the outlook rises when the next three hours are busier", () => {
+  const counts = flat(10);
+  counts[19] = counts[20] = counts[21] = 20;
+  const o = hourOutlook(counts, 18);
+  assert.equal(o.direction, "up");
+  assert.equal(Math.round(o.change * 100), 100);
+});
+
+test("the outlook wraps past midnight and can fall", () => {
+  const counts = flat(10);
+  counts[23] = 30;
+  assert.equal(hourOutlook(counts, 23).direction, "down");
+});
+
+test("the quietest window is the lowest three-hour stretch within twelve hours", () => {
+  const counts = flat(100);
+  // Quiet at 02:00-05:00, quieter still at 14:00 -- but 14:00 is out of reach
+  // from 22:00 within twelve hours.
+  counts[2] = counts[3] = counts[4] = 20;
+  counts[14] = counts[15] = counts[16] = 5;
+  const w = quietestWindow(counts, 22);
+  assert.equal(w.start, 2);
+  assert.equal(w.end, 5);
+  assert.equal(w.hoursAway, 4);
+  assert.equal(w.startsNow, false);
+  assert.deepEqual(plain(w.blocks), [2, 3, 4]);
+  assert.ok(w.vsAverage < 0);
+});
+
+test("the quietest window can be the stretch starting now", () => {
+  const counts = flat(100);
+  counts[3] = counts[4] = counts[5] = 10;
+  const w = quietestWindow(counts, 3);
+  assert.equal(w.startsNow, true);
+  assert.equal(w.start, 3);
+});
+
+test("hourName reads as the clock does", () => {
+  assert.equal(hourName(0), "12 AM");
+  assert.equal(hourName(3), "3 AM");
+  assert.equal(hourName(12), "12 PM");
+  assert.equal(hourName(22), "10 PM");
+  assert.equal(hourName(24), "12 AM");
 });

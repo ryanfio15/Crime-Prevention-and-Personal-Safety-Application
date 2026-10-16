@@ -1595,24 +1595,53 @@ async function loadHourProfile() {
   renderHourTrend();
 }
 
-/** "Higher than usual for this time (+38%)": plain text. */
+/** "38%": the size of a fractional change, sign carried by the words around it. */
+const pctOf = (change) => `${Math.abs(Math.round(change * 100))}%`;
+
+/** "Higher than usual right now — 38% above the average hour": plain text. */
 function usualSentence(reading) {
-  const pct = `${Math.abs(Math.round(reading.change * 100))}%`;
   return reading.direction === "up"
-    ? `Higher than usual for this time — ${pct} above the average hour`
+    ? `Higher than usual right now — ${pctOf(reading.change)} above the average hour`
     : reading.direction === "down"
-      ? `Lower than usual for this time — ${pct} below the average hour`
+      ? `Lower than usual right now — ${pctOf(reading.change)} below the average hour`
       : "About average for this time of day";
+}
+
+/** "Expected to rise over the next 3 hours (+24%)": plain text. */
+function outlookSentence(outlook) {
+  const ahead = `over the next ${outlook.span} hours`;
+  const change = outlook.change === null
+    ? ""
+    : ` (${outlook.change >= 0 ? "+" : "−"}${pctOf(outlook.change)})`;
+  return outlook.direction === "up"
+    ? `Expected to rise ${ahead}${change}`
+    : outlook.direction === "down"
+      ? `Expected to fall ${ahead}${change}`
+      : `Expected to stay about the same ${ahead}`;
+}
+
+/** "Lower-risk window: 2 AM – 5 AM, 68% below the average hour": plain text. */
+function windowSentence(win) {
+  const when = `${hourName(win.start)} – ${hourName(win.end)}`;
+  const vs = win.vsAverage < 0
+    ? `${pctOf(win.vsAverage)} below the average hour`
+    : `${pctOf(win.vsAverage)} above the average hour`;
+  return win.startsNow
+    ? `Lower-risk window: now until ${hourName(win.end)} — ${vs}`
+    : `Lower-risk window: ${when} — ${vs}`;
 }
 
 const TREND_ARROWS = { up: "↑", down: "↓", flat: "→" };
 
 /**
- * Whether reported crime is up or down at this time of day, under the clock.
+ * Time-of-day risk, under the clock: where this hour stands, which way the
+ * next few hours are expected to go, and the comparatively lowest-risk
+ * stretch in the next twelve.
  *
- * The current hour block against the city's average hour, from the stored
- * hourly profile -- what this time of day has historically looked like, not a
- * live count. The 24-hour bars put the current block (dark) in context.
+ * All three read the stored hourly profile -- what these hours have
+ * historically looked like citywide, not a live count -- so "expected" means
+ * "usually", and the footnote says so. The 24-hour bars put it in context:
+ * the current block dark, the lower-risk window in blue.
  */
 function renderHourTrend() {
   const box = $("f-hour-trend");
@@ -1629,16 +1658,23 @@ function renderHourTrend() {
     box.textContent = "Too few incidents with a recorded hour to compare.";
     return;
   }
+  const outlook = hourOutlook(counts, state.hour);
+  const win = quietestWindow(counts, state.hour);
+  const quiet = new Set(win?.blocks ?? []);
   box.dataset.direction = reading.direction;
-  box.innerHTML = html`<span class="trend-arrow" aria-hidden="true">${
-    TREND_ARROWS[reading.direction]
-  }</span><span class="trend-bars" aria-hidden="true">${counts.map(
+
+  const line = (arrow, text) =>
+    html`<li><span class="trend-arrow" aria-hidden="true">${arrow}</span><span>${text}</span></li>`;
+  box.innerHTML = html`<span class="trend-bars" aria-hidden="true">${counts.map(
     (n, hour) => html`<i style="height:${Math.max((n / reading.max) * 100, 6)}%"${
-      hour === state.hour ? html` data-now` : ""
+      hour === state.hour ? html` data-now` : quiet.has(hour) ? html` data-quiet` : ""
     } title="${hourLabel(hour)}: ${nf.format(n)}"></i>`
-  )}</span><span><b>${usualSentence(reading)}</b><br>Reported incidents citywide at ${hourLabel(
-    state.hour
-  )}, past 12 months.</span>`;
+  )}</span><ul class="trend-lines">${[
+    line(TREND_ARROWS[reading.direction], html`<b>${usualSentence(reading)}</b>`),
+    outlook ? line(TREND_ARROWS[outlook.direction], outlookSentence(outlook)) : "",
+    win ? line("◷", windowSentence(win)) : "",
+  ]}</ul><span class="trend-foot">From reported incidents citywide by hour over the past
+12 months — a typical pattern, not a live count or a forecast.</span>`;
 }
 
 /* Keep the clock on the current minute, and move the map to the next hour
