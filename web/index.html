@@ -89,16 +89,15 @@
     </select>
   </label>
 
-  <!-- Development control. In production the hour comes from the user's own
-       clock; typing one by hand is how the time-of-day layer gets exercised
-       until then, and how any hour other than "now" can be inspected at all. -->
-  <div class="field field-dev" id="f-hour-field">
-    <span class="field-label" id="f-hour-label">Time of day <b class="dev-tag">dev</b></span>
-    <div class="hour-input">
-      <input type="time" id="f-hour" step="3600" aria-labelledby="f-hour-label">
-      <button type="button" class="linkish" id="f-hour-clear">All hours</button>
-    </div>
-    <span class="field-note" id="f-hour-note">All hours</span>
+  <!-- The city's current local time, kept live (web/hours.js); the map shows the
+       hour block it falls in. Underneath, whether this hour has historically
+       been busier or quieter than the city's average hour -- stored counts,
+       not live data or a prediction. -->
+  <div class="field field-hour" id="f-hour-field">
+    <span class="field-label" id="f-hour-label">Time of day</span>
+    <output class="hour-clock" id="f-hour" aria-labelledby="f-hour-label">&mdash;</output>
+    <span class="field-note" id="f-hour-note"></span>
+    <div class="hour-trend" id="f-hour-trend" aria-live="polite" hidden></div>
   </div>
 
   <div class="field">
@@ -279,6 +278,7 @@
         crossorigin="anonymous"></script>
 <script src="html.js"></script>
 <script src="windows.js"></script>
+<script src="hours.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -865,6 +865,41 @@ def cell(
     return detail
 
 
+@app.get(f"{API}/hours", tags=["cells"])
+def hours(
+    conn: Conn,
+    city: str = "phl",
+    window: str = repo.DEFAULT_WINDOW,
+    res: int = 8,
+    category: str = "all",
+) -> dict[str, Any]:
+    """The city's 24-block profile: historical incidents per local hour.
+
+    Backs the map's "now" view and its next-few-hours trend. Built only where
+    the hourly layer is (_validate_hour), so a missing profile is a 400 with the
+    reason rather than a day of zeroes that reads as a quiet city.
+    """
+    served = _resolve_window(conn, city, window)
+    _validate_layer(res, served, category)
+    _validate_hour(0, res, served)
+    counts = cached_json(
+        conn,
+        ("hours", city, res, served["id"], category),
+        lambda: repo.city_hour_profile(
+            conn, source_id=city, time_window=served["id"], h3_res=res, category=category
+        ),
+        city,
+    )
+    return {
+        "city": city,
+        "window": served["id"],
+        "res": res,
+        "category": category,
+        "counts": counts,
+        "total": sum(counts),
+    }
+
+
 @app.get(f"{API}/summary", tags=["cells"])
 def summary(
     conn: Conn,
@@ -1328,5 +1363,21 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
     }
 
 
+class RevalidatedStaticFiles(StaticFiles):
+    """The front end, sent with `Cache-Control: no-cache`.
+
+    Without a Cache-Control header browsers cache these files heuristically
+    and reuse them without asking, so after a deploy a visitor can run the old
+    app.js against the new index.html (or keep the old page outright) for
+    hours. no-cache still lets them keep a copy; it only makes them check the
+    ETag first, which costs a 304 when nothing changed.
+    """
+
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # The temporary front end. Mounted last so it never shadows an API route.
-app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
+app.mount("/", RevalidatedStaticFiles(directory=str(WEB_DIR), html=True), name="web")
