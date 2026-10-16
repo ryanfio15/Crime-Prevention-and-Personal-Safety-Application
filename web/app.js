@@ -1620,15 +1620,22 @@ function outlookSentence(outlook) {
       : `Expected to stay about the same ${ahead}`;
 }
 
-/** "Lower-risk window: 2 AM – 5 AM, 68% below the average hour": plain text. */
+/**
+ * "Lower-risk window: 1 PM – 4 PM — about 18% lower than now": plain text.
+ *
+ * Compared with right now, not the day's average: at 9 AM every stretch in
+ * the next twelve hours is daytime and above average, so an average-based
+ * figure would call the "lower-risk" window "24% above average". When even
+ * the quietest stretch is still busier than the day as a whole, it says so.
+ */
 function windowSentence(win) {
-  const when = `${hourName(win.start)} – ${hourName(win.end)}`;
-  const vs = win.vsAverage < 0
-    ? `${pctOf(win.vsAverage)} below the average hour`
-    : `${pctOf(win.vsAverage)} above the average hour`;
-  return win.startsNow
-    ? `Lower-risk window: now until ${hourName(win.end)} — ${vs}`
-    : `Lower-risk window: ${when} — ${vs}`;
+  if (win.startsNow) {
+    return `Lower-risk window: now until ${hourName(win.end)} — the quietest stretch of the next 12 hours`;
+  }
+  if (!win.quieter) return "No meaningfully quieter stretch in the next 12 hours";
+  const still = win.aboveAverage ? ", though still busier than the daily average" : "";
+  return `Lower-risk window: ${hourName(win.start)} – ${hourName(win.end)} — ` +
+    `about ${pctOf(win.vsNow)} lower than now${still}`;
 }
 
 const TREND_ARROWS = { up: "↑", down: "↓", flat: "→" };
@@ -1660,7 +1667,8 @@ function renderHourTrend() {
   }
   const outlook = hourOutlook(counts, state.hour);
   const win = quietestWindow(counts, state.hour);
-  const quiet = new Set(win?.blocks ?? []);
+  // Highlighted only when there is a window worth pointing at.
+  const quiet = new Set(win && (win.startsNow || win.quieter) ? win.blocks : []);
   box.dataset.direction = reading.direction;
 
   const line = (arrow, text) =>

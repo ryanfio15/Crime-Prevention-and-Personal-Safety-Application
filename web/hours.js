@@ -116,7 +116,14 @@
    *
    * Returns null when the day holds too little to compare; otherwise its
    * first block, its end block (exclusive, wrapped), whether it starts now,
-   * and how it compares with the average hour.
+   * and how it compares with right now and with the average hour.
+   *
+   * Against now is the headline comparison: the question is "when is it
+   * better than now", and the next twelve hours can all sit above the day's
+   * average (the whole daytime does), which would make "lower-risk" read as a
+   * contradiction. `quieter` says whether the stretch is meaningfully lower
+   * than the current hour (beyond the ±10% deadband); `aboveAverage` whether
+   * it is still meaningfully busier than the day as a whole.
    */
   function quietestWindow(
     counts,
@@ -133,12 +140,18 @@
       // more useful answer to "when, soonest".
       if (!best || mean < best.mean) best = { start, offset, mean };
     }
+    const now = counts[hour];
+    const vsNow = now === 0 ? null : best.mean / now - 1;
+    const vsAverage = best.mean / usual.average - 1;
     return {
       start: best.start,
       end: (best.start + width) % HOUR_BLOCKS,
       startsNow: best.offset === 0,
       hoursAway: best.offset,
-      vsAverage: best.mean / usual.average - 1,
+      vsNow,
+      vsAverage,
+      quieter: vsNow !== null && vsNow < -USUAL_DEADBAND,
+      aboveAverage: vsAverage > USUAL_DEADBAND,
       blocks: Array.from({ length: width }, (_, i) => (best.start + i) % HOUR_BLOCKS),
     };
   }

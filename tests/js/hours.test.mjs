@@ -93,6 +93,28 @@ test("the quietest window is the lowest three-hour stretch within twelve hours",
   assert.ok(w.vsAverage < 0);
 });
 
+test("a daytime window is compared with now, and flagged when still above average", () => {
+  // The 9 AM case: the next twelve hours are all busier than the day's
+  // average, but 1 PM-4 PM is still clearly quieter than now.
+  const counts = flat(40);
+  for (let h = 9; h <= 21; h++) counts[h] = 100;
+  counts[9] = 120;
+  counts[13] = counts[14] = counts[15] = 80;
+  const w = quietestWindow(counts, 9);
+  assert.equal(w.start, 13);
+  assert.equal(w.end, 16);
+  assert.equal(Math.round(w.vsNow * 100), -33);
+  assert.equal(w.quieter, true);
+  assert.equal(w.aboveAverage, true);
+});
+
+test("no window counts as quieter when nothing ahead is meaningfully below now", () => {
+  const counts = flat(100);
+  counts[10] = 95;
+  const w = quietestWindow(counts, 9);
+  assert.equal(w.quieter, false);
+});
+
 test("the quietest window can be the stretch starting now", () => {
   const counts = flat(100);
   counts[3] = counts[4] = counts[5] = 10;
