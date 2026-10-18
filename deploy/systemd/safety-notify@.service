@@ -1,0 +1,21 @@
+# Logs a critical journal alert for a failed unit: started by the
+# OnFailure=safety-notify@%N.service line on every safety-etl@, safety-etl-hourly@,
+# safety-ops@, safety-autodeploy@, safety-api@ and safety-backup* unit. %i is the
+# failed unit's name without ".service", e.g. safety-etl@prod. Never give this
+# unit an OnFailure= of its own.
+#
+#   journalctl -t safety-notify -p err        # every alert
+#   sudo cat /var/lib/safety-notify/alerts.log
+
+[Unit]
+Description=Safety failure alert for %i
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+StateDirectory=safety-notify
+ExecStart=/usr/local/lib/safety-deploy/notify.sh %i
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true

@@ -1,0 +1,33 @@
+# One continuous-deployment tick for one instance: `safety-autodeploy@prod`
+# follows main, `safety-autodeploy@dev` follows testing (deploy/autodeploy.sh).
+# Started every minute by safety-autodeploy@<instance>.timer; `systemctl start
+# safety-autodeploy@dev` runs one by hand.
+#
+# Root, because a deploy rsyncs into the instance tree, chowns it and restarts
+# safety-api@. The script and install.sh run from root-owned copies outside
+# /srv (deploy/install-deployer.sh), and repository code runs as the instance's
+# OS user (`safety`, or `safety-dev` for an isolated dev) via runuser, which
+# works under NoNewPrivileges. Writable: the instance trees, both users' pip
+# caches (`-`: ignored while a path does not exist), and the state directory.
+
+[Unit]
+Description=Safety continuous deployment (%i)
+# A failure logs a critical alert to the journal (safety-notify@.service).
+OnFailure=safety-notify@%N.service
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/safety-autodeploy %i
+# A new venv, a migrate that scans silver.incident, the candidate check and a
+# possible rollback can add up to many minutes.
+TimeoutStartSec=30min
+StateDirectory=safety-deploy
+StateDirectoryMode=0700
+ReadWritePaths=/srv/safety/Crime-Prevention-and-Personal-Safety-Application -/srv/safety/.cache -/srv/safety-dev/.cache
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict

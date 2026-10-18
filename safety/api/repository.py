@@ -4,6 +4,9 @@ Two rules hold throughout this module:
 
 1. Reads touch the gold schema only. The read path never scans silver, and
    never aggregates raw incident rows -- that work is already done by the ETL.
+   A custom date range is ranked on request, but from gold.cell_daily, a gold
+   rollup; the one silver read on that path is a single cell's offense list
+   (range_offense_mix), which says why.
 2. Map payloads are assembled into GeoJSON by PostgreSQL itself, so a
    3,600-hexagon layer crosses the wire as one JSON document instead of being
    rebuilt object-by-object in Python.
@@ -11,14 +14,28 @@ Two rules hold throughout this module:
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 import psycopg
 
+from safety import ranking_sql
+
 # Whitelists. These bound every value that reaches SQL through anything other
 # than a bound parameter.
 VALID_RESOLUTIONS = (8, 9, 10)
-VALID_WINDOWS = ("last_30d", "last_90d", "last_12m", "last_24m")
+# Window names are per city now (gold.city_window): 3/6/9 months, then
+# last_<N>y back to the city's oldest stored incident. The pattern bounds what
+# can reach SQL; city_windows() says which a given city actually has.
+WINDOW_PATTERN = re.compile(r"^last_([369]m|[1-9][0-9]?y)$")
+DEFAULT_WINDOW = "last_1y"
+# The previous release's names, as aliases (mirrors gold.LEGACY_WINDOWS).
+LEGACY_WINDOWS = {"last_90d": "last_3m", "last_12m": "last_1y", "last_24m": "last_2y"}
+# Requests only: a saved link to the retired 30-day window opens on the shortest
+# one there is. Not a gold copy, since no window spans the same dates.
+ALIASES = {**LEGACY_WINDOWS, "last_30d": "last_3m"}
 VALID_CATEGORIES = ("all", "violent", "property", "quality_of_life", "other")
 VALID_HOURS = tuple(range(24))
 
@@ -27,9 +44,12 @@ VALID_HOURS = tuple(range(24))
 # asserted against the ETL by safety/api/main.py's error text: a request for an
 # hour outside this scope gets told why, not an empty map.
 HOURLY_RESOLUTIONS = (8, 9)
-HOURLY_WINDOWS = ("last_12m", "last_24m")
+# One window. gold.cell_hour_safety is the only layer multiplied by 24 and was
+# the largest table in the database; a second year mostly restates the first,
+# since the hourly distribution is already stable at a year wide.
+HOURLY_WINDOWS = ("last_1y",)
 
-# Mirrors safety.etl.gold.PERCAPITA_RESOLUTIONS, same duplication rationale.
+# Mirrors safety.etl.gold.SAFETY_RESOLUTIONS, same duplication rationale.
 # The safety ranking divides severity-weighted offence by ambient population,
 # which is apportioned from census blocks -- and a resolution-10 cell is smaller
 # than a census block, so there is no population figure there that is not this
@@ -37,11 +57,79 @@ HOURLY_WINDOWS = ("last_12m", "last_24m")
 # only the ranking stops.
 SAFETY_RESOLUTIONS = (8, 9)
 
+# Mirrors safety.etl.gold.ACTIVITY_WINDOWS / ACTIVITY_CATEGORIES, same
+# duplication rationale again.
+#
+# The activity layer is dense -- one row per cell per window per category,
+# because a cell with no reported incidents is still part of the distribution it
+# is ranked against. At resolution 10 that is twenty rows for each of a city's
+# ~25,000-100,000 cells, nearly all of them zero, and the two short windows are
+# ranking a field of ties: a ~0.015 km2 cell over 30 days is almost always empty
+# in every category at once. So resolution 10 is built for the two widest windows
+# and the combined category only, and the narrower combinations are refused with
+# the reason rather than answered with an empty layer.
+ACTIVITY_WINDOWS = {10: ("last_1y", "last_2y")}
+ACTIVITY_CATEGORIES = {10: ("all",)}
+
+
+def activity_scope(h3_res: int) -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
+    """The windows and categories the activity layer is built at a resolution.
+
+    None for the windows means every window the city has.
+    """
+    return (
+        ACTIVITY_WINDOWS.get(h3_res),
+        ACTIVITY_CATEGORIES.get(h3_res, VALID_CATEGORIES),
+    )
+
+
+def category_breakdown_built(h3_res: int) -> bool:
+    """Whether the activity layer carries a per-category split at this cell size.
+
+    'all' on its own is a total, not a breakdown, so a scope of ('all',) has
+    nothing for the detail panel's category chart to draw.
+    """
+    _, categories = activity_scope(h3_res)
+    return any(category != "all" for category in categories)
+
+
+def window_label(name: str) -> str:
+    """'Last 3 months', 'Last 12 months', 'Last 7 years'."""
+    legacy = {
+        "last_30d": "Last 30 days",
+        "last_90d": "Last 90 days",
+        "last_12m": "Last 12 months",
+        "last_24m": "Last 24 months",
+    }
+    if name in legacy:
+        return legacy[name]
+    count, unit = int(name[5:-1]), name[-1]
+    if unit == "m":
+        return f"Last {count} months"
+    # "Last year" would read as the previous calendar year.
+    return "Last 12 months" if count == 1 else f"Last {count} years"
+
+
+def canonical_window(name: str) -> str | None:
+    """The current name for a requested window, or None if it is not one."""
+    name = ALIASES.get(name, name)
+    return name if WINDOW_PATTERN.match(name) else None
+
+
+# The windows every city had before per-city windows (migration 018), less the
+# retired 30 days. A city whose gold has not been rebuilt since is still served
+# these, under these names, until its next refresh writes gold.city_window.
+_LEGACY_LIST = (
+    ("last_90d", 90, False, False),
+    ("last_12m", 365, True, True),
+    ("last_24m", 730, False, True),
+)
+
+# Kept for /categories, which has always returned a label map; built from the
+# default list rather than any one city's.
 WINDOW_LABELS = {
-    "last_30d": "Last 30 days",
-    "last_90d": "Last 90 days",
-    "last_12m": "Last 12 months",
-    "last_24m": "Last 24 months",
+    name: window_label(name)
+    for name in ("last_3m", "last_6m", "last_9m", "last_1y", "last_2y")
 }
 
 CATEGORY_LABELS = {
@@ -77,6 +165,110 @@ SAFETY_TIER_LABELS = {
     3: "Upper-middle quarter",
     4: "Safest quarter",
 }
+
+
+_CITY_WINDOWS_SQL = """
+SELECT
+    w.time_window, w.window_start, w.window_end, w.data_start, w.partial,
+    w.safety_built, w.hourly_built, w.res10_built,
+    ARRAY(
+        SELECT c.caveat_text
+        FROM reference.source_series_caveat c
+        WHERE c.source_id   = w.source_id
+          AND c.period_from <= w.window_end
+          AND c.period_to   >  w.data_start
+        ORDER BY c.period_from
+    ) AS caveats
+FROM gold.city_window w
+WHERE w.source_id = %s
+ORDER BY w.sort_order
+"""
+
+
+def city_windows(conn: psycopg.Connection, source_id: str) -> list[dict[str, Any]]:
+    """The windows this city is served for, in display order.
+
+    Plain types only (ISO date strings), so the result can ride the API's
+    stamped JSON cache. A city with no gold.city_window rows has not been
+    rebuilt since migration 018 and still holds the four legacy windows, which
+    are returned under their own names.
+    """
+    with conn.cursor() as cur:
+        cur.execute(_CITY_WINDOWS_SQL, (source_id,))
+        rows = cur.fetchall()
+    if rows:
+        return [
+            {
+                "id": r["time_window"],
+                "label": window_label(r["time_window"]),
+                "start": r["window_start"].isoformat(),
+                "end": r["window_end"].isoformat(),
+                "data_start": r["data_start"].isoformat(),
+                "span_days": (r["window_end"] - r["window_start"]).days + 1,
+                "partial": r["partial"],
+                "safety": r["safety_built"],
+                "hourly": r["hourly_built"],
+                "res10": r["res10_built"],
+                "caveats": list(r["caveats"]),
+            }
+            for r in rows
+        ]
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT time_window, min(window_start) AS window_start, max(window_end) AS window_end
+            FROM gold.cell_activity
+            WHERE source_id = %s AND h3_res = 8 AND category = 'all'
+            GROUP BY 1
+            """,
+            (source_id,),
+        )
+        built = {r["time_window"]: r for r in cur.fetchall()}
+    return [
+        {
+            "id": name,
+            "label": window_label(name),
+            "start": built[name]["window_start"].isoformat(),
+            "end": built[name]["window_end"].isoformat(),
+            "data_start": built[name]["window_start"].isoformat(),
+            "span_days": span,
+            "partial": False,
+            "safety": True,
+            "hourly": hourly,
+            "res10": res10,
+            "caveats": [],
+        }
+        for name, span, hourly, res10 in _LEGACY_LIST
+        if name in built
+    ]
+
+
+def match_window(requested: str, windows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The served window a request means, or None.
+
+    Accepts the current names and the legacy ones in either direction: a link
+    saved as last_12m finds last_1y (and last_30d the 3-month window), and while a city still holds only the
+    legacy windows, last_1y finds last_12m.
+    """
+    by_id = {w["id"]: w for w in windows}
+    if requested in by_id:
+        return by_id[requested]
+    forward = ALIASES.get(requested)
+    if forward in by_id:
+        return by_id[forward]
+    backward = {v: k for k, v in LEGACY_WINDOWS.items()}.get(requested)
+    if backward in by_id:
+        return by_id[backward]
+    return None
+
+
+def cell_source(conn: psycopg.Connection, h3_index: str) -> str | None:
+    """Which city a cell belongs to (gold.cell_geometry is keyed by the index)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT source_id FROM gold.cell_geometry WHERE h3_index = %s", (h3_index,))
+        row = cur.fetchone()
+    return row["source_id"] if row else None
 
 
 def hour_label(hour: int) -> str:
@@ -165,7 +357,8 @@ def list_cities(conn: psycopg.Connection) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT s.*, r.location_precision_note, r.enabled
+            SELECT s.*, r.location_precision_note, r.enabled,
+                   r.occurrence_basis_note, r.denominator_examples_note, r.timezone
             FROM gold.city_snapshot s
             JOIN reference.source_registry r USING (source_id)
             ORDER BY s.city_name
@@ -178,7 +371,8 @@ def get_city(conn: psycopg.Connection, source_id: str) -> dict[str, Any] | None:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT s.*, r.location_precision_note, r.enabled
+            SELECT s.*, r.location_precision_note, r.enabled,
+                   r.occurrence_basis_note, r.denominator_examples_note, r.timezone
             FROM gold.city_snapshot s
             JOIN reference.source_registry r USING (source_id)
             WHERE s.source_id = %s
@@ -206,16 +400,28 @@ def severity_scheme(conn: psycopg.Connection, source_id: str) -> dict[str, Any] 
         return cur.fetchone()
 
 
-def serving_version(conn: psycopg.Connection) -> dict[str, Any]:
-    """Cheap poll target so a client can notice an ETL refresh and reload."""
+def serving_version(
+    conn: psycopg.Connection, source_id: str | None = None
+) -> dict[str, Any]:
+    """Cheap poll target so a client can notice an ETL refresh and reload.
+
+    Per city when `source_id` is given, which is what cache invalidation wants:
+    the aggregate form moves whenever *any* city is refreshed, so keying cached
+    layers on it would throw away five cities' work every time the sixth
+    reloaded. The aggregate is still the right answer for /health and /version,
+    where the question really is "has anything changed".
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT max(last_refreshed_at) AS last_refreshed_at,
                    max(data_as_of)        AS data_as_of,
-                   sum(incident_count)    AS incident_count
+                   sum(incident_count)    AS incident_count,
+                   count(*)::int          AS cities
             FROM gold.city_snapshot
-            """
+            WHERE %s::text IS NULL OR source_id = %s
+            """,
+            (source_id, source_id),
         )
         return cur.fetchone() or {}
 
@@ -257,6 +463,52 @@ def categories(conn: psycopg.Connection, source_id: str) -> list[dict[str, Any]]
         return cur.fetchall()
 
 
+# What the timestamps on this city's records actually measure. Stored per
+# incident by the adapter, so it is read rather than asserted -- a city whose
+# adapter changed what it captures would show up here rather than in a stale
+# sentence.
+#
+# This reads silver, which the two rules at the top of this module otherwise
+# rule out. The exception is the same one `silver_provenance_mix` takes: these
+# are provenance questions asked by meta endpoints, not the map read path, and
+# there is no rollup that would answer them. Both are served through the API's
+# refresh-stamped cache (safety/api/main.py `cached_json`), so silver is scanned
+# once per city per ETL refresh rather than once per request: silver only
+# changes through an ETL run, and every successful one ends by bumping the stamp.
+_BASIS_MIX_SQL = """
+SELECT occurred_basis, count(*)::int AS n
+FROM silver.incident
+WHERE source_id = %s
+GROUP BY 1 ORDER BY n DESC
+"""
+
+# The three values silver.incident.occurred_basis permits (004_silver.sql). A
+# source that publishes both an occurrence and a report time picks one per
+# record, so a mixed city shows up as two rows here rather than as a fourth
+# basis -- which is more informative anyway, since the shares are visible.
+BASIS_LABELS = {
+    "dispatch": "the time police were dispatched",
+    "occurrence": "the time the offence is recorded as having occurred",
+    "report": "the time the offence was reported to police",
+}
+
+
+def occurrence_basis(conn: psycopg.Connection, source_id: str) -> list[dict[str, Any]]:
+    """The mix of timestamp bases behind this city's records, most common first."""
+    with conn.cursor() as cur:
+        cur.execute(_BASIS_MIX_SQL, (source_id,))
+        rows = cur.fetchall()
+    total = sum(row["n"] for row in rows) or 1
+    return [
+        {
+            **row,
+            "share": round(row["n"] / total, 4),
+            "label": BASIS_LABELS.get(row["occurred_basis"], row["occurred_basis"]),
+        }
+        for row in rows
+    ]
+
+
 def data_quality(conn: psycopg.Connection, source_id: str) -> dict[str, Any]:
     """S8.5 findings, surfaced rather than buried in a log file."""
     with conn.cursor() as cur:
@@ -273,10 +525,13 @@ def data_quality(conn: psycopg.Connection, source_id: str) -> dict[str, Any]:
         )
         issues = cur.fetchall()
 
+        # The bronze snapshot path is deliberately not selected: the host's
+        # filesystem layout is not public information. The ETL's replay paths
+        # (safety/etl/run.py) read it from etl.pull_run directly, never from here.
         cur.execute(
             """
             SELECT pull_id, mode, status, records_fetched, records_rejected,
-                   records_upserted, duration_seconds, started_at, finished_at, bronze_uri
+                   records_upserted, duration_seconds, started_at, finished_at
             FROM etl.pull_run
             WHERE source_id = %s
             ORDER BY pull_id DESC
@@ -286,6 +541,18 @@ def data_quality(conn: psycopg.Connection, source_id: str) -> dict[str, Any]:
         )
         pulls = cur.fetchall()
 
+    # Live, not cached: both reads are on small, indexed etl tables, and a failed
+    # pull adds a pull_run row without a gold refresh to bump the stamp.
+    return {"validation_issues": issues, "recent_pulls": pulls}
+
+
+def silver_provenance_mix(conn: psycopg.Connection, source_id: str) -> dict[str, Any]:
+    """How this city's coordinates and offence mappings were obtained (S8.5).
+
+    Two GROUP BYs over the city's silver rows: cached by refresh stamp in the
+    API (see the note above occurrence_basis), never run per request.
+    """
+    with conn.cursor() as cur:
         cur.execute(
             """
             SELECT coordinate_source, count(*)::int AS n
@@ -306,12 +573,161 @@ def data_quality(conn: psycopg.Connection, source_id: str) -> dict[str, Any]:
         )
         mappings = cur.fetchall()
 
-    return {
-        "validation_issues": issues,
-        "recent_pulls": pulls,
-        "coordinate_provenance": coordinates,
-        "offense_mapping_confidence": mappings,
+    return {"coordinate_provenance": coordinates, "offense_mapping_confidence": mappings}
+
+
+# ---------------------------------------------------------------------------
+# Custom date ranges (migration 020)
+# ---------------------------------------------------------------------------
+#
+# Two calendar dates the user picked match none of the stored windows, so the
+# range is ranked on request: gold.cell_daily summed over it, then the very SQL
+# the ETL ranks the stored windows with (safety/ranking_sql.py). A range equal to
+# a stored window therefore ranks every cell exactly as that window does -- and
+# the API serves those from the stored rows anyway (main._resolve_range).
+
+# Mirrors safety.etl.gold.DAILY_RESOLUTIONS: resolution 10 is not rolled up by
+# day, so a custom range is not served there.
+DAILY_RESOLUTIONS = (8, 9)
+# Mirrors safety.etl.gold.OFFENSE_MIX_DEPTH.
+OFFENSE_MIX_DEPTH = 8
+# The time_window a range's rows carry, so the map SQL filters them exactly as it
+# filters a stored window. Deliberately not a name WINDOW_PATTERN accepts.
+RANGE_WINDOW = "range"
+
+
+@dataclass(frozen=True, slots=True)
+class DateRange:
+    """An inclusive range of the city's local dates."""
+
+    start: date
+    # Already clamped to the city's newest reported date (main._resolve_range).
+    end: date
+    # Whether to rank the safety tracks as well (settings.safety_max_window_years).
+    safety: bool = True
+
+
+def range_label(start: date, end: date) -> str:
+    """'9 Oct 2025', or '1 Mar 2025 – 9 Oct 2025'."""
+
+    def fmt(d: date) -> str:
+        return f"{d.day} {d:%b %Y}"
+
+    return fmt(start) if start == end else f"{fmt(start)} – {fmt(end)}"
+
+
+_RANGE_FILTER = """
+    FROM gold.cell_daily
+    WHERE source_id = %(source_id)s
+      AND h3_res    = %(h3_res)s
+      AND day BETWEEN %(window_start)s AND %(window_end)s
+    GROUP BY 1
+"""
+
+# ACTIVITY_RANKED's {counts}.
+_RANGE_COUNTS = """
+    SELECT h3_index,
+           sum(c_all)             AS c_all,
+           sum(c_violent)         AS c_violent,
+           sum(c_property)        AS c_property,
+           sum(c_quality_of_life) AS c_quality_of_life,
+           sum(c_other)           AS c_other
+""" + _RANGE_FILTER
+
+# SAFETY_RANKED's {weighted}. Every incident has a product category, so the
+# non-violent track is everything that is not violent.
+_RANGE_WEIGHTED = """
+    SELECT h3_index,
+           sum(c_violent)         AS n_violent,
+           sum(c_all - c_violent) AS n_non_violent,
+           sum(w_violent)         AS w_violent,
+           sum(w_non_violent)     AS w_non_violent
+""" + _RANGE_FILTER
+
+# Same columns as the stored ranking, and no rows.
+_NO_SAFETY = "SELECT * FROM gold.cell_safety WHERE false"
+
+# The scheme a range is ranked under, or nothing. The daily weights have to have
+# been summed under the scheme the city serves now, and the ETL has to have been
+# able to build that scheme's stored ranking at all -- a per-capita scheme with no
+# census loaded is skipped there (gold.refresh_safety_layer), and ranking it here
+# instead would publish a map of zero-exposure ties.
+_RANGE_SCHEME_SQL = """
+SELECT s.scheme_version, s.eb_prior_km2, s.eb_prior_persons, s.self_weight,
+       s.exposure_kind, s.jobs_weight
+FROM reference.source_registry r
+JOIN reference.severity_scheme s ON s.scheme_version = r.severity_scheme_version
+JOIN gold.city_snapshot c
+  ON c.source_id = r.source_id AND c.daily_scheme_version = s.scheme_version
+WHERE r.source_id = %s
+  AND EXISTS (
+        SELECT 1 FROM gold.cell_safety cs
+        WHERE cs.source_id = r.source_id AND cs.scheme_version = s.scheme_version)
+"""
+
+
+def range_scheme(conn: psycopg.Connection, source_id: str) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(_RANGE_SCHEME_SQL, (source_id,))
+        return cur.fetchone()
+
+
+def _range_ctes(
+    conn: psycopg.Connection,
+    *,
+    source_id: str,
+    date_range: DateRange,
+    categories,
+    with_safety: bool,
+) -> tuple[str, dict[str, Any]]:
+    """`range_activity AS (...), range_safety AS (...)` and their parameters.
+
+    Both CTEs have the columns of the gold table they stand in for, and carry
+    time_window = RANGE_WINDOW. range_safety is empty where the ranking is not
+    served for this range.
+    """
+    scheme = range_scheme(conn, source_id) if with_safety and date_range.safety else None
+    activity = ranking_sql.ACTIVITY_RANKED.format(counts=_RANGE_COUNTS)
+    safety = (
+        ranking_sql.SAFETY_RANKED.format(weighted=_RANGE_WEIGHTED) if scheme else _NO_SAFETY
+    )
+    params: dict[str, Any] = {
+        "time_window": RANGE_WINDOW,
+        "window_start": date_range.start,
+        "window_end": date_range.end,
+        "categories": list(categories),
     }
+    if scheme:
+        params.update(ranking_sql.scheme_params(scheme))
+    ctes = f"range_activity AS (\n{activity}\n),\nrange_safety AS (\n{safety}\n)"
+    return ctes, params
+
+
+def series_caveats(conn: psycopg.Connection, source_id: str) -> list[dict[str, Any]]:
+    """The city's recording changes, for the client to match against any range.
+
+    Plain types (ISO dates), so the result can ride the stamped JSON cache.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT period_from, period_to, caveat_text
+            FROM reference.source_series_caveat
+            WHERE source_id = %s
+            ORDER BY period_from
+            """,
+            (source_id,),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "from": r["period_from"].isoformat(),
+            # Exclusive, as stored.
+            "to": r["period_to"].isoformat(),
+            "text": r["caveat_text"],
+        }
+        for r in rows
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +745,7 @@ WITH scheme AS (
         WHERE source_id = %(source_id)s
     ) AS version
 ),
+/*RANGE_CTES*/
 layer AS (
     -- Both safety tracks ride along on every feature, so switching the map
     -- between violent and non-violent is a repaint rather than a request.
@@ -368,17 +785,17 @@ layer AS (
            hn.percentile_delta  AS hdelta_nonviolent,
            hn.smoothed_per_km2  AS hsmoothed_nonviolent,
            hn.incident_count    AS hcount_nonviolent
-    FROM gold.cell_activity a
+    FROM /*ACTIVITY*/ a
     JOIN gold.cell_geometry g ON g.h3_index = a.h3_index
     CROSS JOIN scheme
-    LEFT JOIN gold.cell_safety sv
+    LEFT JOIN /*SAFETY*/ sv
            ON sv.source_id      = a.source_id
           AND sv.h3_index       = a.h3_index
           AND sv.h3_res         = a.h3_res
           AND sv.time_window    = a.time_window
           AND sv.scheme_version = scheme.version
           AND sv.track          = 'violent'
-    LEFT JOIN gold.cell_safety sn
+    LEFT JOIN /*SAFETY*/ sn
            ON sn.source_id      = a.source_id
           AND sn.h3_index       = a.h3_index
           AND sn.h3_res         = a.h3_res
@@ -534,7 +951,10 @@ def cells_geojson(
     min_count: int = 0,
     hour: int | None = None,
     bbox: tuple[float, float, float, float] | None = None,
+    date_range: DateRange | None = None,
 ) -> dict[str, Any]:
+    """The layer for a stored window, or for `date_range` when given (in which
+    case `time_window` is ignored and `hour` must be None)."""
     params = {
         "source_id": source_id,
         "h3_res": h3_res,
@@ -549,10 +969,29 @@ def cells_geojson(
         "east": bbox[2] if bbox else None,
         "north": bbox[3] if bbox else None,
     }
+    sql = _cells_geojson_sql("", "gold.cell_activity", "gold.cell_safety")
+    if date_range is not None:
+        ctes, range_params = _range_ctes(
+            conn,
+            source_id=source_id,
+            date_range=date_range,
+            categories=(category,),
+            with_safety=h3_res in SAFETY_RESOLUTIONS,
+        )
+        params.update(range_params)
+        sql = _cells_geojson_sql(ctes + ",", "range_activity", "range_safety")
     with conn.cursor() as cur:
-        cur.execute(_CELLS_GEOJSON_SQL, params)
+        cur.execute(sql, params)
         row = cur.fetchone()
     return row["document"] if row else {"type": "FeatureCollection", "features": []}
+
+
+def _cells_geojson_sql(ctes: str, activity: str, safety: str) -> str:
+    return (
+        _CELLS_GEOJSON_SQL.replace("/*RANGE_CTES*/", ctes)
+        .replace("/*ACTIVITY*/", activity)
+        .replace("/*SAFETY*/", safety)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -566,7 +1005,9 @@ def cell_detail(
     h3_index: str,
     time_window: str,
     hour: int | None = None,
+    date_range: DateRange | None = None,
 ) -> dict[str, Any] | None:
+    """One cell's panel, for a stored window or for `date_range` when given."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -594,16 +1035,41 @@ def cell_detail(
         )
         exposure = cur.fetchone()
 
-        cur.execute(
+        if date_range is not None:
+            # The cell's percentile and rank are positions in the whole city's
+            # distribution, so the range is ranked citywide and this cell read
+            # off it.
+            _, categories = activity_scope(cell["h3_res"])
+            ctes, params = _range_ctes(
+                conn,
+                source_id=cell["source_id"],
+                date_range=date_range,
+                categories=categories,
+                with_safety=cell["h3_res"] in SAFETY_RESOLUTIONS,
+            )
+            params.update(
+                source_id=cell["source_id"], h3_res=cell["h3_res"], h3_index=h3_index
+            )
+            activity_sql = f"""
+                WITH {ctes}
+                SELECT category, incident_count, incidents_per_km2, percentile,
+                       activity_tier, city_rank, city_cell_total, window_start, window_end
+                FROM range_activity
+                WHERE h3_index = %(h3_index)s
+                ORDER BY CASE category WHEN 'all' THEN 0 ELSE 1 END, incident_count DESC
             """
-            SELECT category, incident_count, incidents_per_km2, percentile,
-                   activity_tier, city_rank, city_cell_total, window_start, window_end
-            FROM gold.cell_activity
-            WHERE h3_index = %s AND time_window = %s
-            ORDER BY CASE category WHEN 'all' THEN 0 ELSE 1 END, incident_count DESC
-            """,
-            (h3_index, time_window),
-        )
+            cur.execute(activity_sql, params)
+        else:
+            cur.execute(
+                """
+                SELECT category, incident_count, incidents_per_km2, percentile,
+                       activity_tier, city_rank, city_cell_total, window_start, window_end
+                FROM gold.cell_activity
+                WHERE h3_index = %s AND time_window = %s
+                ORDER BY CASE category WHEN 'all' THEN 0 ELSE 1 END, incident_count DESC
+                """,
+                (h3_index, time_window),
+            )
         activity = cur.fetchall()
 
         cur.execute(
@@ -617,46 +1083,69 @@ def cell_detail(
         )
         monthly = cur.fetchall()
 
-        cur.execute(
-            """
-            SELECT rank, raw_offense_text, nibrs_code, product_category, incident_count
-            FROM gold.cell_offense_mix
-            WHERE h3_index = %s AND time_window = %s
-            ORDER BY rank
-            """,
-            (h3_index, time_window),
-        )
-        offenses = cur.fetchall()
+        if date_range is not None:
+            offenses = range_offense_mix(
+                cur, source_id=cell["source_id"], cell=cell, date_range=date_range
+            )
+            # range_safety is empty when the ranking is not served for this
+            # range, exactly as the stored layer is when it was not built.
+            cur.execute(
+                f"""
+                WITH {ctes}
+                SELECT track, safety_percentile, safety_rank, city_cell_total,
+                       safety_tier, incident_count, weighted_total,
+                       weighted_per_km2, weighted_per_1k, exposure, scheme_version
+                FROM range_safety
+                WHERE h3_index = %(h3_index)s
+                ORDER BY CASE track WHEN 'violent' THEN 0 ELSE 1 END
+                """,
+                params,
+            )
+            safety = cur.fetchall()
+        else:
+            cur.execute(
+                """
+                SELECT rank, raw_offense_text, nibrs_code, product_category, incident_count
+                FROM gold.cell_offense_mix
+                WHERE h3_index = %s AND time_window = %s
+                ORDER BY rank
+                """,
+                (h3_index, time_window),
+            )
+            offenses = cur.fetchall()
 
-        cur.execute(
-            """
-            SELECT s.track, s.safety_percentile, s.safety_rank, s.city_cell_total,
-                   s.safety_tier, s.incident_count, s.weighted_total,
-                   s.weighted_per_km2, s.weighted_per_1k, s.exposure, s.scheme_version
-            FROM gold.cell_safety s
-            JOIN reference.source_registry r
-              ON r.source_id = s.source_id
-             AND r.severity_scheme_version = s.scheme_version
-            WHERE s.h3_index = %s AND s.time_window = %s
-            ORDER BY CASE s.track WHEN 'violent' THEN 0 ELSE 1 END
-            """,
-            (h3_index, time_window),
-        )
-        safety = cur.fetchall()
+            cur.execute(
+                """
+                SELECT s.track, s.safety_percentile, s.safety_rank, s.city_cell_total,
+                       s.safety_tier, s.incident_count, s.weighted_total,
+                       s.weighted_per_km2, s.weighted_per_1k, s.exposure, s.scheme_version
+                FROM gold.cell_safety s
+                JOIN reference.source_registry r
+                  ON r.source_id = s.source_id
+                 AND r.severity_scheme_version = s.scheme_version
+                WHERE s.h3_index = %s AND s.time_window = %s
+                ORDER BY CASE s.track WHEN 'violent' THEN 0 ELSE 1 END
+                """,
+                (h3_index, time_window),
+            )
+            safety = cur.fetchall()
 
         # The whole 24-block shape, not just the selected hour: the panel draws
         # the profile so the selected block can be read against the rest of the
         # day rather than as a bare number.
-        cur.execute(
-            """
-            SELECT hour_block, category, incident_count
-            FROM gold.cell_hour_profile
-            WHERE h3_index = %s AND time_window = %s
-            ORDER BY hour_block, category
-            """,
-            (h3_index, time_window),
-        )
-        by_hour = cur.fetchall()
+        # A custom range has no hourly build; neither has its 24-block profile.
+        by_hour: list[dict[str, Any]] = []
+        if date_range is None:
+            cur.execute(
+                """
+                SELECT hour_block, category, incident_count
+                FROM gold.cell_hour_profile
+                WHERE h3_index = %s AND time_window = %s
+                ORDER BY hour_block, category
+                """,
+                (h3_index, time_window),
+            )
+            by_hour = cur.fetchall()
 
         hour_safety: list[dict[str, Any]] = []
         if hour is not None:
@@ -680,11 +1169,27 @@ def cell_detail(
     return {
         "cell": cell,
         "exposure": _exposure_payload(exposure),
-        "time_window": time_window,
-        "window_label": WINDOW_LABELS.get(time_window, time_window),
+        "time_window": RANGE_WINDOW if date_range else time_window,
+        "window_label": (
+            range_label(date_range.start, date_range.end)
+            if date_range
+            else window_label(time_window)
+        ),
+        "range": (
+            {"from": date_range.start.isoformat(), "to": date_range.end.isoformat()}
+            if date_range
+            else None
+        ),
         "headline": headline,
         "tier_label": TIER_LABELS.get(headline["activity_tier"]) if headline else None,
         "by_category": [row for row in activity if row["category"] != "all"],
+        # Whether an empty by_category means "nothing was reported here" or
+        # "this breakdown is not built at this cell size". The two look identical
+        # in the payload and read very differently on screen, and the second is
+        # the case at resolution 10 -- see activity_scope. The per-offense list
+        # in top_offenses is built at every resolution and is the finer answer to
+        # the same question, so the panel has somewhere to point.
+        "by_category_available": category_breakdown_built(cell["h3_res"]),
         "monthly": monthly,
         "top_offenses": offenses,
         "safety": [
@@ -709,6 +1214,52 @@ def cell_detail(
             for row in hour_safety
         ],
     }
+
+
+# One cell's top offenses over a custom range, read from silver.
+#
+# The one place the range path reads silver, and the exception rule 1 at the top
+# of this module allows. A gold rollup of raw offense text per cell per day would
+# be several times the size of gold.cell_daily, for a list one panel shows for
+# one cell at a time. This is one cell's rows through the (source_id, h3_rN,
+# occurred_local_date) index, never a citywide scan, and the ranking is the
+# ETL's own (gold._OFFENSE_MIX_RANKED_DIRECT): count, then offense text.
+_RANGE_OFFENSE_MIX_SQL = """
+SELECT row_number() OVER (ORDER BY count(*) DESC, raw_offense_text) AS rank,
+       raw_offense_text,
+       min(nibrs_code)       AS nibrs_code,
+       min(product_category) AS product_category,
+       count(*)::int         AS incident_count
+FROM silver.incident
+WHERE source_id = %(source_id)s
+  AND {h3_column} = %(h3_index)s
+  AND occurred_local_date BETWEEN %(start)s AND %(end)s
+  AND raw_offense_text IS NOT NULL
+GROUP BY raw_offense_text
+ORDER BY rank
+LIMIT %(depth)s
+"""
+
+_H3_COLUMNS = {8: "h3_r8", 9: "h3_r9"}
+
+
+def range_offense_mix(
+    cur: psycopg.Cursor, *, source_id: str, cell: dict[str, Any], date_range: DateRange
+) -> list[dict[str, Any]]:
+    column = _H3_COLUMNS.get(cell["h3_res"])
+    if column is None:
+        return []
+    cur.execute(
+        _RANGE_OFFENSE_MIX_SQL.format(h3_column=column),
+        {
+            "source_id": source_id,
+            "h3_index": cell["h3_index"],
+            "start": date_range.start,
+            "end": date_range.end,
+            "depth": OFFENSE_MIX_DEPTH,
+        },
+    )
+    return cur.fetchall()
 
 
 def _exposure_payload(row: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -738,13 +1289,42 @@ def cell_ring(
     h3_indexes: list[str],
     time_window: str,
     category: str,
+    date_range: DateRange | None = None,
+    source_id: str | None = None,
+    h3_res: int | None = None,
 ) -> list[dict[str, Any]]:
     """Indexed key lookup for a set of cells -- the S10 read pattern.
 
     The caller computes the k-ring locally with an H3 library; the server only
-    does a primary-key fetch, never a spatial search.
+    does a primary-key fetch, never a spatial search. A custom range is ranked
+    citywide (`source_id`, `h3_res`) and the ring read off it.
     """
     with conn.cursor() as cur:
+        if date_range is not None:
+            ctes, params = _range_ctes(
+                conn,
+                source_id=source_id,
+                date_range=date_range,
+                categories=(category,),
+                with_safety=False,
+            )
+            params.update(
+                source_id=source_id, h3_res=h3_res, h3_indexes=h3_indexes, category=category
+            )
+            cur.execute(
+                f"""
+                WITH {ctes}
+                SELECT a.h3_index, a.incident_count, a.incidents_per_km2, a.percentile,
+                       a.activity_tier, a.city_rank, a.city_cell_total,
+                       ST_Y(g.centroid) AS lat, ST_X(g.centroid) AS lng
+                FROM range_activity a
+                JOIN gold.cell_geometry g ON g.h3_index = a.h3_index
+                WHERE a.h3_index = ANY(%(h3_indexes)s) AND a.category = %(category)s
+                ORDER BY a.incident_count DESC
+                """,
+                params,
+            )
+            return cur.fetchall()
         cur.execute(
             """
             SELECT a.h3_index, a.incident_count, a.incidents_per_km2, a.percentile,
@@ -760,11 +1340,78 @@ def cell_ring(
         return cur.fetchall()
 
 
+def city_hour_profile(
+    conn: psycopg.Connection,
+    *,
+    source_id: str,
+    time_window: str,
+    h3_res: int,
+    category: str,
+) -> list[int]:
+    """The city's whole day: incidents per local hour block, summed over cells.
+
+    What the map's "now" view reads its next-few-hours trend from. Historical
+    counts only -- the same shape the per-cell panel draws, at city scale, so
+    it says when the city is usually busier, not what will happen tonight.
+    """
+    counts = [0] * HOUR_BLOCKS
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT hour_block, sum(incident_count)::int AS incident_count
+            FROM gold.cell_hour_profile
+            WHERE source_id = %s AND time_window = %s AND h3_res = %s AND category = %s
+            GROUP BY hour_block
+            """,
+            (source_id, time_window, h3_res, category),
+        )
+        for row in cur.fetchall():
+            counts[row["hour_block"]] = row["incident_count"]
+    return counts
+
+
 def city_totals(
-    conn: psycopg.Connection, *, source_id: str, time_window: str, h3_res: int
+    conn: psycopg.Connection,
+    *,
+    source_id: str,
+    time_window: str,
+    h3_res: int,
+    date_range: DateRange | None = None,
 ) -> list[dict[str, Any]]:
     """Citywide totals per category, for the legend and the summary panel."""
     with conn.cursor() as cur:
+        if date_range is not None:
+            cur.execute(
+                """
+                SELECT v.category, v.n::int AS incident_count,
+                       %(start)s::date AS window_start, %(end)s::date AS window_end
+                FROM (
+                    SELECT COALESCE(sum(c_all), 0)             AS c_all,
+                           COALESCE(sum(c_violent), 0)         AS c_violent,
+                           COALESCE(sum(c_property), 0)        AS c_property,
+                           COALESCE(sum(c_quality_of_life), 0) AS c_quality_of_life,
+                           COALESCE(sum(c_other), 0)           AS c_other
+                    FROM gold.cell_daily
+                    WHERE source_id = %(source_id)s AND h3_res = %(h3_res)s
+                      AND day BETWEEN %(start)s AND %(end)s
+                ) t
+                CROSS JOIN LATERAL (VALUES
+                    ('all',             t.c_all),
+                    ('violent',         t.c_violent),
+                    ('property',        t.c_property),
+                    ('quality_of_life', t.c_quality_of_life),
+                    ('other',           t.c_other)
+                ) AS v(category, n)
+                ORDER BY CASE v.category WHEN 'all' THEN 0 ELSE 1 END, incident_count DESC
+                """,
+                {
+                    "source_id": source_id,
+                    "h3_res": h3_res,
+                    "start": date_range.start,
+                    "end": date_range.end,
+                },
+            )
+            return cur.fetchall()
         cur.execute(
             """
             SELECT category, sum(incident_count)::int AS incident_count,

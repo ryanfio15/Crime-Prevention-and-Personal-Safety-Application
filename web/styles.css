@@ -15,6 +15,7 @@
   --text-primary:   #0b0b0b;
   --text-secondary: #52514e;
   --text-muted:     #898781;
+  --danger:         #b91c1c;   /* errors; 6.1:1 on --page, 6.3:1 on --surface-1 */
   --gridline:       #e1e0d9;
   --baseline:       #c3c2b7;
   --border:         rgba(11, 11, 11, 0.10);
@@ -156,30 +157,15 @@ select:focus-visible, .btn:focus-visible {
 }
 .btn[aria-pressed="true"] { border-color: var(--series-1); color: var(--series-1); }
 
-/* Time-of-day control.
-   Marked as a development affordance rather than dressed to match the filters
-   beside it: in production the hour comes from the user's clock, and this input
-   goes away. Looking provisional is the honest state. */
-.field-dev .field-label { color: var(--series-1); }
+/* Date range. Two calendar inputs on one line, the preset list beneath them, so
+   the field reads as one choice of period. */
+.range-inputs { display: flex; align-items: center; gap: 6px; }
+.range-sep { color: var(--text-muted); }
 
-.dev-tag {
-  display: inline-block;
-  margin-left: 4px;
-  padding: 0 4px;
-  border: 1px dashed currentColor;
-  border-radius: 4px;
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  vertical-align: 1px;
-}
-
-.hour-input { display: flex; align-items: center; gap: 8px; }
-
-.hour-input input[type="time"] {
+.range-inputs input[type="date"] {
   min-height: 32px;
   padding: 5px 9px;
-  border: 1px dashed rgba(11, 11, 11, 0.28);
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--page);
   color: var(--text-primary);
@@ -187,15 +173,73 @@ select:focus-visible, .btn:focus-visible {
   font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
-.hour-input input[type="time"]:focus-visible {
+.range-inputs input[type="date"]:hover { border-color: rgba(11, 11, 11, 0.28); }
+.range-inputs input[type="date"]:focus-visible {
   outline: 2px solid var(--series-1);
   outline-offset: 1px;
 }
-.field-dev[aria-disabled="true"] { opacity: 0.55; }
-.field-dev[aria-disabled="true"] input { pointer-events: none; }
+.range-inputs input[type="date"]:disabled { opacity: 0.55; cursor: not-allowed; }
+.field-range .field-note { max-width: 34ch; }
 
-/* Echoes the block the entered time actually resolves to, so there is never a
-   question of whether 20:45 means 20:00-21:00. */
+/* Time of day: the city's current time as a read-only clock, not an input. */
+.hour-clock {
+  display: block;
+  min-height: 32px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 32px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.field-hour[aria-disabled="true"] .hour-trend { display: none; }
+
+/* Time-of-day risk: the day's 24 blocks (current one dark, lower-risk window
+   blue), then three lines in words -- this hour, the next few, the lower-risk
+   window -- so nothing rests on colour alone. */
+.hour-trend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 36ch;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.hour-trend[hidden] { display: none; }
+.hour-trend b { color: var(--text-primary); font-weight: 600; }
+.trend-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.trend-lines li { display: flex; align-items: baseline; gap: 6px; }
+.trend-arrow {
+  flex: none;
+  width: 1em;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--text-primary);
+}
+.trend-foot { font-size: 10.5px; color: var(--text-muted); }
+.trend-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 20px;
+}
+.trend-bars i {
+  display: block;
+  width: 3px;
+  min-height: 1px;
+  border-radius: 1px 1px 0 0;
+  background: var(--gridline);
+}
+.trend-bars i[data-quiet] { background: var(--series-1); }
+.trend-bars i[data-now] { width: 5px; background: var(--text-primary); }
+
 .field-note {
   font-size: 11px;
   color: var(--text-muted);
@@ -262,6 +306,13 @@ select:focus-visible, .btn:focus-visible {
   z-index: 3;
 }
 
+/* A failed load stays on screen (app.js loadLayer) and must read as an error,
+   not as a stuck "Loading". */
+.loading.is-error {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 /* ---------------------------------------------------------------- legend --- */
 
 .legend {
@@ -325,23 +376,6 @@ select:focus-visible, .btn:focus-visible {
   background: var(--seq-zero);
   border: 1px solid var(--baseline);
 }
-
-/* --------------------------------------------------------------- tooltip --- */
-
-.map-tooltip {
-  position: absolute;
-  z-index: 4;
-  pointer-events: none;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: rgba(252, 252, 251, 0.97);
-  font-size: 12.5px;
-  white-space: nowrap;
-  transform: translate(-50%, calc(-100% - 12px));
-}
-.map-tooltip b { font-variant-numeric: tabular-nums; }
-.map-tooltip small { display: block; color: var(--text-muted); font-size: 11px; }
 
 /* ---------------------------------------------------------- detail panel --- */
 

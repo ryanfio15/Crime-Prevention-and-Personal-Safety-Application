@@ -8,13 +8,15 @@
    --------------------------------------------------------------------------- */
 
 const API = "/api/v1";
-const CITY = "phl";
+
+/* The city to open on, when the URL does not say. Not "the only city": the
+   picker is populated from /api/v1/cities, and this is only the fallback if that
+   city is among them. Otherwise the first one served wins. */
+const DEFAULT_CITY = "phl";
 
 /* A distinct state, not the bottom of the ramp: nothing was reported here. */
 const ZERO_FILL = "#e1e0d9";
-const SURFACE_GAP = "#fcfcfb";
 const SERIES_1 = "#2a78d6";
-const INK_PRIMARY = "#0b0b0b";
 const INK_SECONDARY = "#52514e";
 const BASELINE = "#c3c2b7";
 
@@ -158,6 +160,151 @@ function valueDomain(prop, isPainted) {
   };
 }
 
+/**
+ * Citywide reported incidents per ambient person, for the layer on screen.
+ *
+ * Summed here rather than served for the same reason `valueDomain` is: the
+ * features are already in the browser, and the alternative is another
+ * precomputed figure existing only to fill one line of one panel. The activity
+ * layer is dense and the client fetches it unfiltered, so this is the whole city
+ * and not a sample of it.
+ *
+ * Numerator and denominator are accumulated over the same cells -- the ones
+ * carrying a population figure. Counting incidents from a cell whose exposure is
+ * unknown would add to the top of the fraction without adding to the bottom, and
+ * make the city look worse than it is.
+ */
+function cityExposureRate() {
+  let incidents = 0;
+  let people = 0;
+  for (const feature of state.features) {
+    const p = feature.properties;
+    if (typeof p.exposure !== "number" || p.exposure <= 0) continue;
+    incidents += p.count ?? 0;
+    people += p.exposure;
+  }
+  return people > 0 ? { incidents, people, rate: incidents / people } : null;
+}
+
+/* Below this many ambient people, a rate per person is two small numbers
+   divided: a cell with nine people and three incidents comes out at twenty-four
+   times the city average, which is arithmetic rather than a finding. */
+const RELATIVE_MIN_EXPOSURE = 100;
+
+/**
+ * One cell's incident rate per person, against the city's own.
+ *
+ * Read out of `state.features` rather than out of the detail payload, because
+ * the feature is what is on screen: it carries the selected offence category,
+ * where the panel's headline count is always category `all`. Both sides of the
+ * ratio then come from one layer and share a denominator definition -- the same
+ * ambient residents-and-jobs figure the safety ranking itself divides by.
+ *
+ * Returns a `reason` instead of a ratio wherever the division would mislead;
+ * `relativeStat` turns each of those into its own sentence.
+ */
+function relativeRate(h3) {
+  const feature = state.features.find((f) => f.properties.h3 === h3);
+  if (!feature) return { reason: "unavailable" };
+
+  // Not one cell in this layer carries a population denominator: either the
+  // active severity scheme ranks by area, in which case cell_safety.exposure is
+  // NULL by construction, or the exposure layer was never built. There is
+  // nothing to be relative to, so the headline falls back to the count -- the
+  // same fallback syncSafetyAvailability makes for the ramp.
+  const city = cityExposureRate();
+  if (!city) return { reason: "no_city_exposure" };
+
+  const p = feature.properties;
+  const count = p.count ?? 0;
+  const exposure = typeof p.exposure === "number" ? p.exposure : null;
+
+  if (exposure === null || exposure <= 0) return { reason: "no_exposure", count };
+  if (count === 0) return { reason: "no_incidents", count, exposure, city };
+  if (exposure < RELATIVE_MIN_EXPOSURE) {
+    return { reason: "thin_exposure", count, exposure, city };
+  }
+  const rate = count / exposure;
+  return { ratio: rate / city.rate, rate, count, exposure, city };
+}
+
+/** The ratio in whichever form reads as a quantity: 1,400% has to be decoded,
+    14.0x does not.
+
+    The bottom end is named rather than rounded, the same way `safetyLabel`
+    names its extremes: a big quiet cell -- one report among twenty thousand
+    people -- rounds to 0%, and 0% is the one thing this figure must not say
+    about a cell where something was reported. */
+function formatRatio(ratio) {
+  if (ratio >= 10) return `${ratio.toFixed(1)}×`;
+  if (ratio < 0.005) return "<1%";
+  return `${Math.round(ratio * 100)}%`;
+}
+
+/* Per 1,000 people, matching every other exposure-denominated figure here. */
+const per1k = (rate) => (rate * 1000).toFixed(1);
+
+/**
+ * The safety view's headline figure, in words.
+ *
+ * A percentage of the city's rate, never a bare one: above 100% is the
+ * concerning direction, which is the opposite of what a number under a heading
+ * reading "safety" would be assumed to mean, so the sense is always spelled out
+ * beside it. The two rates it came from go underneath for the same reason the
+ * hour share prints its counts -- a derived figure is only checkable if the
+ * numbers behind it are visible.
+ */
+function relativeStat(rel, windowLabel) {
+  switch (rel.reason) {
+    case "no_incidents":
+      return {
+        value: "—",
+        label: `nothing reported here · ${windowLabel}`,
+        note:
+          `0 incidents among ${nf.format(rel.exposure)} people. An absence of ` +
+          `reports is not evidence of safety.`,
+      };
+    case "thin_exposure":
+      return {
+        value: "—",
+        label: `too few people here to compare · ${windowLabel}`,
+        note:
+          `${nf.format(rel.count)} incidents among ${nf.format(rel.exposure)} ` +
+          `people — a rate per person on a denominator this small would swing on ` +
+          `a single report.`,
+      };
+    case "no_exposure":
+      return {
+        value: "—",
+        label: "no population figure for this cell",
+        note:
+          `${nf.format(rel.count)} reported incidents. The comparison divides by ` +
+          `ambient population, which this cell has none apportioned to it.`,
+      };
+    case "unavailable":
+      return {
+        value: "—",
+        label: "not comparable in this layer",
+        note: "",
+      };
+  }
+
+  // Same ±5% deadband as the hour share: inside it, the honest reading is "no
+  // different", not a number to two figures.
+  const sense =
+    rel.ratio > 1.05 ? "higher than the city average"
+    : rel.ratio < 0.95 ? "lower than the city average"
+    : "about the city average";
+
+  return {
+    value: formatRatio(rel.ratio),
+    label: `of the city-average incident rate per person — ${sense} · ${windowLabel}`,
+    note:
+      `${nf.format(rel.count)} incidents among ${nf.format(rel.exposure)} people · ` +
+      `${per1k(rel.rate)} vs ${per1k(rel.city.rate)} per 1,000 citywide`,
+  };
+}
+
 const TIER_LABELS = {
   0: "No reported incidents",
   1: "Lowest fifth",
@@ -200,41 +347,58 @@ const TRACK_PROPS = {
   },
 };
 
-/* Mirrors safety.etl.gold.HOURLY_RESOLUTIONS / HOURLY_WINDOWS. The API rejects
-   anything outside this with a reason; the client knows the same bounds so it
-   can disable the control up front rather than let a request fail. */
+/* Mirrors safety.etl.gold.HOURLY_RESOLUTIONS. The API rejects anything outside
+   this with a reason; the client knows the same bounds so it can disable the
+   control up front rather than let a request fail. Which *windows* carry the
+   hourly layer comes with each city's window list (windows.js). */
 const HOURLY_RESOLUTIONS = [8, 9];
-const HOURLY_WINDOWS = ["last_12m", "last_24m"];
 
-/* Mirrors safety.etl.gold.PERCAPITA_RESOLUTIONS. The safety ranking divides by
+/* Mirrors safety.etl.gold.SAFETY_RESOLUTIONS. The safety ranking divides by
    ambient population apportioned from census blocks, and a res-10 cell is
    smaller than a census block -- there is no population figure at that size
    that is not interpolation. Counts are still served there, so the map falls
    back to the count ramp rather than going blank. */
 const SAFETY_RESOLUTIONS = [8, 9];
 
+/* Mirrors safety.etl.gold.ACTIVITY_CATEGORIES. The activity layer is dense --
+   one row per cell per window per category, since a cell with no reported
+   incidents is still part of the distribution it is ranked against -- so
+   resolution 10 is built for the combined category only, and for the one- and
+   two-year windows (each window's `res10` flag). At ~0.015 km² a single
+   category over 30 days leaves nearly every cell on zero, tied with every
+   other, and a percentile over a field of ties is not a reading. Same bounds on
+   the server, which answers the rest with the reason; the client knows them so
+   the controls can say so first. */
+const ACTIVITY_CATEGORIES = { 10: ["all"] };
+
+const activityCategories = (res) => ACTIVITY_CATEGORIES[res] ?? null;
+
+/** The stored window the selected dates are exactly, or null for a custom
+    range (and before the city record loads). */
+const currentPreset = () =>
+  presetFor(state.range, state.cityRecord?.windows, state.cityRecord?.coverage_end);
+
+const todayIso = () => localIso(new Date());
+
+/** ?from=&to= from a shared link, or null. */
+function initialRange() {
+  const params = new URLSearchParams(location.search);
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  const from = params.get("from");
+  const to = params.get("to");
+  return iso.test(from ?? "") && iso.test(to ?? "") ? clampRange({ from, to }) : null;
+}
+
+/** The request's period. A preset goes by its window id, so it is served from
+    the stored build (hourly layer and all); anything else goes as the dates. */
+function periodParams() {
+  const preset = currentPreset();
+  return preset ? { window: preset.id } : { from: state.range.from, to: state.range.to };
+}
+
 /** "20:00–21:00". The last block reads 23:00–24:00, not 23:00–00:00. */
 const hourLabel = (hour) =>
   `${String(hour).padStart(2, "0")}:00–${String(hour + 1).padStart(2, "0")}:00`;
-
-/* Rating 2 in words. Same bands as safety/api/repository.py::delta_label --
-   wide on purpose, because an hourly percentile is far noisier than the
-   all-hours one it is compared against and narrow bands would dress that noise
-   up as movement. */
-const DELTA_BANDS = [
-  [-0.15, "Much worse here than usual"],
-  [-0.05, "Worse here than usual"],
-  [0.05, "Typical for this cell"],
-  [0.15, "Better here than usual"],
-];
-
-function deltaLabel(delta) {
-  if (delta === null || delta === undefined) return null;
-  for (const [threshold, label] of DELTA_BANDS) {
-    if (delta < threshold) return label;
-  }
-  return "Much better here than usual";
-}
 
 const CATEGORY_LABELS = {
   violent: "Violent",
@@ -244,13 +408,29 @@ const CATEGORY_LABELS = {
 };
 
 const state = {
-  window: "last_12m",
+  /* Set during boot from ?city= or the served list; never assumed. */
+  city: null,
+  /* The selected city's snapshot row, so the header, the frame and the
+     methodology sheet all read from one place. */
+  cityRecord: null,
+  /* The two dates the map shows, {from, to} as ISO strings (windows.js).
+     ?from=&to= win on first load; otherwise renderRangeControls fills it in
+     once the city record arrives -- from a legacy ?window= link if there is
+     one, else the year up to today. */
+  range: initialRange(),
+  pendingWindow: new URLSearchParams(location.search).get("window"),
+  // Set across a city switch when the dates were a preset (selectCity).
+  carryPreset: null,
   category: "all",
   res: 8,
   scale: "safety",
   track: "violent",
-  // null = all hours. Otherwise the local hour block 0-23.
+  // The city's current local hour block 0-23, or null where the window or cell
+  // size has no hourly layer. Set by syncHourAvailability from the clock.
   hour: null,
+  // The city's 24-block profile behind the this-hour-vs-usual reading, with
+  // the request it answers so a stale one is never read: {key, counts}.
+  hourProfile: null,
   selected: null,
   hovered: null,
   meta: null,
@@ -262,6 +442,11 @@ const state = {
   rampDomain: null,
   refreshStamp: null,
   framed: false,
+  // Layer requests are numbered and the previous one aborted, so a slow
+  // response for controls the user has since changed can never overwrite the
+  // layer they now describe.
+  layerSeq: 0,
+  layerAbort: null,
 };
 
 const nf = new Intl.NumberFormat("en-US");
@@ -349,36 +534,6 @@ function fillColorExpression() {
   ];
 }
 
-/* Approximate width of a cell, in metres, per resolution. */
-const CELL_SPAN_M = { 8: 530, 9: 200, 10: 76 };
-
-/**
- * Resting width of the hairline between fills.
- *
- * The surface-coloured hairline only reads as a 2px gap while a cell is more
- * than a few pixels across. At resolution 10 the whole-city view puts ~26,000
- * hexagons on screen at roughly two pixels each, and a 1.1px line is then most
- * of the cell -- the map turns into a sheet of surface colour with no data
- * visible at all. So the line fades in at the zoom where this resolution's
- * cells are actually wide enough to carry it, and is absent below that.
- *
- * Selection and hover keep a fixed width at every zoom: those are pointer
- * feedback on one cell, not a boundary between thousands.
- */
-function outlineWidthExpression() {
-  const span = CELL_SPAN_M[state.res] ?? CELL_SPAN_M[8];
-  // Web-mercator ground resolution at Philadelphia's latitude is about
-  // 119,940 / 2^zoom metres per pixel, so this is the zoom at which a cell
-  // spans roughly six pixels.
-  const legible = Math.log2((6 * 119940) / span);
-  return [
-    "case",
-    ["boolean", ["feature-state", "selected"], false], 2.2,
-    ["boolean", ["feature-state", "hover"], false], 1.6,
-    ["interpolate", ["linear"], ["zoom"], legible - 1, 0, legible, 1.1],
-  ];
-}
-
 /* ------------------------------------------------------------------- legend */
 
 /** Tick label for a domain endpoint: as precise as the magnitude deserves. */
@@ -413,7 +568,7 @@ function renderLegend() {
   // Both modes run the same direction now: green at the low end of the
   // measured value, red at the high end.
   $("legend-ramp").innerHTML =
-    `<span style="background:${rampGradient(VALUE_RAMP)}"></span>`;
+    html`<span style="background:${rampGradient(VALUE_RAMP)}"></span>`;
 
   const domain = state.rampDomain;
   if (!domain) {
@@ -428,55 +583,73 @@ function renderLegend() {
   // lowest painted cell at the left edge, the median in the middle, the highest
   // at the right. The middle tick is the whole point of a value scale -- it is
   // what the centre colour means.
-  $("legend-ticks").innerHTML = [domain.min, domain.median, domain.max]
-    .map((value) => `<span>${formatDomainValue(value)}</span>`)
-    .join("");
+  $("legend-ticks").innerHTML = html`${[domain.min, domain.median, domain.max].map(
+    (value) => html`<span>${formatDomainValue(value)}</span>`
+  )}`;
 
   const skew =
     `Colour follows the value itself and the middle of the bar is the median ` +
     `of the ${nf.format(domain.painted)} cells carrying one. The distribution ` +
     `is heavily skewed, so most cells sit left of centre.`;
 
+  // `skew` is plain text and is escaped like any other value; the markup lives
+  // only in the literal parts.
   $("legend-foot").innerHTML = safety
-    ? `<span class="legend-zero"><i></i> Nothing of this kind reported</span>` +
-      `<br>Severity-weighted offence per 1,000 residents and workers, smoothed` +
-      (state.hour === null ? "" : " <b>within this hour</b>") +
-      `. ${skew} A cell with no reports is not therefore safe.`
-    : `<span class="legend-zero"><i></i> No reported incidents</span>` +
-      `<br>${skew}` +
-      (state.hour === null
-        ? ""
-        : `<br>Counts exclude incidents the source published with no clock time.`);
+    ? html`<span class="legend-zero"><i></i> Nothing of this kind reported</span><br>Severity-weighted offence per 1,000 residents and workers, smoothed${
+        state.hour === null ? "" : html` <b>within this hour</b>`
+      }. ${skew} A cell with no reports is not therefore safe.`
+    : html`<span class="legend-zero"><i></i> No reported incidents</span><br>${skew}${
+        state.hour === null
+          ? ""
+          : html`<br>Counts exclude incidents the source published with no clock time.`
+      }`;
 }
 
 /* --------------------------------------------------------------- data fetch */
 
 async function loadLayer({ quiet = false } = {}) {
+  // A background refresh that lands while a visible load (or its error) is on
+  // screen takes that load over, so it must own the indicator too: the aborted
+  // load returns silently, and a quiet failure here would leave "Loading…" up (P3).
+  if (quiet && !$("loading").hidden) quiet = false;
+  const seq = ++state.layerSeq;
+  state.layerAbort?.abort();
+  const controller = (state.layerAbort = new AbortController());
+
   if (!quiet) {
     $("map").classList.add("is-refetching");
+    // Reset first: a previous failure's message must not sit under the
+    // "loading" state of the request that may fix it.
+    $("loading").textContent = "Loading…";
+    $("loading").classList.remove("is-error");
     $("loading").hidden = false;
   }
 
   // The pointer can sit still across a layer swap, so mouseleave never fires
-  // and the tooltip would keep showing a value from the previous layer.
-  $("tooltip").hidden = true;
+  // and the hover highlight would stay on a cell from the previous layer.
   if (state.hovered) {
     map.setFeatureState({ source: "cells", id: state.hovered }, { hover: false });
     state.hovered = null;
   }
 
   const params = new URLSearchParams({
-    city: CITY,
+    city: state.city,
     res: String(state.res),
-    window: state.window,
+    ...periodParams(),
     category: state.category,
   });
   if (state.hour !== null) params.set("hour", String(state.hour));
 
   try {
-    const response = await fetch(`${API}/cells?${params}`);
-    if (!response.ok) throw new Error(`cells request failed: ${response.status}`);
+    const response = await fetch(`${API}/cells?${params}`, { signal: controller.signal });
+    if (!response.ok) {
+      throw Object.assign(new Error(`cells request failed: ${response.status}`), {
+        status: response.status,
+      });
+    }
     const collection = await response.json();
+    // A newer request has been issued since; its result is the one the controls describe.
+    if (seq !== state.layerSeq) return;
 
     state.meta = collection.metadata;
     state.features = collection.features;
@@ -485,41 +658,82 @@ async function loadLayer({ quiet = false } = {}) {
     if (source) source.setData(collection);
 
     map.setPaintProperty("cells-fill", "fill-color", fillColorExpression());
-    // The cell size may have just changed, and the hairline is sized per
-    // resolution -- see outlineWidthExpression.
-    map.setPaintProperty("cells-outline", "line-width", outlineWidthExpression());
     renderLegend();
     renderTable();
+    // Not awaited: the trend is a footnote to the layer, not part of it.
+    loadHourProfile();
+    // The city rate the safety headline is a share of has just moved, and so has
+    // the selected cell's own count if the category changed -- that control
+    // reloads the layer without reopening the panel.
+    if (state.detail) renderHeadlineStat(state.detail);
     // Only now is it known whether the hourly layer exists at all.
     syncHourAvailability();
-  } catch (error) {
-    console.error(error);
-    $("loading").textContent = "Could not load cell data. Is the API running?";
-    return;
-  } finally {
-    $("map").classList.remove("is-refetching");
     $("loading").hidden = true;
     $("loading").textContent = "Loading…";
+    $("loading").classList.remove("is-error");
+  } catch (error) {
+    // Superseded or aborted: the newer request owns the screen.
+    if (error.name === "AbortError" || seq !== state.layerSeq) return;
+    // A failed background refresh (the 60 s poll) keeps the layer on screen,
+    // which is still valid; it is not worth an alarm.
+    if (quiet) {
+      console.error(error);
+      return;
+    }
+    console.error(error);
+    // Left on screen until the next successful load replaces it -- hiding it in
+    // `finally` was what made every failure look like a frozen map.
+    $("loading").textContent =
+      error.status === 429
+        ? "Too many requests — wait a moment, then change a control to retry."
+        : "Could not load cell data. Try again shortly.";
+    $("loading").classList.add("is-error");
+    $("loading").hidden = false;
+  } finally {
+    if (seq === state.layerSeq) $("map").classList.remove("is-refetching");
   }
 }
 
-async function loadFreshness() {
-  const response = await fetch(`${API}/cities/${CITY}`);
+async function loadFreshness({ refit = false } = {}) {
+  const response = await fetch(`${API}/cities/${encodeURIComponent(state.city)}`);
   if (!response.ok) return;
   const city = await response.json();
+  // A preset carries over as a preset, read against the outgoing record: after
+  // a refresh "last 12 months" ends on a newer day, and another city's ends on
+  // its own, so the old dates would match none of the new windows.
+  // renderRangeControls finds the nearest (pickWindow). Custom dates carry over
+  // as dates, clamped to what the city holds.
+  const preset = currentPreset();
+  state.carryPreset = preset ? { id: preset.id, span: preset.span_days } : null;
+  state.cityRecord = city;
+  renderRangeControls();
 
   // Frame the city from its own stored bounding box rather than a hardcoded
-  // centre, so a second city needs no client change (design doc S11).
-  if (!state.framed && Number.isFinite(city.bbox_west)) {
+  // centre, so a second city needs no client change (design doc S11). `refit`
+  // is what makes that true on a *switch* and not just on first load: without
+  // it the map would stay over whichever city opened first.
+  if ((refit || !state.framed) && Number.isFinite(city.bbox_west)) {
     map.fitBounds(
       [
         [city.bbox_west, city.bbox_south],
         [city.bbox_east, city.bbox_north],
       ],
-      { padding: { top: 28, bottom: 28, left: 28, right: 28 }, duration: 0 }
+      {
+        padding: { top: 28, bottom: 28, left: 28, right: 28 },
+        // Animate a deliberate switch, so it reads as travel rather than a cut;
+        // the first frame should just be there.
+        duration: state.framed && refit ? 700 : 0,
+      }
     );
     state.framed = true;
   }
+
+  document.title = `${city.city_name} reported-incident activity`;
+  $("city-heading").textContent = `${city.city_name} — reported incident activity`;
+  $("map").setAttribute(
+    "aria-label",
+    `Map of ${city.city_name} with hexagonal cells shaded by reported incident count`
+  );
 
   // Design doc S12(b): "data as of" is a visible, first-class element.
   const asOf = new Date(city.data_as_of);
@@ -532,7 +746,112 @@ async function loadFreshness() {
     `· ${nf.format(city.incident_count)} incidents · updated ${city.expected_cadence}`;
 }
 
+/**
+ * Populate the city picker from what the API actually serves.
+ *
+ * Only cities with a gold.city_snapshot row come back, which is the right set:
+ * a city whose adapter exists but whose pipeline has not run has nothing to
+ * show, and offering it would produce an empty map with no explanation.
+ *
+ * Returns the chosen source_id. `?city=` wins if it is served, then
+ * DEFAULT_CITY, then whatever is first.
+ */
+async function loadCities() {
+  const response = await fetch(`${API}/cities`);
+  if (!response.ok) throw new Error(`cities request failed: ${response.status}`);
+  const { cities } = await response.json();
+  if (!cities.length) throw new Error("no city has serving data yet");
+
+  const select = $("f-city");
+  select.replaceChildren(
+    ...cities.map((city) => {
+      const option = document.createElement("option");
+      option.value = city.source_id;
+      option.textContent = city.city_name;
+      return option;
+    })
+  );
+  // One city is not a choice; hiding the control is more honest than offering a
+  // dropdown that cannot do anything.
+  $("f-city-field").hidden = cities.length < 2;
+
+  const requested = new URLSearchParams(location.search).get("city");
+  const served = new Set(cities.map((c) => c.source_id));
+  const chosen =
+    (requested && served.has(requested) && requested) ||
+    (served.has(DEFAULT_CITY) && DEFAULT_CITY) ||
+    cities[0].source_id;
+  select.value = chosen;
+  return chosen;
+}
+
+/**
+ * Switch cities.
+ *
+ * Everything keyed to a place is dropped rather than carried across: an H3 index
+ * belongs to exactly one city, so a selected cell, a hovered cell and a cached
+ * ramp domain are all meaningless the moment the city changes. The filters --
+ * dates, category, cell size, hour -- are not place-specific and do carry over,
+ * which is what someone comparing two cities on the same terms would want.
+ *
+ * What deliberately does *not* happen is any comparison between the two. Every
+ * percentile is computed against its own city's distribution (design doc S3.3),
+ * so a figure from one city and a figure from another are not on the same scale
+ * and the UI never places them side by side.
+ */
+async function selectCity(sourceId) {
+  if (sourceId === state.city) return;
+  state.city = sourceId;
+  closeDetail();
+  // The stamp is per city now, so carrying the old one across would read as "the
+  // pipeline just ran" on the next poll and trigger a pointless reload. Null
+  // makes the next tick record rather than compare.
+  state.refreshStamp = null;
+
+  const url = new URL(location.href);
+  url.searchParams.set("city", sourceId);
+  history.replaceState(null, "", url);
+
+  await loadFreshness({ refit: true });
+  syncActivityScope();
+  syncHourAvailability();
+  await loadLayer();
+}
+
 /* --------------------------------------------------------------- cell panel */
+
+/**
+ * The panel's one big number, which measures whatever the map is coloured by.
+ *
+ * Under the count ramp that is the count itself. Under the safety ramp a bare
+ * count is the wrong headline: the ramp is ranking cells per head of ambient
+ * population, and a cell with forty incidents among twelve thousand people is
+ * the quieter of two cells the count alone would order the other way. So the
+ * safety view leads with the comparison the ramp is making -- this cell's
+ * incidents per person as a share of the city's.
+ */
+function renderHeadlineStat(detail) {
+  const value = $("d-count");
+  const label = $("d-count-label");
+  // "last 12 months" reads in a sentence; "1 Mar 2025 – 9 Oct 2025" keeps its capitals.
+  const windowLabel = detail.range ? detail.window_label : detail.window_label.toLowerCase();
+
+  const rel = state.scale === "safety" ? relativeRate(state.selected) : null;
+
+  if (rel === null || rel.reason === "no_city_exposure") {
+    const headline = detail.headline ?? { incident_count: 0 };
+    value.textContent = nf.format(headline.incident_count ?? 0);
+    label.textContent = `reported incidents · ${windowLabel}`;
+    return;
+  }
+
+  const stat = relativeStat(rel, windowLabel);
+  value.textContent = stat.value;
+  // stat.label/note carry the server's window_label: plain text, escaped.
+  label.innerHTML = stat.note
+    ? html`${stat.label}<span class="kv-note">${stat.note}</span>`
+    : html`${stat.label}`;
+}
 
 async function selectCell(h3) {
   if (state.selected && state.selected !== h3) {
@@ -542,10 +861,11 @@ async function selectCell(h3) {
   map.setFeatureState({ source: "cells", id: h3 }, { selected: true });
 
   const hourParam = state.hour === null ? "" : `&hour=${state.hour}`;
+  const period = new URLSearchParams(periodParams());
   const [detail, ring] = await Promise.all([
-    fetch(`${API}/cells/${h3}?window=${state.window}${hourParam}`)
+    fetch(`${API}/cells/${encodeURIComponent(h3)}?${period}${hourParam}`)
       .then((r) => (r.ok ? r.json() : null)),
-    fetch(`${API}/cells/ring?h3=${h3}&k=1&window=${state.window}&category=all`)
+    fetch(`${API}/cells/ring?h3=${encodeURIComponent(h3)}&k=1&${period}&category=all`)
       .then((r) => (r.ok ? r.json() : null)),
   ]);
   if (!detail) return;
@@ -557,12 +877,10 @@ async function selectCell(h3) {
   $("detail-body").hidden = false;
 
   const headline = detail.headline ?? { incident_count: 0 };
-  $("d-count").textContent = nf.format(headline.incident_count ?? 0);
-  $("d-count-label").textContent =
-    `reported incidents · ${detail.window_label.toLowerCase()}`;
+  renderHeadlineStat(detail);
 
   // The activity tier gave up its row to the time-of-day figure; it still
-  // reaches the reader through the tooltip and the table view.
+  // reaches the reader through the table view.
   $("d-rank").textContent = headline.city_rank
     ? `${nf.format(headline.city_rank)} of ${nf.format(headline.city_cell_total)}`
     : "—";
@@ -589,7 +907,7 @@ async function selectCell(h3) {
 
   renderSafety(detail.safety);
   renderHours(detail);
-  renderCategoryBars(detail.by_category);
+  renderCategoryBars(detail.by_category, detail.by_category_available);
   renderSparkline(detail.monthly, headline.window_end);
   renderOffenseMix(detail.top_offenses);
 }
@@ -597,10 +915,10 @@ async function selectCell(h3) {
 /**
  * Short label for a safety percentile, correct at both ends.
  *
- * The extremes need naming rather than rounding: the worst cell in Philadelphia
- * scores 0.0009, and "0th percentile" reads as a missing value rather than as
- * the bottom of the city. Kept terse because it sits in a narrow panel column
- * beside the tier label.
+ * The extremes need naming rather than rounding: the worst cell in a city scores
+ * something like 0.0009 -- one over twice the cell count -- and "0th percentile"
+ * reads as a missing value rather than as the bottom of the city. Kept terse
+ * because it sits in a narrow panel column beside the tier label.
  */
 function safetyLabel(percentile) {
   const value = percentile * 100;
@@ -619,12 +937,12 @@ function safetyLabel(percentile) {
 function renderSafety(rows) {
   const byTrack = Object.fromEntries((rows ?? []).map((r) => [r.track, r]));
   const format = (row) => {
-    if (!row) return "&mdash;";
+    if (!row) return "—";
     const label = SAFETY_TIER_LABELS[row.safety_tier] ?? "";
     return `${safetyLabel(row.safety_percentile)} · ${label}`;
   };
-  $("d-safety-violent").innerHTML = format(byTrack.violent);
-  $("d-safety-nonviolent").innerHTML = format(byTrack.non_violent);
+  $("d-safety-violent").innerHTML = html`${format(byTrack.violent)}`;
+  $("d-safety-nonviolent").innerHTML = html`${format(byTrack.non_violent)}`;
 
   const missing = !rows?.length;
   $("d-safety-note").textContent = missing
@@ -658,7 +976,7 @@ function renderHourShare(detail) {
     state.hour === null ? "At this hour" : `At ${hourLabel(state.hour)}`;
 
   if (state.hour === null) {
-    value.textContent = "enter a time of day";
+    value.textContent = "hourly view not built for this range";
     return;
   }
 
@@ -682,10 +1000,9 @@ function renderHourShare(detail) {
     pct > 105 ? "busier than its average hour"
     : pct < 95 ? "quieter than its average hour"
     : "about its average hour";
-  value.innerHTML =
-    `<b>${nf.format(pct)}%</b> — ${sense}` +
-    `<span class="kv-note">${nf.format(rel.hour_count)} here vs. ` +
-    `${rel.mean_per_hour} per hour on average</span>`;
+  value.innerHTML = html`<b>${nf.format(pct)}%</b> — ${sense}<span class="kv-note">${nf.format(
+    rel.hour_count
+  )} here vs. ${rel.mean_per_hour} per hour on average</span>`;
 }
 
 function renderHours(detail) {
@@ -705,14 +1022,12 @@ function renderHours(detail) {
   const max = Math.max(...counts, 1);
   const total = counts.reduce((sum, n) => sum + n, 0);
 
-  $("d-hours").innerHTML = counts
-    .map((n, hour) => {
-      const height = Math.max((n / max) * 100, n > 0 ? 4 : 0);
-      const selected = hour === state.hour ? " data-selected" : "";
-      const on = n > 0 ? " data-on" : "";
-      return `<i style="height:${height}%"${on}${selected} title="${hourLabel(hour)}: ${nf.format(n)}"></i>`;
-    })
-    .join("");
+  $("d-hours").innerHTML = html`${counts.map((n, hour) => {
+    const height = Math.max((n / max) * 100, n > 0 ? 4 : 0);
+    const selected = hour === state.hour ? html` data-selected` : "";
+    const on = n > 0 ? html` data-on` : "";
+    return html`<i style="height:${height}%"${on}${selected} title="${hourLabel(hour)}: ${nf.format(n)}"></i>`;
+  })}`;
 
   $("d-hour-title").textContent =
     state.hour === null
@@ -726,7 +1041,7 @@ function renderHours(detail) {
     $("d-hour-safety").textContent = dash;
     $("d-hour-delta").textContent = dash;
     $("d-hour-note").textContent =
-      "Enter a time of day to rank this cell within a single hour block.";
+      "The hourly view is built for the last-12-months range only.";
     return;
   }
 
@@ -746,8 +1061,21 @@ function renderHours(detail) {
     "offence occurred.";
 }
 
-function renderCategoryBars(rows) {
+/**
+ * `available === false` means the split is not built at this cell size, which is
+ * a different statement from an empty cell and must not borrow its wording. The
+ * per-offence list below the chart is built at every resolution, so there is a
+ * finer answer to send the reader to rather than a dead end.
+ */
+function renderCategoryBars(rows, available = true) {
   const container = $("d-categories");
+  if (available === false) {
+    container.innerHTML =
+      `<p class="bar-empty">Not split by category at this cell size — a cell this ` +
+      `small is empty in most single categories, so the split would be mostly ` +
+      `zeroes. The reported offences listed below cover this cell.</p>`;
+    return;
+  }
   if (!rows?.length) {
     container.innerHTML = `<p class="bar-empty">No incidents reported in this cell.</p>`;
     return;
@@ -756,18 +1084,17 @@ function renderCategoryBars(rows) {
   // Nominal categories: one hue for every bar. Bar length already encodes the
   // value, so the hue channel is not spent re-encoding it.
   const max = Math.max(...rows.map((r) => r.incident_count), 1);
-  container.innerHTML = rows
-    .map((row) => {
-      const label = CATEGORY_LABELS[row.category] ?? row.category;
-      const width = Math.max((row.incident_count / max) * 100, row.incident_count > 0 ? 1.5 : 0);
-      return `
+  container.innerHTML = html`${rows.map((row) => {
+    // The fallback is the server's raw category string: escaped by html``.
+    const label = CATEGORY_LABELS[row.category] ?? row.category;
+    const width = Math.max((row.incident_count / max) * 100, row.incident_count > 0 ? 1.5 : 0);
+    return html`
         <div class="bar-row">
           <span class="bar-name">${label}</span>
           <span class="bar-track"><span class="bar-fill" style="width:${width}%"></span></span>
           <span class="bar-value">${nf.format(row.incident_count)}</span>
         </div>`;
-    })
-    .join("");
+  })}`;
 }
 
 /** True when the whole calendar month is covered by data up to `anchorIso`. */
@@ -887,16 +1214,23 @@ function renderOffenseMix(rows) {
     body.innerHTML = `<tr><td colspan="3">Nothing reported in this window.</td></tr>`;
     return;
   }
-  body.innerHTML = rows
-    .map(
-      (row) => `
-      <tr>
-        <td>${row.raw_offense_text}</td>
-        <td class="nibrs">${row.nibrs_code ?? "—"}</td>
-        <td class="num">${nf.format(row.incident_count)}</td>
-      </tr>`
-    )
-    .join("");
+  // Third-party offence descriptions, verbatim from the source: built as DOM
+  // nodes with textContent, so nothing in them is ever parsed as markup.
+  body.replaceChildren(
+    ...rows.map((row) => {
+      const offence = document.createElement("td");
+      offence.textContent = row.raw_offense_text;
+      const nibrs = document.createElement("td");
+      nibrs.className = "nibrs";
+      nibrs.textContent = row.nibrs_code ?? "—";
+      const count = document.createElement("td");
+      count.className = "num";
+      count.textContent = nf.format(row.incident_count);
+      const tr = document.createElement("tr");
+      tr.append(offence, nibrs, count);
+      return tr;
+    })
+  );
 }
 
 function closeDetail() {
@@ -935,10 +1269,9 @@ function renderTable() {
       ? "—"
       : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(0)}`;
 
-  body.innerHTML = rows
-    .map((feature, index) => {
-      const p = feature.properties;
-      return `
+  body.innerHTML = html`${rows.map((feature, index) => {
+    const p = feature.properties;
+    return html`
       <tr>
         <td class="num">${index + 1}</td>
         <td class="mono">${p.h3}</td>
@@ -951,8 +1284,7 @@ function renderTable() {
         <td class="num">${pct(p[props.hpct])}</td>
         <td class="num">${points(p[props.delta])}</td>
       </tr>`;
-    })
-    .join("");
+  })}`;
 }
 
 /* --------------------------------------------------------------- methodology */
@@ -960,21 +1292,24 @@ function renderTable() {
 async function openMethodology() {
   const dialog = $("methodology");
   dialog.showModal();
-  const response = await fetch(`${API}/methodology?city=${CITY}`);
+  const response = await fetch(`${API}/methodology?city=${encodeURIComponent(state.city)}`);
   if (!response.ok) return;
   const m = await response.json();
+  // Every field is server prose (registry text included): html`` escapes it.
+  // terms_url becomes a link only if it is a plain http(s) URL.
+  const terms = safeHttpUrl(m.terms_url);
 
-  $("methodology-body").innerHTML = `
+  $("methodology-body").innerHTML = html`
     <h2>How to read this map</h2>
     <p>${m.what_this_shows}</p>
 
     <div class="callout">
       <h3 style="margin-top:0">What this is not</h3>
-      <ul>${m.what_this_is_not.map((line) => `<li>${line}</li>`).join("")}</ul>
+      <ul>${m.what_this_is_not.map((line) => html`<li>${line}</li>`)}</ul>
     </div>
 
     <h3>Known limitations</h3>
-    <ul>${m.known_limitations.map((line) => `<li>${line}</li>`).join("")}</ul>
+    <ul>${m.known_limitations.map((line) => html`<li>${line}</li>`)}</ul>
 
     <h3>The cell model</h3>
     <p>
@@ -987,7 +1322,7 @@ async function openMethodology() {
     <p>${m.cell_model.fine_resolution_note}</p>
     <p>${m.cell_model.relative_measure}</p>
 
-    ${m.safety_measure ? `
+    ${m.safety_measure ? html`
     <h3>The safety ranking</h3>
     <p>${m.safety_measure.what_it_is}</p>
     <p>${m.safety_measure.why_two_rankings}</p>
@@ -1004,13 +1339,13 @@ async function openMethodology() {
     </dl>
     <p>${m.safety_measure.weights.fallback_note}</p>
     <p>${m.safety_measure.smoothing.note}</p>
-    <ul>${m.safety_measure.known_limitations.map((line) => `<li>${line}</li>`).join("")}</ul>
+    <ul>${m.safety_measure.known_limitations.map((line) => html`<li>${line}</li>`)}</ul>
     ` : ""}
 
-    ${m.time_of_day ? `
+    ${m.time_of_day ? html`
     <h3>Time of day</h3>
     <p>${m.time_of_day.what_it_is}</p>
-    <ul>${m.time_of_day.two_ratings.map((line) => `<li>${line}</li>`).join("")}</ul>
+    <ul>${m.time_of_day.two_ratings.map((line) => html`<li>${line}</li>`)}</ul>
     <p>${m.time_of_day.hour_index_note}</p>
 
     <div class="callout">
@@ -1030,7 +1365,7 @@ async function openMethodology() {
     </dl>
     <p>${m.time_of_day.coverage.note}</p>
     <p>${m.time_of_day.scope.note}</p>
-    <ul>${m.time_of_day.known_limitations.map((line) => `<li>${line}</li>`).join("")}</ul>
+    <ul>${m.time_of_day.known_limitations.map((line) => html`<li>${line}</li>`)}</ul>
     ` : ""}
 
     <h3>Offence classification</h3>
@@ -1051,7 +1386,7 @@ async function openMethodology() {
     </dl>
     <p>${m.freshness_note ?? ""}</p>
     <p>${m.location_precision_note ?? ""}</p>
-    ${m.terms_url ? `<p><a href="${m.terms_url}" target="_blank" rel="noopener">Source dataset and terms of use</a></p>` : ""}
+    ${terms ? html`<p><a href="${terms}" target="_blank" rel="noopener">Source dataset and terms of use</a></p>` : ""}
   `;
 }
 
@@ -1078,7 +1413,11 @@ function locateMe() {
 
       const known = state.features.some((f) => f.properties.h3 === cell);
       if (!known) {
-        alert("That location is outside the Philadelphia coverage area.");
+        alert(
+          `That location is outside the ${
+            state.cityRecord?.city_name ?? "selected city"
+          } coverage area.`
+        );
         return;
       }
       const [lat, lng] = h3.cellToLatLng(cell);
@@ -1101,9 +1440,13 @@ async function initMap() {
   map = new maplibregl.Map({
     container: "map",
     style,
-    center: [-75.1435, 39.9855],
-    zoom: 10.9,
-    minZoom: 9,
+    // Placeholder only: loadFreshness fits the real bounds from the city's own
+    // snapshot before the first paint, at duration 0, so this is never seen.
+    center: [-98.5, 39.5],
+    zoom: 3,
+    // No minZoom. With six cities spread across the country, a floor tight
+    // enough for one city is a floor that cannot show another -- and fitBounds
+    // on Los Angeles needs to go wider than a Philadelphia-shaped limit allows.
     maxZoom: 17,
     attributionControl: { compact: true },
   });
@@ -1134,25 +1477,6 @@ async function initMap() {
     },
   });
 
-  // A surface-coloured hairline between fills reads as a 2px gap, rather than
-  // as a contrasting border drawn around every mark.
-  map.addLayer({
-    id: "cells-outline",
-    type: "line",
-    source: "cells",
-    paint: {
-      "line-color": [
-        "case",
-        ["boolean", ["feature-state", "selected"], false], INK_PRIMARY,
-        ["boolean", ["feature-state", "hover"], false], INK_SECONDARY,
-        SURFACE_GAP,
-      ],
-      "line-width": outlineWidthExpression(),
-    },
-  });
-
-  const tooltip = $("tooltip");
-
   map.on("mousemove", "cells-fill", (event) => {
     const feature = event.features?.[0];
     if (!feature) return;
@@ -1163,50 +1487,6 @@ async function initMap() {
     }
     state.hovered = feature.id;
     map.setFeatureState({ source: "cells", id: feature.id }, { hover: true });
-
-    const p = feature.properties;
-    tooltip.hidden = false;
-    tooltip.style.left = `${event.point.x}px`;
-    tooltip.style.top = `${event.point.y}px`;
-
-    const props = TRACK_PROPS[state.track];
-    const hourly = state.hour !== null;
-    // Both ratings, whenever both exist. The second is meaningless without the
-    // first, and the first alone invites reading a night-time rank as an
-    // absolute statement about the hour.
-    const second = hourly
-      ? `<small>${deltaLabel(p[props.delta]) ?? "Not ranked at this hour"}</small>`
-      : "";
-
-    if (state.scale === "safety") {
-      const pct = hourly ? props.hpct : props.pct;
-      const tier = hourly ? props.htier : props.tier;
-      const value = p[pct];
-      const reported = hourly ? p.hcount : p.count;
-      // The denominator, alongside the count it was divided by. A cell ranked
-      // badly on twelve incidents among two hundred people is a different
-      // statement from one ranked badly on twelve among twelve thousand, and
-      // the percentile alone hides which it is.
-      const among =
-        p.exposure === null || p.exposure === undefined
-          ? ""
-          : ` · among ${nf.format(p.exposure)} people`;
-      tooltip.innerHTML =
-        (value === null || value === undefined
-          ? `<b>No ${TRACK_LABELS[state.track]} offences reported</b>`
-          : `Safety: <b>${safetyLabel(value)}</b>`) +
-        `<small>${SAFETY_TIER_LABELS[p[tier]] ?? "—"} · ${TRACK_LABELS[state.track]}` +
-        (hourly ? ` · ${hourLabel(state.hour)}` : "") +
-        ` · ${nf.format(reported ?? 0)} reported incidents${among}</small>` +
-        second;
-      return;
-    }
-
-    tooltip.innerHTML =
-      `<b>${nf.format((hourly ? p.hcount : p.count) ?? 0)}</b> reported incidents` +
-      (hourly
-        ? `<small>${hourLabel(state.hour)} · ${nf.format(p.count)} across the whole day</small>`
-        : `<small>${TIER_LABELS[p.tier]} · ${nf.format(p.per_km2)} per km²</small>`);
   });
 
   map.on("mouseleave", "cells-fill", () => {
@@ -1215,7 +1495,6 @@ async function initMap() {
       map.setFeatureState({ source: "cells", id: state.hovered }, { hover: false });
       state.hovered = null;
     }
-    tooltip.hidden = true;
   });
 
   map.on("click", "cells-fill", (event) => {
@@ -1244,35 +1523,175 @@ function repaint() {
  */
 function syncHourAvailability() {
   const ok =
-    HOURLY_RESOLUTIONS.includes(state.res) && HOURLY_WINDOWS.includes(state.window);
-  const field = $("f-hour-field");
-  field.setAttribute("aria-disabled", String(!ok));
-  $("f-hour").disabled = !ok;
-  $("f-hour-clear").disabled = !ok;
+    HOURLY_RESOLUTIONS.includes(state.res) && Boolean(currentPreset()?.hourly);
+  $("f-hour-field").setAttribute("aria-disabled", String(!ok));
 
-  if (!ok && state.hour !== null) {
-    state.hour = null;
-    $("f-hour").value = "";
-  }
+  // Always the clock: the hour follows the city's time wherever the hourly
+  // layer exists, and the map falls back to all hours where it does not.
+  state.hour = ok ? nowHour() : null;
+  renderClock();
+
   if (!ok) {
     $("f-hour-note").textContent =
-      "Not built at this cell size / window — too few incidents per hour.";
-  } else if (state.hour === null) {
-    $("f-hour-note").textContent = "All hours";
+      currentPreset() || !HOURLY_RESOLUTIONS.includes(state.res)
+        ? "Hourly view not built at this cell size / window — map shows all hours."
+        : "Hourly view is built for the last-12-months range only — map shows all hours.";
   } else if (state.meta && !state.meta.hour_known_share) {
     // An empty layer and a quiet city look identical on the map. Say which.
     $("f-hour-note").textContent = "No time-of-day data loaded — run the hourly rollup.";
   } else {
-    $("f-hour-note").textContent = `Block ${hourLabel(state.hour)}`;
+    // Whose clock: the hour blocks are the city's local time, not the visitor's.
+    const city = state.cityRecord?.city_name;
+    $("f-hour-note").textContent = city ? `${city} time` : "";
   }
+  renderHourTrend();
   return ok;
 }
 
-function setHour(hour) {
-  state.hour = hour;
+/** The current hour block on the selected city's clock (web/hours.js). */
+const nowHour = () => cityHour(state.cityRecord?.timezone);
+
+/** The exact current time, to the minute, on the selected city's clock. */
+function renderClock() {
+  $("f-hour").textContent = cityTimeLabel(state.cityRecord?.timezone);
+}
+
+/** The hour changed under the map: redraw it and any open cell. */
+function refreshHour() {
   syncHourAvailability();
   if (state.selected) selectCell(state.selected);
   loadLayer();
+}
+
+/** The /hours request the current controls imply, or null when no hour is shown. */
+function hourProfileParams() {
+  const preset = currentPreset();
+  if (state.hour === null || !preset?.hourly) return null;
+  return new URLSearchParams({
+    city: state.city,
+    window: preset.id,
+    res: String(state.res),
+    category: state.category,
+  });
+}
+
+/** Fetch the city's 24-block profile for the trend, once per distinct request. */
+async function loadHourProfile() {
+  const params = hourProfileParams();
+  const key = params?.toString();
+  if (!params || state.hourProfile?.key === key) {
+    renderHourTrend();
+    return;
+  }
+  try {
+    const response = await fetch(`${API}/hours?${params}`);
+    if (!response.ok) throw new Error(`hours request failed: ${response.status}`);
+    const body = await response.json();
+    state.hourProfile = { key, counts: body.counts };
+  } catch (error) {
+    console.error(error);
+    state.hourProfile = null;
+  }
+  renderHourTrend();
+}
+
+/** "38%": the size of a fractional change, sign carried by the words around it. */
+const pctOf = (change) => `${Math.abs(Math.round(change * 100))}%`;
+
+/** "Higher than usual right now — 38% above the average hour": plain text. */
+function usualSentence(reading) {
+  return reading.direction === "up"
+    ? `Higher than usual right now — ${pctOf(reading.change)} above the average hour`
+    : reading.direction === "down"
+      ? `Lower than usual right now — ${pctOf(reading.change)} below the average hour`
+      : "About average for this time of day";
+}
+
+/** "Expected to rise over the next 3 hours (+24%)": plain text. */
+function outlookSentence(outlook) {
+  const ahead = `over the next ${outlook.span} hours`;
+  const change = outlook.change === null
+    ? ""
+    : ` (${outlook.change >= 0 ? "+" : "−"}${pctOf(outlook.change)})`;
+  return outlook.direction === "up"
+    ? `Expected to rise ${ahead}${change}`
+    : outlook.direction === "down"
+      ? `Expected to fall ${ahead}${change}`
+      : `Expected to stay about the same ${ahead}`;
+}
+
+/**
+ * "Lower-risk window: 1 PM – 4 PM — about 18% lower than now": plain text.
+ *
+ * Compared with right now, not the day's average: at 9 AM every stretch in
+ * the next twelve hours is daytime and above average, so an average-based
+ * figure would call the "lower-risk" window "24% above average". When even
+ * the quietest stretch is still busier than the day as a whole, it says so.
+ */
+function windowSentence(win) {
+  if (win.startsNow) {
+    return `Lower-risk window: now until ${hourName(win.end)} — the quietest stretch of the next 12 hours`;
+  }
+  if (!win.quieter) return "No meaningfully quieter stretch in the next 12 hours";
+  const still = win.aboveAverage ? ", though still busier than the daily average" : "";
+  return `Lower-risk window: ${hourName(win.start)} – ${hourName(win.end)} — ` +
+    `about ${pctOf(win.vsNow)} lower than now${still}`;
+}
+
+const TREND_ARROWS = { up: "↑", down: "↓", flat: "→" };
+
+/**
+ * Time-of-day risk, under the clock: where this hour stands, which way the
+ * next few hours are expected to go, and the comparatively lowest-risk
+ * stretch in the next twelve.
+ *
+ * All three read the stored hourly profile -- what these hours have
+ * historically looked like citywide, not a live count -- so "expected" means
+ * "usually", and the footnote says so. The 24-hour bars put it in context:
+ * the current block dark, the lower-risk window in blue.
+ */
+function renderHourTrend() {
+  const box = $("f-hour-trend");
+  const key = hourProfileParams()?.toString();
+  if (!key || state.hourProfile?.key !== key) {
+    box.hidden = true;
+    return;
+  }
+  const counts = state.hourProfile.counts;
+  const reading = hourVsUsual(counts, state.hour);
+  box.hidden = false;
+  if (!reading) {
+    box.removeAttribute("data-direction");
+    box.textContent = "Too few incidents with a recorded hour to compare.";
+    return;
+  }
+  const outlook = hourOutlook(counts, state.hour);
+  const win = quietestWindow(counts, state.hour);
+  // Highlighted only when there is a window worth pointing at.
+  const quiet = new Set(win && (win.startsNow || win.quieter) ? win.blocks : []);
+  box.dataset.direction = reading.direction;
+
+  const line = (arrow, text) =>
+    html`<li><span class="trend-arrow" aria-hidden="true">${arrow}</span><span>${text}</span></li>`;
+  box.innerHTML = html`<span class="trend-bars" aria-hidden="true">${counts.map(
+    (n, hour) => html`<i style="height:${Math.max((n / reading.max) * 100, 6)}%"${
+      hour === state.hour ? html` data-now` : quiet.has(hour) ? html` data-quiet` : ""
+    } title="${hourLabel(hour)}: ${nf.format(n)}"></i>`
+  )}</span><ul class="trend-lines">${[
+    line(TREND_ARROWS[reading.direction], html`<b>${usualSentence(reading)}</b>`),
+    outlook ? line(TREND_ARROWS[outlook.direction], outlookSentence(outlook)) : "",
+    win ? line("◷", windowSentence(win)) : "",
+  ]}</ul><span class="trend-foot">From reported incidents citywide by hour over the past
+12 months — a typical pattern, not a live count or a forecast.</span>`;
+}
+
+/* Keep the clock on the current minute, and move the map to the next hour
+   block when the time crosses into it. */
+function followClock() {
+  setInterval(() => {
+    renderClock();
+    if (state.hour !== null && nowHour() !== state.hour) refreshHour();
+  }, 5_000);
 }
 
 /**
@@ -1300,12 +1719,168 @@ function syncSafetyAvailability() {
   return ok;
 }
 
+/**
+ * Fill the date controls from the city record (windows.js).
+ *
+ * Runs whenever the record arrives: on load, on a city switch, and when a
+ * refresh moves the data's newest day. Settles the dates first -- a carried
+ * preset becomes the new city's nearest one, a legacy ?window= link becomes its
+ * window's dates, nothing at all becomes the year up to today -- then clamps them
+ * to what this city holds and fills the preset list.
+ */
+function renderRangeControls() {
+  const city = state.cityRecord;
+  const windows = city?.windows ?? [];
+  const today = todayIso();
+
+  if (state.carryPreset) {
+    const { id, span } = state.carryPreset;
+    const chosen = pickWindow(windows, id, span, city?.default_window);
+    if (chosen) state.range = presetRange(chosen, today);
+    state.carryPreset = null;
+  } else if (!state.range) {
+    const linked = findWindow(windows, state.pendingWindow);
+    // The stored year rather than a year counted back from today: the stored
+    // one ends where the data does, so a computed year never matches it while
+    // the city publishes with any lag -- and only the stored one carries the
+    // hourly layer the time-of-day control opens on.
+    const year = findWindow(windows, DEFAULT_WINDOW);
+    state.range = linked
+      ? presetRange(linked, today)
+      : year ? presetRange(year, today) : defaultRange(today);
+  }
+  state.pendingWindow = null;
+
+  // The calendar starts on the city's oldest stored day. Before the city is
+  // rebuilt with the daily rollup there is no such day on the record and no
+  // custom range either; the presets still reach back as far as they go.
+  const min = city?.selectable_start ?? windows.at(-1)?.start ?? null;
+  for (const input of [$("f-from"), $("f-to")]) {
+    input.min = min ?? "";
+    input.max = today;
+  }
+
+  $("f-preset").replaceChildren(
+    new Option("Custom dates", "custom"),
+    ...windows.map((w) => new Option(w.partial ? `${w.label} (partial)` : w.label, w.id))
+  );
+  // Custom dates into a city that serves none: its default preset, not whichever
+  // preset the clamped dates happen to land on.
+  if (!city?.custom_range_resolutions?.length && !currentPreset()) {
+    const fallback =
+      findWindow(windows, city?.default_window) || findWindow(windows, DEFAULT_WINDOW);
+    if (fallback) state.range = presetRange(fallback, today);
+  }
+  setRange(clampRange(state.range, min, today));
+  syncActivityScope();
+}
+
+/** Select dates: state, controls and URL together. Does not reload. */
+function setRange(range) {
+  state.range = range;
+  $("f-from").value = range.from;
+  $("f-to").value = range.to;
+  const preset = currentPreset();
+  $("f-preset").value = preset?.id ?? "custom";
+  // A preset goes into the URL by name, not as its dates. The stored windows
+  // slide forward a day with every data refresh, so dates saved from one would
+  // stop matching it by the next day -- reopening the page from history would
+  // then land on a custom range, which has no hourly layer. ?window= always
+  // means the city's current window; only hand-picked dates are pinned.
+  const url = new URL(location.href);
+  if (preset) {
+    url.searchParams.set("window", preset.id);
+    url.searchParams.delete("from");
+    url.searchParams.delete("to");
+  } else {
+    url.searchParams.set("from", range.from);
+    url.searchParams.set("to", range.to);
+    url.searchParams.delete("window");
+  }
+  history.replaceState(null, "", url);
+}
+
+/** Whether the server ranks custom dates at this cell size for this city. */
+const customRangeServed = () =>
+  (state.cityRecord?.custom_range_resolutions ?? []).includes(state.res);
+
+/**
+ * Gate the date and category controls on what is served at this cell size.
+ *
+ * Same principle as syncHourAvailability and syncSafetyAvailability. At
+ * resolution 10 the layer exists only for the one- and two-year presets and
+ * the combined category, and custom dates are not served at all (there is no
+ * daily rollup that fine). Coerces the current selection rather than leaving
+ * one that is about to 400 -- the city's default preset is built at every
+ * resolution, so there is always something to fall back to.
+ *
+ * Every caller reloads the layer straight afterwards, so a coerced selection is
+ * picked up by that fetch rather than needing one of its own.
+ */
+function syncActivityScope() {
+  const city = state.cityRecord;
+  const windows = city?.windows ?? [];
+  const categories = activityCategories(state.res);
+  const custom = customRangeServed();
+
+  for (const option of $("f-preset").options) {
+    const win = findWindow(windows, option.value);
+    option.disabled = win ? !windowBuiltAt(win, state.res) : !custom;
+  }
+  $("f-from").disabled = !custom;
+  $("f-to").disabled = !custom;
+  for (const option of $("f-category").options) {
+    option.disabled = categories !== null && !categories.includes(option.value);
+  }
+
+  const preset = currentPreset();
+  if (state.range && (preset ? !windowBuiltAt(preset, state.res) : !custom)) {
+    const fallback =
+      findWindow(windows, city?.default_window) || findWindow(windows, DEFAULT_WINDOW);
+    if (fallback) setRange(presetRange(fallback, todayIso()));
+  }
+  if (categories && !categories.includes(state.category)) {
+    state.category = "all";
+    $("f-category").value = state.category;
+  }
+
+  const note = rangeNote(state.range, city, state.res);
+  $("f-window-note").textContent =
+    state.res === 10
+      ? `Only the 12-month and 2-year presets are built for cells this small. ${note}`.trim()
+      : note;
+  $("f-category-note").textContent = categories
+    ? "A cell this small is empty in most single categories."
+    : "";
+}
+
+/** The dates changed: re-gate the controls, then redraw the map and the panel. */
+function onRangeChange(range) {
+  setRange(clampRange(range, $("f-from").min || null, $("f-to").max || null));
+  syncActivityScope();
+  syncHourAvailability();
+  if (state.selected) selectCell(state.selected);
+  loadLayer();
+}
+
 function wireControls() {
-  $("f-window").onchange = (e) => {
-    state.window = e.target.value;
-    syncHourAvailability();
-    if (state.selected) selectCell(state.selected);
-    loadLayer();
+  $("f-city").onchange = (e) => selectCity(e.target.value);
+  $("f-preset").onchange = (e) => {
+    const win = findWindow(state.cityRecord?.windows, e.target.value);
+    // "Custom dates" changes nothing by itself; the calendars are the control.
+    if (!win) {
+      $("f-from").focus();
+      return;
+    }
+    onRangeChange(presetRange(win, todayIso()));
+  };
+  // `change`, not `input`: it fires once a whole date is chosen, not on every
+  // keystroke of one being typed. An emptied input is ignored rather than sent.
+  $("f-from").onchange = (e) => {
+    if (e.target.value) onRangeChange({ from: e.target.value, to: state.range.to });
+  };
+  $("f-to").onchange = (e) => {
+    if (e.target.value) onRangeChange({ from: state.range.from, to: e.target.value });
   };
   $("f-category").onchange = (e) => {
     state.category = e.target.value;
@@ -1313,6 +1888,9 @@ function wireControls() {
   };
   $("f-res").onchange = (e) => {
     state.res = Number(e.target.value);
+    // Before syncHourAvailability, which reads the preset: the new resolution
+    // may have just moved it.
+    syncActivityScope();
     syncHourAvailability();
     syncSafetyAvailability();
     // A res-8 index is meaningless on the res-9 layer, so drop the selection.
@@ -1324,21 +1902,9 @@ function wireControls() {
     // The track tabs only mean anything while the safety ramp is on screen.
     $("f-track-field").hidden = state.scale !== "safety";
     repaint();
-  };
-
-  // Any minute within the hour selects that block. The note beside the input
-  // echoes which one, so 20:45 is never ambiguous.
-  $("f-hour").onchange = (e) => {
-    const value = e.target.value;
-    if (!value) {
-      setHour(null);
-      return;
-    }
-    setHour(Number(value.split(":")[0]));
-  };
-  $("f-hour-clear").onclick = () => {
-    $("f-hour").value = "";
-    setHour(null);
+    // The open cell's headline measures whatever the map is coloured by, so it
+    // changes with this control -- and the detail is already in hand.
+    if (state.detail) renderHeadlineStat(state.detail);
   };
 
   // Both tracks ride along on every feature, so switching is a repaint with no
@@ -1386,9 +1952,14 @@ function wireControls() {
 /* Poll the pipeline's own refresh stamp; reload the layer when the ETL runs.
    Cheap enough to sit behind the same cache-invalidation rule the API uses. */
 function watchForRefresh() {
-  setInterval(async () => {
+  // Skipped while the tab is hidden: a background tab has nobody to show a
+  // fresher layer to. Coming back runs a tick at once, so it catches up.
+  const tick = async () => {
+    if (document.hidden) return;
     try {
-      const response = await fetch(`${API}/version`);
+      // Scoped to the displayed city: a bi-weekly Los Angeles refresh is not a
+      // reason to reload a Philadelphia layer that has not moved.
+      const response = await fetch(`${API}/version?city=${encodeURIComponent(state.city)}`);
       if (!response.ok) return;
       const version = await response.json();
       const stamp = String(version.last_refreshed_at);
@@ -1400,19 +1971,42 @@ function watchForRefresh() {
     } catch {
       /* transient; try again next tick */
     }
-  }, 60_000);
+  };
+  setInterval(tick, 60_000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) tick();
+  });
 }
 
 (async function main() {
   await initMap();
+
+  // The city has to be known before anything is fetched for it, so this is the
+  // one load that is not parallel with the others.
+  try {
+    state.city = await loadCities();
+  } catch (error) {
+    console.error(error);
+    $("loading").textContent =
+      "No city has serving data yet. Run the pipeline for one city, then reload.";
+    return;
+  }
+
   wireControls();
-  syncHourAvailability();
-  syncSafetyAvailability();
   // Expose read-only state for debugging and for the smoke-test driver.
   window.__safetyState = state;
-  await Promise.all([loadFreshness(), loadLayer()]);
+  // Sequential, not parallel: the frame and the window control read the city
+  // record, so the controls sync and the layer paints after it exists.
+  await loadFreshness();
+  syncActivityScope();
+  syncHourAvailability();
+  syncSafetyAvailability();
+  await loadLayer();
 
-  const version = await fetch(`${API}/version`).then((r) => r.json()).catch(() => null);
+  const version = await fetch(`${API}/version?city=${encodeURIComponent(state.city)}`)
+    .then((r) => r.json())
+    .catch(() => null);
   state.refreshStamp = version ? String(version.last_refreshed_at) : null;
   watchForRefresh();
+  followClock();
 })();

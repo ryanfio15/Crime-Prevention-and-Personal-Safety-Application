@@ -1,0 +1,15 @@
+{
+  "normal": {
+    "cartodb_id": "1", "objectid": "1", "dc_key": "202401000996.00000000", "dc_dist": "09",
+    "psa": "1", "dispatch_date": "2024-01-12", "dispatch_date_time": "2024-01-12 20:20:00+00",
+    "dispatch_time": "20:20:00", "hour": "20", "location_block": "1500 BLOCK MARKET ST",
+    "ucr_general": "600.0", "text_general_code": "Thefts", "point_x": "-75.1652", "point_y": "39.9526"
+  },
+  "state_plane": {
+    "dc_key": "202401000997", "dc_dist": "09", "dispatch_date": "2024-01-13",
+    "dispatch_date_time": "2024-01-13 00:05:00+00", "dispatch_time": "", "hour": "",
+    "ucr_general": "1400", "text_general_code": "Vandalism/Criminal Mischief",
+    "point_x": "2694500", "point_y": "236000"
+  },
+  "no_key": {"dc_key": "", "dispatch_date": "2024-01-13"}
+}

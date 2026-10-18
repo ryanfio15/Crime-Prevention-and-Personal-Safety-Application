@@ -1,6 +1,6 @@
 # Phase 1 — Philadelphia pipeline proof of concept
 
-Implements roadmap Phase 1 from [`readme.md`](../readme.md) §14: the full
+Implements roadmap Phase 1 from [`DESIGN.md`](DESIGN.md) §14: the full
 bronze → silver → gold pipeline validated end to end against one source, plus a
 serving layer and a temporary front end so the result is visible.
 
@@ -11,28 +11,31 @@ Section references below (§n) point at the design document.
 ## Quick start
 
 ```bash
-# 1. database  (Docker Desktop must be running)
-docker compose up -d
-
-# 2. python environment
-python -m venv .venv
-.venv/Scripts/python.exe -m pip install -r requirements.txt   # POSIX: .venv/bin/python
+# 1. settings: copy the template and set POSTGRES_PASSWORD in .env
+#    (required, no default; e.g. openssl rand -hex 32)
 cp .env.example .env
 
-# 3. schema + reference data
+# 2. database  (Docker Desktop must be running)
+docker compose up -d
+
+# 3. python environment
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install -r requirements.txt   # POSIX: .venv/bin/python
+
+# 4. schema + reference data
 .venv/Scripts/python.exe -m safety.migrate
 
-# 4. load 24 months of Philadelphia  (~3 min: 25 monthly pulls, ~320k records)
+# 5. load 24 months of Philadelphia  (~3 min: 25 monthly pulls, ~320k records)
 .venv/Scripts/python.exe -m safety.etl.run backfill --city phl
 
-# 5. serve
+# 6. serve
 .venv/Scripts/python.exe -m uvicorn safety.api.main:app --port 8000
 ```
 
 Then open **http://127.0.0.1:8000/**.
 
-To put it on the internet instead, see [`DEPLOY.md`](DEPLOY.md) — a browser-only
-walkthrough that needs no server and no command line.
+For the server deployment (two instances, continuous deployment from GitHub),
+see [`DEPLOYMENT.md`](DEPLOYMENT.md).
 
 ### Other pipeline commands
 
@@ -52,15 +55,20 @@ jobs — rather than by cell area. Loading it is a one-off:
 ```bash
 python -m safety.etl.run census --city phl            # TIGER blocks + LODES jobs
 python -m safety.etl.run gold   --city phl            # apportion, then re-rank
-python -m safety.migrate --activate nscs_v2_percapita # promote it to the live scheme
-python -m safety.etl.run safety --city phl
 ```
 
-`--activate` is deliberately separate from the loader: promoting a scheme
-changes what every safety number in the product means, so it is a decision made
-after looking at `safety-compare`, not a side effect of re-running `migrate`.
+`nscs_v2_percapita` is the only enabled scheme, so `safety.migrate` points the
+city at it on its first run and no promotion step is needed. Changing that later
+is `python -m safety.migrate --activate <scheme>`, deliberately separate from the
+loader: promoting a scheme changes what every safety number in the product means,
+so it is a decision made after looking at `safety-compare`, not a side effect of
+re-running `migrate`.
+
 Add `--replay` to `census` to re-read the stored bronze snapshot instead of
-re-downloading the ~100 MB shapefile.
+re-downloading the ~100 MB shapefile. Once the exposure layer is built, the block
+polygons behind it can be released with `python -m safety.etl.run
+release-geometry --city phl` — they are a build-time input only, and on six cities
+they are the largest reference data in the database.
 
 ---
 
