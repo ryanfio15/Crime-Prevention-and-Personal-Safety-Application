@@ -62,10 +62,6 @@
     <select id="f-preset" aria-label="Quick range">
       <option value="custom">Custom dates</option>
     </select>
-    <!-- Filled by syncActivityScope: where the data stops, what a preset is
-         missing at this cell size, and any recording change the range reaches
-         back into. -->
-    <span class="field-note" id="f-window-note"></span>
   </div>
 
   <label class="field">
@@ -77,7 +73,6 @@
       <option value="quality_of_life">Quality of life</option>
       <option value="other">Other</option>
     </select>
-    <span class="field-note" id="f-category-note"></span>
   </label>
 
   <label class="field">
@@ -89,16 +84,14 @@
     </select>
   </label>
 
-  <!-- The city's current local time, kept live (web/hours.js); the map shows the
-       hour block it falls in. Underneath, whether this hour has historically
-       been busier or quieter than the city's average hour -- stored counts,
-       not live data or a prediction. -->
-  <div class="field field-hour" id="f-hour-field">
-    <span class="field-label" id="f-hour-label">Time of day</span>
-    <output class="hour-clock" id="f-hour" aria-labelledby="f-hour-label">&mdash;</output>
-    <span class="field-note" id="f-hour-note"></span>
-    <div class="hour-trend" id="f-hour-trend" aria-live="polite" hidden></div>
-  </div>
+  <!-- "All hours" or one hour block on the city's local clock. Disabled where
+       the window or cell size has no hourly layer (syncHourAvailability). -->
+  <label class="field" id="f-hour-field">
+    <span class="field-label">Time of day</span>
+    <select id="f-hour">
+      <option value="all" selected>All hours</option>
+    </select>
+  </label>
 
   <div class="field">
     <span class="field-label">Colour by</span>
@@ -106,9 +99,6 @@
       <option value="safety" selected>Safety ranking</option>
       <option value="count">Incident count</option>
     </select>
-    <!-- Filled by syncSafetyAvailability when the ranking is not built at the
-         selected cell size, so the disabled option explains itself. -->
-    <span class="field-note" id="f-scale-note"></span>
   </div>
 
   <!-- Only meaningful while the safety ranking is on screen. That is the
