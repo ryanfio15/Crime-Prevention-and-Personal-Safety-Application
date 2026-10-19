@@ -40,10 +40,13 @@
     return date.getHours();
   }
 
-  /** The local time at `date` in `timeZone` for display, e.g. "10:13 PM"; the
-      browser's own clock when the zone is unknown. */
-  function cityTimeLabel(timeZone, date = new Date()) {
+  /** The local time at `date` in `timeZone` for display, e.g. "10:13 PM", or
+      "10:13 PM EDT" with `zoneName`; the browser's own clock when the zone is
+      unknown. `date` is an instant (UTC underneath); Intl converts it to the
+      zone, daylight saving included. */
+  function cityTimeLabel(timeZone, date = new Date(), { zoneName = false } = {}) {
     const options = { hour: "numeric", minute: "2-digit" };
+    if (zoneName) options.timeZoneName = "short";
     if (timeZone) {
       try {
         return new Intl.DateTimeFormat("en-US", { ...options, timeZone }).format(date);

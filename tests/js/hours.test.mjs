@@ -37,6 +37,22 @@ test("cityTimeLabel shows the city's exact time with minutes", () => {
   assert.equal(label, "10:13 PM");
 });
 
+test("cityTimeLabel converts one UTC instant to each city's clock and zone", () => {
+  const at = new Date(Date.UTC(2026, 9, 16, 2, 13));
+  const label = (zone) => cityTimeLabel(zone, at, { zoneName: true }).replace(/\s/g, " ");
+  assert.equal(label("America/New_York"), "10:13 PM EDT");
+  assert.equal(label("America/Chicago"), "9:13 PM CDT");
+  assert.equal(label("America/Los_Angeles"), "7:13 PM PDT");
+  // After the November change the same wall-clock math uses standard time.
+  const winter = new Date(Date.UTC(2026, 11, 16, 3, 13));
+  assert.equal(cityTimeLabel("America/New_York", winter, { zoneName: true }).replace(/\s/g, " "),
+    "10:13 PM EST");
+});
+
+test("cityTimeLabel falls back to the browser clock for an unknown zone", () => {
+  assert.match(cityTimeLabel("Not/AZone", new Date(), { zoneName: true }), /\d:\d\d/);
+});
+
 test("an hour well above the daily average reads as up", () => {
   const counts = flat(10);
   counts[22] = 20;

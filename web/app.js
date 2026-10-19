@@ -1003,6 +1003,28 @@ function renderHourShare(detail) {
   )} here vs. ${rel.mean_per_hour} per hour on average</span>`;
 }
 
+/** The chart's title: the city's exact time now, e.g. "10:13 PM EDT". */
+function renderCityClock() {
+  if ($("d-hour-block").hidden) return;
+  $("d-hour-title").textContent = cityTimeLabel(state.cityRecord?.timezone, new Date(), {
+    zoneName: true,
+  });
+}
+
+/* Keep the clock on the minute while the panel is open: first at the next
+   minute boundary, then every minute. Skipped while the tab is hidden; coming
+   back redraws at once. */
+function watchCityClock() {
+  const tick = () => {
+    if (!document.hidden) renderCityClock();
+  };
+  setTimeout(() => {
+    tick();
+    setInterval(tick, 60_000);
+  }, 60_000 - (Date.now() % 60_000));
+  document.addEventListener("visibilitychange", tick);
+}
+
 function renderHours(detail) {
   renderHourShare(detail);
 
@@ -1018,7 +1040,6 @@ function renderHours(detail) {
   const counts = Array.from({ length: 24 }, () => 0);
   for (const row of rows) counts[row.hour_block] = row.incident_count;
   const max = Math.max(...counts, 1);
-  const total = counts.reduce((sum, n) => sum + n, 0);
 
   $("d-hours").innerHTML = html`${counts.map((n, hour) => {
     const height = Math.max((n / max) * 100, n > 0 ? 4 : 0);
@@ -1027,10 +1048,7 @@ function renderHours(detail) {
     return html`<i style="height:${height}%"${on}${selected} title="${hourLabel(hour)}: ${nf.format(n)}"></i>`;
   })}`;
 
-  $("d-hour-title").textContent =
-    state.hour === null
-      ? `Time of day · ${nf.format(total)} with a known hour`
-      : `Time of day · ${hourLabel(state.hour)}`;
+  renderCityClock();
 
   const safety = (detail.hour_safety ?? []).find((r) => r.track === state.track);
   const dash = "—";
@@ -1899,4 +1917,5 @@ function watchForRefresh() {
     .catch(() => null);
   state.refreshStamp = version ? String(version.last_refreshed_at) : null;
   watchForRefresh();
+  watchCityClock();
 })();

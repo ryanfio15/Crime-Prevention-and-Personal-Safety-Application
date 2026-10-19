@@ -158,8 +158,24 @@
         <div class="stat-label" id="d-count-label">reported incidents</div>
       </div>
 
-      <dl class="kv">
+      <dl class="kv kv-lead">
         <div><dt id="d-hourshare-label">At this hour</dt><dd id="d-hourshare">&mdash;</dd></div>
+      </dl>
+
+      <section class="chart-block" id="d-hour-block" hidden>
+        <h3 id="d-hour-title">Time of day</h3>
+        <dl class="kv">
+          <div><dt>Safety at this hour</dt><dd id="d-hour-safety">&mdash;</dd></div>
+          <div><dt>Change from usual</dt><dd id="d-hour-delta">&mdash;</dd></div>
+        </dl>
+        <!-- The whole day, so the selected block is read against the rest of it
+             rather than as a bare number. -->
+        <div class="hours" id="d-hours" role="img" aria-label="Reported incidents by hour of the day"></div>
+        <div class="hours-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
+        <p class="bar-empty" id="d-hour-note"></p>
+      </section>
+
+      <dl class="kv">
         <div><dt>City rank</dt><dd id="d-rank">&mdash;</dd></div>
         <div><dt>Density</dt><dd id="d-density">&mdash;</dd></div>
         <!-- The denominator the safety ranking divided by, stated rather than
@@ -180,19 +196,6 @@
           Percentile against every other cell in the city, weighted by offence
           severity. Higher is safer.
         </p>
-      </section>
-
-      <section class="chart-block" id="d-hour-block" hidden>
-        <h3 id="d-hour-title">Time of day</h3>
-        <dl class="kv">
-          <div><dt>Safety at this hour</dt><dd id="d-hour-safety">&mdash;</dd></div>
-          <div><dt>Change from usual</dt><dd id="d-hour-delta">&mdash;</dd></div>
-        </dl>
-        <!-- The whole day, so the selected block is read against the rest of it
-             rather than as a bare number. -->
-        <div class="hours" id="d-hours" role="img" aria-labelledby="d-hour-title"></div>
-        <div class="hours-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
-        <p class="bar-empty" id="d-hour-note"></p>
       </section>
 
       <section class="chart-block">
