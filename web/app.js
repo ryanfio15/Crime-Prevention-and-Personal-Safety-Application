@@ -1003,26 +1003,94 @@ function renderHourShare(detail) {
   )} here vs. ${rel.mean_per_hour} per hour on average</span>`;
 }
 
-/** The chart's title: the city's exact time now, e.g. "10:13 PM EDT". */
+/** The chart's title: the city's exact time now, "Time of Day: 10:13 PM EDT". */
 function renderCityClock() {
   if ($("d-hour-block").hidden) return;
-  $("d-hour-title").textContent = cityTimeLabel(state.cityRecord?.timezone, new Date(), {
-    zoneName: true,
-  });
+  const now = cityTimeLabel(state.cityRecord?.timezone, new Date(), { zoneName: true });
+  $("d-hour-title").textContent = `Time of Day: ${now}`;
 }
 
 /* Keep the clock on the minute while the panel is open: first at the next
-   minute boundary, then every minute. Skipped while the tab is hidden; coming
-   back redraws at once. */
+   minute boundary, then every minute. When the city's hour rolls over the
+   outlook moves with it, so the whole block redraws. Skipped while the tab is
+   hidden; coming back redraws at once. */
 function watchCityClock() {
+  let lastHour = cityHour(state.cityRecord?.timezone);
   const tick = () => {
-    if (!document.hidden) renderCityClock();
+    if (document.hidden) return;
+    const hour = cityHour(state.cityRecord?.timezone);
+    if (hour !== lastHour && state.detail) renderHours(state.detail);
+    else renderCityClock();
+    lastHour = hour;
   };
   setTimeout(() => {
     tick();
     setInterval(tick, 60_000);
   }, 60_000 - (Date.now() % 60_000));
   document.addEventListener("visibilitychange", tick);
+}
+
+/** "38%": the size of a fractional change, sign carried by the words around it. */
+const pctOf = (change) => `${Math.abs(Math.round(change * 100))}%`;
+
+/** "Expected to rise over the next 3 hours (+24%)": plain text. */
+function outlookSentence(outlook) {
+  const ahead = `over the next ${outlook.span} hours`;
+  const change = outlook.change === null
+    ? ""
+    : ` (${outlook.change >= 0 ? "+" : "−"}${pctOf(outlook.change)})`;
+  return outlook.direction === "up"
+    ? `Expected to rise ${ahead}${change}`
+    : outlook.direction === "down"
+      ? `Expected to fall ${ahead}${change}`
+      : `Expected to stay about the same ${ahead}`;
+}
+
+/**
+ * "Lower-risk window: 1 PM – 4 PM — about 18% lower than now": plain text.
+ *
+ * Compared with right now, not the day's average: at 9 AM every stretch in
+ * the next twelve hours is daytime and above average, so an average-based
+ * figure would call the "lower-risk" window "24% above average". When even
+ * the quietest stretch is still busier than the day as a whole, it says so.
+ */
+function windowSentence(win) {
+  if (win.startsNow) {
+    return `Lower-risk window: now until ${hourName(win.end)} — the quietest stretch of the next 12 hours`;
+  }
+  if (!win.quieter) return "No meaningfully quieter stretch in the next 12 hours";
+  const still = win.aboveAverage ? ", though still busier than its daily average" : "";
+  return `Lower-risk window: ${hourName(win.start)} – ${hourName(win.end)} — ` +
+    `about ${pctOf(win.vsNow)} lower than now${still}`;
+}
+
+const TREND_ARROWS = { up: "↑", down: "↓", flat: "→" };
+
+/**
+ * Under the chart: which way the next three hours usually go from now in the
+ * city, and the comparatively lowest-risk three-hour stretch in the next
+ * twelve. Both read this cell's own hourly profile -- what these hours have
+ * looked like here, not a live count -- so "expected" means "usually", and
+ * the footnote says so. Returns the blocks of a window worth pointing at, for
+ * the chart to tint.
+ */
+function renderHourOutlook(counts) {
+  const box = $("d-hour-note");
+  const now = cityHour(state.cityRecord?.timezone);
+  const outlook = hourOutlook(counts, now);
+  const win = quietestWindow(counts, now);
+  if (!outlook || !win) {
+    box.innerHTML = html`<p class="bar-empty">Too few incidents here with a recorded hour for an outlook.</p>`;
+    return new Set();
+  }
+  const line = (label, arrow, text) =>
+    html`<li><span class="outlook-arrow" aria-hidden="true">${arrow}</span><span><b>${label}:</b> ${text}</span></li>`;
+  box.innerHTML = html`<ul>${[
+    line("Next 3 hours", TREND_ARROWS[outlook.direction], outlookSentence(outlook)),
+    line("Next 12 hours", "◷", windowSentence(win)),
+  ]}</ul><p class="outlook-foot">From this cell's reported incidents by hour over the past
+12 months — the usual pattern, not a forecast.</p>`;
+  return new Set(win.startsNow || win.quieter ? win.blocks : []);
 }
 
 function renderHours(detail) {
@@ -1040,12 +1108,14 @@ function renderHours(detail) {
   const counts = Array.from({ length: 24 }, () => 0);
   for (const row of rows) counts[row.hour_block] = row.incident_count;
   const max = Math.max(...counts, 1);
+  const quiet = renderHourOutlook(counts);
 
   $("d-hours").innerHTML = html`${counts.map((n, hour) => {
     const height = Math.max((n / max) * 100, n > 0 ? 4 : 0);
     const selected = hour === state.hour ? html` data-selected` : "";
     const on = n > 0 ? html` data-on` : "";
-    return html`<i style="height:${height}%"${on}${selected} title="${hourLabel(hour)}: ${nf.format(n)}"></i>`;
+    const lower = quiet.has(hour) ? html` data-quiet` : "";
+    return html`<i style="height:${height}%"${on}${lower}${selected} title="${hourLabel(hour)}: ${nf.format(n)}"></i>`;
   })}`;
 
   renderCityClock();
@@ -1056,9 +1126,6 @@ function renderHours(detail) {
   if (state.hour === null) {
     $("d-hour-safety").textContent = dash;
     $("d-hour-delta").textContent = dash;
-    $("d-hour-note").textContent = $("f-hour").disabled
-      ? "The hourly view is built for the last-12-months range only."
-      : "Pick an hour under Time of day to rank this cell at that hour.";
     return;
   }
 
@@ -1070,12 +1137,6 @@ function renderHours(detail) {
     ? dash
     : `${safety.delta_label} (${safety.percentile_delta >= 0 ? "+" : ""}` +
       `${(safety.percentile_delta * 100).toFixed(0)} points)`;
-
-  $("d-hour-note").textContent =
-    "Ranked against other cells at this hour, then against this cell's own " +
-    "all-hours rank. The city is quieter at night as a whole, which the second " +
-    "figure cannot see. Times are when police were dispatched, not when an " +
-    "offence occurred.";
 }
 
 /**

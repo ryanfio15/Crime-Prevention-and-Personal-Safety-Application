@@ -442,7 +442,40 @@ select:disabled { opacity: 0.55; cursor: not-allowed; }
   background: var(--gridline);
 }
 .hours i[data-on] { background: var(--series-1); }
+/* The lower-risk window the outlook names, lighter so the stretch reads apart. */
+.hours i[data-quiet] { background: var(--seq-2); }
 .hours i[data-selected] { background: var(--text-primary); }
+
+/* The block's heading is the city's clock: 80% larger than the other section
+   headings (12px), bold, and in the case it is written. */
+#d-hour-title {
+  font-size: 21.6px;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-primary);
+}
+
+/* The 3-hour and 12-hour outlook under the chart. */
+.hour-outlook { margin-top: 10px; }
+.hour-outlook ul {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+.hour-outlook li { display: flex; align-items: baseline; gap: 6px; }
+.outlook-arrow {
+  flex: none;
+  width: 1em;
+  font-weight: 700;
+  text-align: center;
+}
+.outlook-foot { margin: 6px 0 0; font-size: 11px; color: var(--text-muted); }
 
 .hours-axis {
   display: flex;
