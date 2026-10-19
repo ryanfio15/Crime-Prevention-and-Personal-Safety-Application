@@ -472,13 +472,19 @@ def test_no_layer_holds_a_window_outside_the_city_list(built):
 
 @pytest.mark.parametrize("table", ["cell_activity", "cell_safety", "cell_offense_mix",
                                    "cell_hour_profile"])
-def test_legacy_names_are_exact_copies(built, table):
+def test_legacy_names_are_exact_copies(built, table, monkeypatch):
     # gold.write_legacy_windows: last_12m / last_24m / last_90d are the rows of
     # last_1y / last_2y / last_3m under the old name, so the previous release
-    # reads the same numbers the new one serves.
+    # reads the same numbers the new one serves. settings.gold_legacy_windows is
+    # off by default, so turn it on for the copy, and off again after to check
+    # a refresh with it off deletes them (and to leave the fixture as built).
+    from safety.config import settings
+
+    conn = built["conn"]
+
     def fingerprint(name):
         (row,) = _rows(
-            built["conn"],
+            conn,
             f"""
             SELECT count(*) AS n, md5(string_agg(j, ',' ORDER BY j)) AS digest
             FROM (
@@ -491,6 +497,9 @@ def test_legacy_names_are_exact_copies(built, table):
         )
         return row["n"], row["digest"]
 
+    monkeypatch.setattr(settings, "gold_legacy_windows", True)
+    gold.write_legacy_windows(conn, SOURCE, (table,))
+    conn.commit()
     for legacy, current in gold.LEGACY_WINDOWS.items():
         if table == "cell_hour_profile" and current not in gold.HOURLY_WINDOWS:
             continue
@@ -498,6 +507,12 @@ def test_legacy_names_are_exact_copies(built, table):
         new_n, new_digest = fingerprint(current)
         assert new_n > 0, (table, current)
         assert (old_n, old_digest) == (new_n, new_digest), (table, legacy)
+
+    monkeypatch.setattr(settings, "gold_legacy_windows", False)
+    gold.write_legacy_windows(conn, SOURCE, (table,))
+    conn.commit()
+    for legacy in gold.LEGACY_WINDOWS:
+        assert fingerprint(legacy)[0] == 0, (table, legacy)
 
 
 # ---------------------------------------------------------------- pre-aggregation
