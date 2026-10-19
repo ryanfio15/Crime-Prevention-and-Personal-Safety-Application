@@ -22,6 +22,7 @@ from typing import Any
 
 import psycopg
 
+from safety.etl import pending
 from safety.h3grid import (
     RESOLUTIONS,
     cell_area_km2,
@@ -140,6 +141,23 @@ def safety_builds(window: str) -> bool:
     limit = settings.safety_max_window_years
     years = window_years(window)
     return limit is None or years is None or years <= limit
+
+
+# An incremental rebuilds the windows shorter than this every run, and the
+# longer ones only once their stored build is a week behind the data (or the
+# city's window list changed). A day of new incidents is a rounding error
+# against two or more years of them, and those windows were most of the
+# refresh: each one rescans every year it spans. The trade is that a long
+# window can lag the short ones by up to LONG_WINDOW_MAX_AGE; gold.city_window
+# keeps each window's own dates, so the API reports how far each one reaches.
+# Every non-incremental refresh (gold, backfill, history, ...) builds them all.
+LONG_WINDOW_MIN_YEARS = 2
+LONG_WINDOW_MAX_AGE = timedelta(days=7)
+
+
+def is_long_window(name: str) -> bool:
+    years = window_years(name)
+    return years is not None and years >= LONG_WINDOW_MIN_YEARS
 
 # Time of day. Block h covers [h:00, h+1:00) local; 23 is 23:00-24:00.
 HOUR_BLOCKS = 24
@@ -707,9 +725,15 @@ INSERT INTO gold.cell_activity (
 
 
 def refresh_cell_activity(
-    conn: psycopg.Connection, source_id: str, windows: list[Window]
+    conn: psycopg.Connection,
+    source_id: str,
+    windows: list[Window],
+    keep: tuple[str, ...] = (),
 ) -> int:
-    """Rebuild gold.cell_activity for every resolution/window/category in scope."""
+    """Rebuild gold.cell_activity for every resolution/window/category in scope.
+
+    `keep` names windows to leave exactly as stored: not rebuilt, not deleted.
+    """
     written = 0
     with conn.cursor() as cur:
         if PREAGGREGATE:
@@ -735,9 +759,11 @@ def refresh_cell_activity(
             # city's history no longer reaches). That is what makes narrowing
             # reclaim disk rather than strand rows nothing will overwrite again,
             # and why the scope can be widened back without a migration.
+            # Only the windows in `keep` survive it.
             cur.execute(
-                "DELETE FROM gold.cell_activity WHERE source_id = %s AND h3_res = %s",
-                (source_id, res),
+                "DELETE FROM gold.cell_activity WHERE source_id = %s AND h3_res = %s "
+                "AND NOT (time_window = ANY(%s))",
+                (source_id, res, list(keep)),
             )
             for window in windows:
                 if not activity_builds(res, window.name):
@@ -1080,6 +1106,7 @@ def refresh_cell_safety(
     source_id: str,
     windows: list[Window],
     scheme: Scheme,
+    keep: tuple[str, ...] = (),
 ) -> int:
     """Rebuild gold.cell_safety for one scheme, every resolution and window."""
     if scheme.per_capita:
@@ -1098,8 +1125,9 @@ def refresh_cell_safety(
                 """
                 DELETE FROM gold.cell_safety
                 WHERE source_id = %s AND h3_res = %s AND scheme_version = %s
+                  AND NOT (time_window = ANY(%s))
                 """,
-                (source_id, res, scheme.version),
+                (source_id, res, scheme.version, list(keep)),
             )
             for window in windows:
                 if not safety_builds(window.name):
@@ -1635,15 +1663,29 @@ WHERE rn <= %(depth)s
 """
 
 
-def refresh_cell_detail(
-    conn: psycopg.Connection, source_id: str, windows: list[Window]
-) -> tuple[int, int]:
-    """Rebuild the monthly series and per-cell offense mix."""
-    # The trend sparkline covers at most MONTHLY_SPAN, not the widest window: a
-    # city with twenty years of history would otherwise store ten times the
-    # monthly rows for a chart that draws two years legibly.
+def monthly_window(windows: list[Window]) -> Window:
+    """The span the trend sparkline covers: MONTHLY_SPAN, or the widest window short of it."""
+    # At most MONTHLY_SPAN, not the widest window: a city with twenty years of
+    # history would otherwise store ten times the monthly rows for a chart that
+    # draws two years legibly.
     spans = [w for w in windows if w.name == MONTHLY_SPAN]
-    widest = spans[0] if spans else max(windows, key=lambda w: (w.end - w.start).days)
+    return spans[0] if spans else max(windows, key=lambda w: (w.end - w.start).days)
+
+
+def refresh_cell_detail(
+    conn: psycopg.Connection,
+    source_id: str,
+    windows: list[Window],
+    keep: tuple[str, ...] = (),
+    monthly: Window | None = None,
+) -> tuple[int, int]:
+    """Rebuild the monthly series and per-cell offense mix.
+
+    The offense mix is per window, and `keep` leaves those windows as stored, as
+    in refresh_cell_activity. The monthly series is not per window: it is always
+    rebuilt, over `monthly` (default: monthly_window(windows)).
+    """
+    widest = monthly or monthly_window(windows)
     monthly_rows = 0
     mix_rows = 0
 
@@ -1670,8 +1712,9 @@ def refresh_cell_detail(
             monthly_rows += cur.rowcount
 
             cur.execute(
-                "DELETE FROM gold.cell_offense_mix WHERE source_id = %s AND h3_res = %s",
-                (source_id, res),
+                "DELETE FROM gold.cell_offense_mix WHERE source_id = %s AND h3_res = %s "
+                "AND NOT (time_window = ANY(%s))",
+                (source_id, res, list(keep)),
             )
             for window in windows:
                 # The detail panel at resolution 10 only ever asks for the
@@ -1745,7 +1788,10 @@ _DAILY_COLUMNS = (
 
 
 def refresh_cell_daily(
-    conn: psycopg.Connection, source_id: str, windows: list[Window]
+    conn: psycopg.Connection,
+    source_id: str,
+    windows: list[Window],
+    since: date | None = None,
 ) -> int:
     """Rebuild gold.cell_daily for this city, and the snapshot fields it backs.
 
@@ -1754,6 +1800,11 @@ def refresh_cell_daily(
     history, and an incremental refresh changes a few recent days of it;
     rewriting all of it every six hours would be almost entirely churn (dead
     tuples, WAL) for rows that came out the same.
+
+    `since` limits the rebuild to days from that date on, for an incremental
+    whose silver changes all fall on or after it (safety.etl.pending): earlier
+    days are left exactly as stored. Ignored, for a full rebuild, when the
+    stored rows were weighted under a different scheme than the active one.
 
     Runs after refresh_city_snapshot, in the same transaction: it sets
     selectable_start and daily_scheme_version on the snapshot row, which has to
@@ -1769,6 +1820,19 @@ def refresh_cell_daily(
             log.warning("%s: active scheme '%s' is not loaded; cell_daily is unweighted",
                         source_id, scheme)
             scheme = None
+    if since is not None:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT daily_scheme_version FROM gold.city_snapshot WHERE source_id = %s",
+                (source_id,),
+            )
+            row = cur.fetchone()
+        if row is None or row["daily_scheme_version"] != scheme:
+            log.info("cell_daily for %s was weighted under another scheme; rebuilding it all",
+                     source_id)
+            since = None
+    # Days before `lower` are neither rebuilt nor deleted.
+    lower = floor if since is None else max(since, floor)
 
     columns = ", ".join(_DAILY_COLUMNS)
     with conn.cursor() as cur:
@@ -1778,18 +1842,21 @@ def refresh_cell_daily(
             _DAILY_BUILD_SQL.format(
                 weight_lookup=_WEIGHT_JOIN, res_rows=_res_rows(DAILY_RESOLUTIONS)
             ),
-            {"source_id": source_id, "floor": floor, "anchor": anchor, "scheme": scheme},
+            {"source_id": source_id, "floor": lower, "anchor": anchor, "scheme": scheme},
         )
         cur.execute("ANALYZE _daily")
+        # A full rebuild (lower = floor) also drops days before the floor, as it
+        # always has; an incremental one only touches days from `lower` on.
         cur.execute(
             """
             DELETE FROM gold.cell_daily d
-            WHERE d.source_id = %s
+            WHERE d.source_id = %(source_id)s
+              AND (%(incremental)s = false OR d.day >= %(lower)s)
               AND NOT EXISTS (
                     SELECT 1 FROM _daily n
                     WHERE n.h3_res = d.h3_res AND n.day = d.day AND n.h3_index = d.h3_index)
             """,
-            (source_id,),
+            {"source_id": source_id, "incremental": since is not None, "lower": lower},
         )
         removed = cur.rowcount
         cur.execute(
@@ -1818,7 +1885,7 @@ def refresh_cell_daily(
         )
     log.info(
         "cell_daily %s..%s scheme=%s -> %s rows written or changed, %s removed",
-        floor, anchor, scheme, written, removed,
+        lower, anchor, scheme, written, removed,
     )
     return written
 
@@ -1949,6 +2016,7 @@ def refresh_safety_layer(
     source_id: str,
     windows: list[Window],
     scheme_version: str | None = None,
+    keep: tuple[str, ...] = (),
 ) -> tuple[int, float | None]:
     """Build the safety ranking for one scheme, or for every enabled one.
 
@@ -1972,7 +2040,7 @@ def refresh_safety_layer(
     coverage: float | None = None
     for scheme in schemes:
         try:
-            rows += refresh_cell_safety(conn, source_id, windows, scheme)
+            rows += refresh_cell_safety(conn, source_id, windows, scheme, keep)
         except LookupError as exc:
             # A scheme that cannot be built is skipped, not fatal. _require_exposure
             # raises rather than producing a uniform map, which is right -- but the
@@ -2130,6 +2198,14 @@ def write_legacy_windows(
     from safety.config import settings
 
     if not settings.gold_legacy_windows:
+        # Off: drop any copies an earlier refresh left, rather than leave them
+        # going stale behind the windows they were copied from.
+        with conn.cursor() as cur:
+            for table in tables:
+                cur.execute(
+                    f"DELETE FROM gold.{table} WHERE source_id = %s AND time_window = ANY(%s)",
+                    (source_id, list(LEGACY_WINDOWS)),
+                )
         return 0
     copied = 0
     with conn.cursor() as cur:
@@ -2159,11 +2235,40 @@ ALL_HOURS_TABLES = ("cell_activity", "cell_safety", "cell_offense_mix")
 HOURLY_TABLES = ("cell_hour_safety", "cell_hour_profile")
 
 
+def stored_windows(conn: psycopg.Connection, source_id: str) -> dict[str, Window]:
+    """The windows the city's gold was last built for, as gold.city_window records them."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT time_window, window_start, window_end, data_start, partial
+            FROM gold.city_window WHERE source_id = %s ORDER BY sort_order
+            """,
+            (source_id,),
+        )
+        return {
+            r["time_window"]: Window(
+                r["time_window"], r["window_start"], r["window_end"], r["data_start"], r["partial"]
+            )
+            for r in cur.fetchall()
+        }
+
+
+def long_windows_due(
+    windows: list[Window], stored: dict[str, Window], anchor: date
+) -> bool:
+    """Whether an incremental has to rebuild the long windows too (LONG_WINDOW_MAX_AGE)."""
+    long = [w for w in windows if is_long_window(w.name)]
+    if {w.name for w in long} != {name for name in stored if is_long_window(name)}:
+        return True
+    return any(anchor - stored[w.name].end >= LONG_WINDOW_MAX_AGE for w in long)
+
+
 def refresh_all(
     conn: psycopg.Connection,
     source_id: str,
     pipeline_version: str,
     include_hourly: bool = True,
+    incremental: bool = False,
 ) -> dict[str, Any]:
     """Full gold refresh for one city. Runs as a single transaction.
 
@@ -2178,7 +2283,24 @@ def refresh_all(
     free one: until that runs, the hourly view reflects the previous build. The
     all-hours percentile it is compared against does get rebuilt here, so the two
     are briefly derived from different windows of data.
+
+    `incremental=True` is the daily pull's refresh, and does only what silver's
+    changes since the last refresh require (safety.etl.pending): nothing at all
+    when there are none, the daily rollup only from the earliest changed date,
+    and the long windows only when they are due (long_windows_due). A pending
+    mark with no date -- a census reload, or the first run after migration 021
+    -- makes it a full refresh. Either way the mark is cleared on commit.
     """
+    pending_change: pending.Pending | None = None
+    if incremental:
+        pending_change = pending.get(conn, source_id)
+        if pending_change is None:
+            log.info("gold for %s is up to date with silver; nothing to rebuild", source_id)
+            return {"gold_skipped": True}
+        if pending_change.full:
+            incremental = False
+    since = pending_change.dirty_from if incremental and pending_change else None
+
     timings: dict[str, float] = {}
     clock = time.monotonic()
 
@@ -2199,6 +2321,27 @@ def refresh_all(
         anchor,
         ", ".join(f"{w.name}[{w.start}..{w.end}]" for w in windows),
     )
+
+    # What to rebuild, and which long windows to keep as stored. `recorded` is
+    # what gold.city_window will say afterwards: each kept window with the
+    # dates it was actually built for, not today's.
+    rebuild, keep, recorded = windows, (), windows
+    if incremental:
+        stored = stored_windows(conn, source_id)
+        if long_windows_due(windows, stored, anchor):
+            log.info("long windows for %s are due; rebuilding every window", source_id)
+        else:
+            rebuild = [w for w in windows if not is_long_window(w.name)]
+            keep = tuple(w.name for w in windows if is_long_window(w.name))
+            recorded = [stored[w.name] if w.name in keep else w for w in windows]
+            if keep:
+                log.info(
+                    "incremental for %s: rebuilding %s; keeping %s (built through %s)",
+                    source_id,
+                    ", ".join(w.name for w in rebuild),
+                    ", ".join(keep),
+                    min(stored[name].end for name in keep),
+                )
     lap("cell_universe")
 
     # Exposure is keyed on the cell universe, so it has to follow it and precede
@@ -2209,9 +2352,9 @@ def refresh_all(
     exposure_cells = refresh_cell_exposure(conn, source_id)
     lap("exposure")
 
-    activity_rows = refresh_cell_activity(conn, source_id, windows)
+    activity_rows = refresh_cell_activity(conn, source_id, rebuild, keep)
     lap("activity")
-    safety_rows, coverage = refresh_safety_layer(conn, source_id, windows)
+    safety_rows, coverage = refresh_safety_layer(conn, source_id, rebuild, keep=keep)
     lap("safety")
 
     hour_rows: int | None = None
@@ -2220,8 +2363,9 @@ def refresh_all(
     if include_hourly:
         # After the all-hours ranking, never before: the hourly layer's second
         # rating is a comparison against the percentile that one produces.
+        # HOURLY_WINDOWS are all short, so `rebuild` always holds them.
         hour_rows, hour_profile_rows, hour_share = refresh_hourly_layer(
-            conn, source_id, windows
+            conn, source_id, rebuild
         )
         lap("hourly")
     else:
@@ -2235,14 +2379,18 @@ def refresh_all(
             source_id,
         )
 
-    monthly_rows, mix_rows = refresh_cell_detail(conn, source_id, windows)
+    monthly_rows, mix_rows = refresh_cell_detail(
+        conn, source_id, rebuild, keep, monthly=monthly_window(windows)
+    )
     lap("detail")
-    write_city_windows(conn, source_id, windows)
+    write_city_windows(conn, source_id, recorded)
     write_legacy_windows(
         conn, source_id, ALL_HOURS_TABLES + (HOURLY_TABLES if include_hourly else ())
     )
     refresh_city_snapshot(conn, source_id, pipeline_version, coverage, hour_share)
-    daily_rows = refresh_cell_daily(conn, source_id, windows)
+    daily_rows = refresh_cell_daily(conn, source_id, windows, since=since)
+    # Same transaction: gold now reflects every silver change marked so far.
+    pending.clear(conn, source_id)
     conn.commit()
     lap("snapshot_daily_and_commit")
     log.info("gold refresh for %s took %s", source_id, timings)
@@ -2264,5 +2412,7 @@ def refresh_all(
         "cell_offense_mix_rows": mix_rows,
         "cell_daily_rows_changed": daily_rows,
         "windows": [w.name for w in windows],
+        "windows_rebuilt": [w.name for w in rebuild],
+        "daily_rebuilt_from": since.isoformat() if since else None,
         "timings_seconds": timings,
     }

@@ -40,7 +40,7 @@ from typing import Any
 
 import psycopg
 
-from safety.etl import validate
+from safety.etl import pending, validate
 
 log = logging.getLogger(__name__)
 
@@ -224,6 +224,15 @@ def apply(conn: psycopg.Connection, pull_id: int, a: Assessment, mode: str) -> d
                 },
             )
             deleted = cur.rowcount
+            if deleted:
+                # The archive copy carries each deleted row's date; the
+                # earliest is where the gold rollups stop being right.
+                cur.execute(
+                    "SELECT min(occurred_local_date) AS d FROM etl.withdrawn_incident "
+                    "WHERE pull_id = %s",
+                    (pull_id,),
+                )
+                pending.mark(conn, a.source_id, cur.fetchone()["d"])
         action = "deleted"
         if deleted != len(a.absent_keys):
             # Rows changed between assess and apply (the promotion just ran).

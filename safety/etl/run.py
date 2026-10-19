@@ -53,7 +53,7 @@ import psycopg
 from safety import PIPELINE_VERSION
 from safety.db import connect, wait_for_db
 from safety.etl import boundary as boundary_loader
-from safety.etl import census, gold, transform, validate, withdrawn
+from safety.etl import census, gold, pending, transform, validate, withdrawn
 from safety.etl.adapters import (
     ADAPTERS,
     HISTORY_DATASETS,
@@ -857,12 +857,16 @@ def cmd_incremental(args: argparse.Namespace) -> int:
         )
         # Every run, whatever the outcome and the mode (F13 retention, 90 days).
         _prune_safely(conn, config.source_id, settings.withdrawn_retention_days)
-        if outcome["status"] == "succeeded":
+        # Not only after a succeeded pull: a pull with nothing new still leaves
+        # gold behind if an earlier refresh failed after its pull committed, and
+        # refresh_all is a no-op when nothing is pending (safety.etl.pending).
+        if outcome["status"] in ("succeeded", "no_new_data"):
             stats = gold.refresh_all(
                 conn,
                 config.source_id,
                 PIPELINE_VERSION,
                 include_hourly=not args.skip_hourly,
+                incremental=True,
             )
             outcome.update(stats)
     print(json.dumps(outcome, indent=2, default=str))
@@ -1282,6 +1286,10 @@ def cmd_census(args: argparse.Namespace) -> int:
         # tops up the cells that have no figure yet, which is the right default
         # when the denominator has not moved and the wrong one here.
         cells = gold.refresh_cell_exposure(conn, config.source_id, rebuild=True)
+        # The rankings divide by this, and none of it is a date range: the next
+        # incremental rebuilds this city's gold in full rather than skipping it.
+        pending.mark(conn, config.source_id, None)
+        conn.commit()
 
     print(
         json.dumps(

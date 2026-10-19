@@ -782,3 +782,145 @@ def test_range_cell_detail_matches_the_stored_window(built):
     assert ranged["by_category"] == stored["by_category"]
     assert [dict(r) for r in ranged["top_offenses"]] == [dict(r) for r in stored["top_offenses"]]
     assert ranged["by_hour"] == [] and ranged["range"]["from"] == window.start.isoformat()
+
+
+# --- Incremental refresh (safety.etl.pending, gold.refresh_all incremental=True).
+# These commit, like the idempotency test above; each leaves gold as a full
+# build over unchanged silver would.
+
+
+def _window_refreshed_at(conn, window):
+    return _scalar(
+        conn,
+        "SELECT max(refreshed_at) FROM gold.cell_activity "
+        "WHERE source_id = %s AND time_window = %s",
+        (SOURCE, window),
+    )
+
+
+def test_incremental_skips_when_nothing_is_pending(built):
+    from safety.etl import pending
+
+    conn = built["conn"]
+    assert pending.get(conn, SOURCE) is None  # the fixture's full refresh cleared it
+    stamp = _scalar(
+        conn, "SELECT last_refreshed_at FROM gold.city_snapshot WHERE source_id = %s", (SOURCE,)
+    )
+    assert gold.refresh_all(conn, SOURCE, PIPELINE_VERSION, incremental=True) == {
+        "gold_skipped": True
+    }
+    conn.rollback()
+    assert _scalar(
+        conn, "SELECT last_refreshed_at FROM gold.city_snapshot WHERE source_id = %s", (SOURCE,)
+    ) == stamp
+
+
+def test_incremental_keeps_long_windows_until_due(built):
+    from safety.etl import pending
+
+    conn = built["conn"]
+    assert "last_2y" in [w.name for w in built["windows"]]
+    daily_before = _daily(conn)
+    long_before = _window_refreshed_at(conn, "last_2y")
+    short_before = _window_refreshed_at(conn, "last_1y")
+
+    pending.mark(conn, SOURCE, ANCHOR - timedelta(days=10))
+    conn.commit()
+    result = gold.refresh_all(conn, SOURCE, PIPELINE_VERSION, incremental=True)
+    assert "last_2y" not in result["windows_rebuilt"]
+    assert "last_1y" in result["windows_rebuilt"]
+    assert result["daily_rebuilt_from"] == (ANCHOR - timedelta(days=10)).isoformat()
+    assert pending.get(conn, SOURCE) is None
+    conn.rollback()
+    # The kept window's rows are the same rows; the short ones were rewritten.
+    assert _window_refreshed_at(conn, "last_2y") == long_before
+    assert _window_refreshed_at(conn, "last_1y") > short_before
+    # The partial daily rebuild over unchanged silver changes nothing.
+    assert _daily(conn) == daily_before
+
+    # A week behind the data: the next incremental rebuilds it too.
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE gold.city_window SET window_end = window_end - %s "
+            "WHERE source_id = %s AND time_window = 'last_2y'",
+            (gold.LONG_WINDOW_MAX_AGE, SOURCE),
+        )
+    pending.mark(conn, SOURCE, ANCHOR)
+    conn.commit()
+    result = gold.refresh_all(conn, SOURCE, PIPELINE_VERSION, incremental=True)
+    assert "last_2y" in result["windows_rebuilt"]
+    conn.rollback()
+    assert _window_refreshed_at(conn, "last_2y") > long_before
+    assert _scalar(
+        conn,
+        "SELECT window_end FROM gold.city_window WHERE source_id = %s AND time_window = 'last_2y'",
+        (SOURCE,),
+    ) == ANCHOR
+
+
+def test_undated_mark_wins_over_a_dated_one(built):
+    from safety.etl import pending
+
+    conn = built["conn"]
+    try:
+        pending.mark(conn, SOURCE, ANCHOR)
+        pending.mark(conn, SOURCE, None)
+        pending.mark(conn, SOURCE, ANCHOR - timedelta(days=30))
+        assert pending.get(conn, SOURCE).full
+        pending.clear(conn, SOURCE)
+        pending.mark(conn, SOURCE, ANCHOR)
+        pending.mark(conn, SOURCE, ANCHOR - timedelta(days=30))
+        assert pending.get(conn, SOURCE).dirty_from == ANCHOR - timedelta(days=30)
+    finally:
+        conn.rollback()
+
+
+def test_promote_marks_only_real_changes(built):
+    from safety.etl import pending, transform
+
+    conn = built["conn"]
+    row = built["rows"][2]
+    columns = ", ".join(transform._COMPARED_COLUMNS)
+    try:
+        with conn.cursor() as cur:
+            # The fixture leaves coordinate_source NULL, which staging forbids.
+            cur.execute(
+                "UPDATE silver.incident SET coordinate_source = 'reported' "
+                "WHERE source_id = %s AND incident_key = %s",
+                (SOURCE, row["key"]),
+            )
+            cur.execute(
+                """
+                INSERT INTO etl.pull_run (source_id, dataset, mode, status, pipeline_version)
+                VALUES (%s, 'test-fixture', 'incremental', 'running', %s) RETURNING pull_id
+                """,
+                (SOURCE, PIPELINE_VERSION),
+            )
+            pull_id = cur.fetchone()["pull_id"]
+            cur.execute(
+                f"""
+                INSERT INTO etl.staging_incident (pull_id, source_id, incident_key, {columns})
+                SELECT %s, source_id, incident_key, {columns} FROM silver.incident
+                WHERE source_id = %s AND incident_key = %s
+                """,
+                (pull_id, SOURCE, row["key"]),
+            )
+        promote = dict(
+            pull_id=pull_id,
+            source_id=SOURCE,
+            crosswalk_version=row["xw"]["crosswalk_version"],
+            pipeline_version=PIPELINE_VERSION,
+        )
+        # Re-reading an identical record changes nothing gold reads.
+        assert transform.promote_to_silver(conn, **promote) == 1
+        assert pending.get(conn, SOURCE) is None
+        # A revision does, from the record's date.
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE etl.staging_incident SET location_block = 'revised' WHERE pull_id = %s",
+                (pull_id,),
+            )
+        transform.promote_to_silver(conn, **promote)
+        assert pending.get(conn, SOURCE).dirty_from == row["date"]
+    finally:
+        conn.rollback()

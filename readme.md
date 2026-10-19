@@ -182,7 +182,7 @@ and systemd and python-dotenv parse anything fancier differently.
 | `OPS_RETRY_COOLDOWN_HOURS` | `6` | — | `safety/ops.py` | How long a failed ops step is left alone |
 | `OPS_HISTORY_MINUTES` | `25` | — | `safety/ops.py` | How long one ops run spends on the history load before it stops starting slices |
 | `SAFETY_MAX_WINDOW_YEARS` | *(unset)* | — | `etl/gold.py` | Fallback for disk: windows longer than this many years get counts but no safety ranking |
-| `GOLD_LEGACY_WINDOWS` | `true` | — | `etl/gold.py` | Also write `last_90d`/`last_12m`/`last_24m` for the previous release; turned off with the contract migration |
+| `GOLD_LEGACY_WINDOWS` | `false` | — | `etl/gold.py` | Also write `last_90d`/`last_12m`/`last_24m` for a rollback to the release before 018; off by default, and a refresh with it off deletes the copies |
 | `WITHDRAWN_RECONCILE` | `report` | — | `etl/run.py` | `off` / `report` / `delete` for rows that vanish upstream. Prod stays `report` |
 | `WITHDRAWN_RETENTION_DAYS` | `90` | — | `etl/run.py` | Archive retention for deleted rows |
 

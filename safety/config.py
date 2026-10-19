@@ -156,9 +156,9 @@ class Settings(BaseSettings):
     # Gold time windows (safety/etl/gold.py, migration 018). While on, every
     # refresh also writes last_3m / last_1y / last_2y under the names the
     # previous release reads (last_90d / last_12m / last_24m), so rolling back
-    # still finds a map. Turned off, and the copies deleted, by the contract
-    # migration once no deployed release reads the old names.
-    gold_legacy_windows: bool = True
+    # still finds a map. Off by default now that no deployed release reads the
+    # old names (the API aliases them); a refresh with it off deletes the copies.
+    gold_legacy_windows: bool = False
     # Fallback if the long windows do not fit: windows longer than this many
     # years keep their incident counts but are built without the safety
     # ranking. Unset builds the ranking for every window.

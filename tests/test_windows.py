@@ -176,3 +176,26 @@ def test_bucket_limits():
     assert gold.window_bucket_limit("last_1y") == 12
     assert gold.window_bucket_limit("last_2y") == 13
     assert gold.window_bucket_limit("last_26y") == 37
+
+
+def test_long_windows_are_two_years_and_up():
+    assert [n for n in ("last_3m", "last_9m", "last_1y", "last_2y", "last_20y")
+            if gold.is_long_window(n)] == ["last_2y", "last_20y"]
+
+
+def test_long_windows_due_after_a_week_or_a_new_window():
+    anchor = date(2026, 10, 18)
+    built = gold.resolve_windows(anchor - timedelta(days=3), date(2020, 1, 1))
+    stored = {w.name: w for w in built}
+    current = gold.resolve_windows(anchor, date(2020, 1, 1))
+    # Three days behind: kept.
+    assert not gold.long_windows_due(current, stored, anchor)
+    # A week behind: due.
+    week = gold.resolve_windows(anchor - gold.LONG_WINDOW_MAX_AGE, date(2020, 1, 1))
+    assert gold.long_windows_due(current, {w.name: w for w in week}, anchor)
+    # The list gained a year (more history loaded): due, whatever the dates.
+    assert gold.long_windows_due(
+        gold.resolve_windows(anchor, date(2015, 1, 1)), stored, anchor
+    )
+    # Nothing stored yet (a city's first build): due.
+    assert gold.long_windows_due(current, {}, anchor)

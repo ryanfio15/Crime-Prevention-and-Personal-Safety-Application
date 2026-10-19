@@ -19,6 +19,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from safety.db import ensure_partitions
+from safety.etl import pending
 from safety.etl.adapters.base import NormalizedIncident
 from safety.h3grid import cells_for_point
 
@@ -231,6 +232,35 @@ WHERE i.source_id     = s.source_id
 """
 
 
+# Every staged field that is copied into silver, so "unchanged" means unchanged
+# in everything the upsert would write -- not just the fields gold reads today.
+_COMPARED_COLUMNS = tuple(
+    c for c in _STAGING_COLUMNS if c not in ("pull_id", "source_id", "incident_key")
+)
+
+# What this pull would actually change in silver, measured before the upsert
+# overwrites it: staged rows that are new, or differ from the stored row in any
+# copied field or in the crosswalk version they would be classified under. The
+# earliest date is taken over both sides, so a revision that moves an incident
+# from March to May dirties March as well. Joined on the key alone, not the
+# year: a revision across a year boundary is a change like any other.
+_CHANGES_SQL = f"""
+SELECT
+    count(*)::int AS changed,
+    min(LEAST(s.occurred_local_date, i.occurred_local_date)) AS dirty_from
+FROM etl.staging_incident s
+LEFT JOIN silver.incident i
+       ON i.source_id = s.source_id AND i.incident_key = s.incident_key
+WHERE s.pull_id = %(pull_id)s
+  AND (
+        i.incident_key IS NULL
+     OR ({", ".join(f"s.{c}" for c in _COMPARED_COLUMNS)}, %(crosswalk_version)s::text)
+        IS DISTINCT FROM
+        ({", ".join(f"i.{c}" for c in _COMPARED_COLUMNS)}, i.crosswalk_version)
+  )
+"""
+
+
 def promote_to_silver(
     conn: psycopg.Connection,
     *,
@@ -261,13 +291,23 @@ def promote_to_silver(
         "pipeline_version": pipeline_version,
     }
     with conn.cursor() as cur:
+        cur.execute(_CHANGES_SQL, params)
+        changes = cur.fetchone()
         cur.execute(_PROMOTE_SQL, params)
         upserted = cur.rowcount
         cur.execute(_DEDUPE_ACROSS_YEARS_SQL, {"pull_id": pull_id})
         moved = cur.rowcount
     if moved:
         log.info("removed %s stale rows whose date moved across a year boundary", moved)
-    log.info("promoted %s records to silver", upserted)
+    if changes["changed"]:
+        # Same transaction as the upsert: the mark commits with the rows.
+        pending.mark(conn, source_id, changes["dirty_from"])
+    log.info(
+        "promoted %s records to silver (%s new or changed%s)",
+        upserted,
+        changes["changed"],
+        f", earliest {changes['dirty_from']}" if changes["changed"] else "",
+    )
     return upserted
 
 
