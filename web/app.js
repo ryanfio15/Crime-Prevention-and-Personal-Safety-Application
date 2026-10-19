@@ -1518,6 +1518,29 @@ function fillHourOptions() {
   for (let hour = 0; hour < 24; hour++) select.add(new Option(hourLabel(hour), String(hour)));
 }
 
+/** "EDT": the selected city's zone as its clocks read today; "" if unknown. */
+function cityZoneName() {
+  const timeZone = state.cityRecord?.timezone;
+  if (!timeZone) return "";
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "short" })
+      .formatToParts(new Date())
+      .find((part) => part.type === "timeZoneName")?.value ?? "";
+  } catch {
+    return ""; // RangeError for a zone this browser does not know
+  }
+}
+
+/** "11 AM – 12 PM EDT" for each hour block, in the selected city's zone. */
+function labelHourOptions() {
+  const zone = cityZoneName();
+  for (const option of $("f-hour").options) {
+    if (option.value === "all") continue;
+    const hour = Number(option.value);
+    option.text = `${hourName(hour)} – ${hourName(hour + 1)}${zone ? ` ${zone}` : ""}`;
+  }
+}
+
 /**
  * Enable or disable the hour control for the current window and cell size.
  *
@@ -1530,6 +1553,7 @@ function syncHourAvailability() {
   const ok =
     HOURLY_RESOLUTIONS.includes(state.res) && Boolean(currentPreset()?.hourly);
   const select = $("f-hour");
+  labelHourOptions();
   select.disabled = !ok;
   if (!ok) state.hour = null;
   select.value = state.hour === null ? "all" : String(state.hour);
@@ -1862,6 +1886,10 @@ function watchForRefresh() {
   // record, so the controls sync and the layer paints after it exists.
   await loadFreshness();
   syncActivityScope();
+  // Open on the hour it is now in the city -- the hour blocks are its local
+  // clock (web/hours.js). syncHourAvailability falls back to all hours where
+  // the opening window has no hourly layer.
+  state.hour = cityHour(state.cityRecord?.timezone);
   syncHourAvailability();
   syncSafetyAvailability();
   await loadLayer();
