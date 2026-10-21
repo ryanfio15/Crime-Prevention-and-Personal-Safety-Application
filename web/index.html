@@ -130,6 +130,33 @@
       <div class="legend-foot" id="legend-foot"></div>
     </div>
 
+    <!-- Which way the nearby cells get quieter, read from the layer on screen
+         around the visitor's location (or the map centre until they share it).
+         The rose turns with the map, so N always points at real north. -->
+    <div class="compass" id="compass" role="group" aria-labelledby="compass-title" hidden>
+      <div class="compass-title" id="compass-title">Lower-crime direction</div>
+      <div class="compass-dial" id="compass-dial" aria-hidden="true">
+        <div class="compass-rose" id="compass-rose">
+          <svg viewBox="-50 -50 100 100" class="compass-wedges" id="compass-wedges"></svg>
+          <span class="compass-cardinal" style="--a:0deg">N</span>
+          <span class="compass-cardinal" style="--a:90deg">E</span>
+          <span class="compass-cardinal" style="--a:180deg">S</span>
+          <span class="compass-cardinal" style="--a:270deg">W</span>
+          <div class="compass-needle" id="compass-needle"></div>
+        </div>
+      </div>
+      <div class="compass-readout" id="compass-readout" aria-live="polite">&mdash;</div>
+      <div class="compass-foot" id="compass-foot"></div>
+    </div>
+
+    <!-- Where "Use my location" put the visitor, when it is not a cell on this
+         map: in no served city, or just past the edge of one. -->
+    <div class="locate-note" id="locate-note" role="status" aria-live="polite" hidden>
+      <span id="locate-note-text"></span>
+      <button type="button" class="btn" id="locate-note-go" hidden></button>
+      <button type="button" class="locate-note-close" id="locate-note-close"
+              aria-label="Dismiss">&times;</button>
+    </div>
 
     <!-- A live region, so a load error that stays on screen is announced. -->
     <div class="loading" id="loading" role="status" aria-live="polite" hidden>Loading&hellip;</div>

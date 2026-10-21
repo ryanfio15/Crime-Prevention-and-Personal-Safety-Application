@@ -408,8 +408,11 @@ const CATEGORY_LABELS = {
 };
 
 const state = {
-  /* Set during boot from ?city= or the served list; never assumed. */
+  /* Set during boot from ?city=, the visitor's city, or the served list; never assumed. */
   city: null,
+  /* Every served city's record from /api/v1/cities, bounding boxes included,
+     so "which city am I in" needs no request of its own. */
+  cities: [],
   /* The selected city's snapshot row, so the header, the frame and the
      methodology sheet all read from one place. */
   cityRecord: null,
@@ -433,6 +436,10 @@ const state = {
   hovered: null,
   meta: null,
   features: [],
+  // h3 -> properties for the layer on screen, for the compass's ring lookups.
+  featureIndex: new Map(),
+  // {lat, lng} once the visitor shares a location; the compass reads from it.
+  userLocation: null,
   // The open cell's detail payload, so a track switch re-reads rather than refetches.
   detail: null,
   // Domain the ramp is currently hinged on, so the legend and the fill
@@ -498,7 +505,10 @@ let map;
  * The chosen domain is stashed on `state` for the legend, so the key and the
  * fill can never disagree about what the middle of the bar means.
  */
-function fillColorExpression() {
+/** The property the map is coloured by right now, and which cells take a
+    colour from the ramp. Shared by the fill and the compass, so the compass
+    can never point along a different measure from the one on screen. */
+function paintedMeasure() {
   const props = TRACK_PROPS[state.track];
   const hourly = state.hour !== null;
 
@@ -511,6 +521,11 @@ function fillColorExpression() {
     // the scale: an absence of reports is not evidence of safety.
     ? (p) => (p[tier] ?? 0) !== 0
     : (p) => (p[valueProp] ?? 0) > 0;
+  return { valueProp, tier, isPainted };
+}
+
+function fillColorExpression() {
+  const { valueProp, tier, isPainted } = paintedMeasure();
 
   const domain = valueDomain(valueProp, isPainted);
   state.rampDomain = domain;
@@ -603,6 +618,178 @@ function renderLegend() {
       }`;
 }
 
+/* ------------------------------------------------------------------ compass */
+
+const COMPASS_POINTS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+const COMPASS_NAMES = {
+  N: "north", NE: "northeast", E: "east", SE: "southeast",
+  S: "south", SW: "southwest", W: "west", NW: "northwest",
+};
+
+/* How far the compass looks, in rings of cells: roughly 1.5 km at every cell
+   size, so switching resolution changes the detail and not the reach. */
+const COMPASS_RINGS = { 8: 2, 9: 5, 10: 12 };
+
+/* A sector has to beat the cell you are in by this much before the needle
+   commits to it -- below that, the difference is noise in a smoothed rate. */
+const COMPASS_MARGIN = 0.1;
+
+/* Fewer cells than this in a sector (the city's edge, a river) is not enough
+   to call it a direction. */
+const COMPASS_MIN_CELLS = 2;
+
+/**
+ * The map's colour at a value, read off the same hinged ramp the fill uses, so
+ * the compass wedges and the hexagons under them agree.
+ */
+function rampColorAt(value) {
+  const domain = state.rampDomain;
+  if (!domain) return ZERO_FILL;
+  const stops = valueRampStops(VALUE_RAMP, domain);
+  if (value <= stops[0]) return stops[1];
+  for (let i = 2; i < stops.length; i += 2) {
+    if (value <= stops[i]) {
+      // Nearest stop is close enough: adjacent steps are ~0.025 apart in L.
+      return value - stops[i - 2] < stops[i] - value ? stops[i - 1] : stops[i + 1];
+    }
+  }
+  return stops.at(-1);
+}
+
+/** Where the compass reads from: the visitor if they shared a location and
+    are in the city on screen, else the middle of the map. A visitor in Austin
+    looking at Chicago wants directions around what they are looking at, not a
+    needle stuck on "no data" for a place a thousand miles away. */
+function compassOrigin() {
+  const here = state.userLocation;
+  const city = state.cities.find((c) => c.source_id === state.city);
+  if (here && city && inBbox(city, here)) return { ...here, from: "your location" };
+  const { lng, lat } = map.getCenter();
+  return {
+    lat, lng,
+    from: "map centre",
+    away: here ? (cityAt(here) ? "you are in another city" : "you are outside the covered cities") : null,
+  };
+}
+
+/**
+ * Mean painted value in each of eight compass sectors around the origin.
+ *
+ * Every cell within COMPASS_RINGS of the origin's cell is assigned to the
+ * sector its centre falls in, measured as a bearing from the origin itself
+ * (not from its cell's centre, which can be 250 m off at res 8). Cells nearer
+ * the origin count for more -- it is a direction to walk, and the next block
+ * matters more than one a mile out. Cells outside the city's layer are
+ * skipped rather than read as zero: no data is not low crime.
+ */
+function compassSectors(origin) {
+  const { valueProp } = paintedMeasure();
+  const byCell = state.featureIndex;
+  const home = h3.latLngToCell(origin.lat, origin.lng, state.res);
+  const homeProps = byCell.get(home);
+  if (!homeProps) return null;
+
+  const cosLat = Math.cos((origin.lat * Math.PI) / 180);
+  const sectors = COMPASS_POINTS.map(() => ({ sum: 0, weight: 0, cells: 0 }));
+
+  for (const [ring, cells] of h3.gridDiskDistances(home, COMPASS_RINGS[state.res] ?? 2).entries()) {
+    if (ring === 0) continue;
+    for (const cell of cells) {
+      const p = byCell.get(cell);
+      if (!p) continue;
+      const [lat, lng] = h3.cellToLatLng(cell);
+      const bearing =
+        (Math.atan2((lng - origin.lng) * cosLat, lat - origin.lat) * 180) / Math.PI;
+      const index = Math.round(((bearing + 360) % 360) / 45) % 8;
+      const weight = 1 / ring;
+      const sector = sectors[index];
+      sector.sum += (p[valueProp] ?? 0) * weight;
+      sector.weight += weight;
+      sector.cells += 1;
+    }
+  }
+
+  return {
+    here: homeProps[valueProp] ?? 0,
+    sectors: sectors.map((s, i) => ({
+      point: COMPASS_POINTS[i],
+      mean: s.cells >= COMPASS_MIN_CELLS ? s.sum / s.weight : null,
+    })),
+  };
+}
+
+/** Eight 45° wedges, each tinted with its sector's mean on the map's ramp. */
+function renderCompassWedges(sectors) {
+  const wedge = (i) => {
+    const a0 = ((i * 45 - 22.5 - 90) * Math.PI) / 180;
+    const a1 = ((i * 45 + 22.5 - 90) * Math.PI) / 180;
+    const r = 49;
+    return `M0 0 L${(r * Math.cos(a0)).toFixed(2)} ${(r * Math.sin(a0)).toFixed(2)} ` +
+      `A${r} ${r} 0 0 1 ${(r * Math.cos(a1)).toFixed(2)} ${(r * Math.sin(a1)).toFixed(2)} Z`;
+  };
+  $("compass-wedges").innerHTML = html`${(sectors ?? []).map(
+    (s, i) => html`<path d="${wedge(i)}" fill="${
+      s.mean === null ? "none" : rampColorAt(s.mean)
+    }" fill-opacity="0.55"></path>`
+  )}<circle r="20" fill="var(--surface-1)"></circle>`;
+}
+
+/** Point the needle at the quietest nearby sector, or say there isn't one. */
+function renderCompass() {
+  const box = $("compass");
+  if (!map || !state.featureIndex?.size) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  // The rose turns against the map, so its N stays on real north.
+  $("compass-rose").style.transform = `rotate(${-map.getBearing()}deg)`;
+
+  const origin = compassOrigin();
+  const result = compassSectors(origin);
+  const readout = $("compass-readout");
+  $("compass-foot").textContent = origin.away
+    ? `From map centre — ${origin.away}`
+    : `Nearby cells, from ${origin.from}`;
+
+  if (!result) {
+    box.dataset.state = "none";
+    renderCompassWedges(null);
+    readout.textContent = origin.from === "your location"
+      ? "You are just outside this city's data."
+      : "Move the map over the city.";
+    return;
+  }
+
+  renderCompassWedges(result.sectors);
+  const ranked = result.sectors
+    .map((s, i) => ({ ...s, index: i }))
+    .filter((s) => s.mean !== null)
+    .sort((a, b) => a.mean - b.mean);
+  const best = ranked[0];
+
+  if (!best || best.mean >= result.here * (1 - COMPASS_MARGIN)) {
+    box.dataset.state = "none";
+    readout.innerHTML = result.here === 0
+      ? html`<b>Already quiet</b><br>nothing lower nearby`
+      : html`<b>No clear direction</b><br>nothing nearby is meaningfully lower`;
+    box.setAttribute("aria-label", "Lower-crime direction: none nearby");
+    return;
+  }
+
+  box.dataset.state = "point";
+  $("compass-needle").style.transform = `rotate(${best.index * 45}deg)`;
+  const drop = result.here > 0 ? 1 - best.mean / result.here : null;
+  readout.innerHTML = html`<b>Head ${best.point}</b>${
+    drop === null ? "" : html`<br>about ${Math.round(drop * 100)}% lower than here`
+  }`;
+  box.setAttribute(
+    "aria-label",
+    `Lower-crime direction: ${COMPASS_NAMES[best.point]}` +
+      (drop === null ? "" : `, about ${Math.round(drop * 100)}% lower than here`)
+  );
+}
+
 /* --------------------------------------------------------------- data fetch */
 
 async function loadLayer({ quiet = false } = {}) {
@@ -651,12 +838,14 @@ async function loadLayer({ quiet = false } = {}) {
 
     state.meta = collection.metadata;
     state.features = collection.features;
+    state.featureIndex = new Map(collection.features.map((f) => [f.properties.h3, f.properties]));
 
     const source = map.getSource("cells");
     if (source) source.setData(collection);
 
     map.setPaintProperty("cells-fill", "fill-color", fillColorExpression());
     renderLegend();
+    renderCompass();
     renderTable();
     // The city rate the safety headline is a share of has just moved, and so has
     // the selected cell's own count if the category changed -- that control
@@ -749,14 +938,16 @@ async function loadFreshness({ refit = false } = {}) {
  * a city whose adapter exists but whose pipeline has not run has nothing to
  * show, and offering it would produce an empty map with no explanation.
  *
- * Returns the chosen source_id. `?city=` wins if it is served, then
- * DEFAULT_CITY, then whatever is first.
+ * Returns the chosen source_id. `?city=` wins if it is served, then the city
+ * the visitor is standing in (only where they have already granted location --
+ * see cityFromGrantedLocation), then DEFAULT_CITY, then whatever is first.
  */
 async function loadCities() {
   const response = await fetch(`${API}/cities`);
   if (!response.ok) throw new Error(`cities request failed: ${response.status}`);
   const { cities } = await response.json();
   if (!cities.length) throw new Error("no city has serving data yet");
+  state.cities = cities;
 
   const select = $("f-city");
   select.replaceChildren(
@@ -775,6 +966,7 @@ async function loadCities() {
   const served = new Set(cities.map((c) => c.source_id));
   const chosen =
     (requested && served.has(requested) && requested) ||
+    (requested ? null : await cityFromGrantedLocation()) ||
     (served.has(DEFAULT_CITY) && DEFAULT_CITY) ||
     cities[0].source_id;
   select.value = chosen;
@@ -1470,9 +1662,173 @@ async function openMethodology() {
 
 /* ------------------------------------------------------------------ geolocate */
 
+/** Great-circle distance in km. */
+function distanceKm(a, b) {
+  const rad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * rad;
+  const dLng = (b.lng - a.lng) * rad;
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLng / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(h));
+}
+
+const inBbox = (city, { lat, lng }) =>
+  Number.isFinite(city.bbox_west) &&
+  lng >= city.bbox_west && lng <= city.bbox_east &&
+  lat >= city.bbox_south && lat <= city.bbox_north;
+
+/** How far a point is from a city's bounding box: 0 inside it, else to the
+    nearest edge -- "40 km from Chicago" should mean from where its data
+    starts, not from downtown. */
+function bboxDistanceKm(city, point) {
+  const nearest = {
+    lat: Math.min(Math.max(point.lat, city.bbox_south), city.bbox_north),
+    lng: Math.min(Math.max(point.lng, city.bbox_west), city.bbox_east),
+  };
+  return distanceKm(point, nearest);
+}
+
+/**
+ * The served city a point falls in, or null.
+ *
+ * A bounding box is a rectangle, so it also takes in some ground just past
+ * the city line. That is fine here: this only picks which city to open, and
+ * the cell lookup afterwards is what decides whether there is data under the
+ * point. Where two boxes overlap, the nearer centre wins.
+ */
+function cityAt(point) {
+  const hits = state.cities.filter((city) => inBbox(city, point));
+  hits.sort(
+    (a, b) =>
+      distanceKm(point, { lat: a.center_lat, lng: a.center_lng }) -
+      distanceKm(point, { lat: b.center_lat, lng: b.center_lng })
+  );
+  return hits[0] ?? null;
+}
+
+/** The served city nearest a point, with its distance in km. */
+function nearestCity(point) {
+  let best = null;
+  for (const city of state.cities) {
+    if (!Number.isFinite(city.bbox_west)) continue;
+    const km = bboxDistanceKm(city, point);
+    if (!best || km < best.km) best = { city, km };
+  }
+  return best;
+}
+
+const kmLabel = (km) => (km < 10 ? `${km.toFixed(1)} km` : `${nf.format(Math.round(km))} km`);
+
+/**
+ * The city to open on, from a location the visitor has *already* allowed.
+ *
+ * Never prompts: a permission dialog the moment the page opens, before anyone
+ * has asked for anything, is the wrong first impression for a safety map. Where
+ * the browser has no grant on record this returns null at once and the page
+ * opens on DEFAULT_CITY as before. Bounded by a short timeout, because it sits
+ * in front of the first paint.
+ */
+async function cityFromGrantedLocation() {
+  try {
+    if (!navigator.geolocation || !navigator.permissions?.query) return null;
+    const permission = await navigator.permissions.query({ name: "geolocation" });
+    if (permission.state !== "granted") return null;
+    const position = await new Promise((resolve, reject) =>
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: false,
+        timeout: 4000,
+        maximumAge: 10 * 60_000,
+      })
+    );
+    const point = { lat: position.coords.latitude, lng: position.coords.longitude };
+    state.userLocation = point;
+    followLocation();
+    return cityAt(point)?.source_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A note over the map about where the visitor is, replacing the old alert():
+ * an alert blocks the page and offers no way forward. `action`, when given,
+ * is {label, run} for one button -- usually "View <nearest city>".
+ */
+function showLocateNote(text, action = null) {
+  $("locate-note-text").textContent = text;
+  const go = $("locate-note-go");
+  go.hidden = !action;
+  if (action) {
+    go.textContent = action.label;
+    go.onclick = () => {
+      hideLocateNote();
+      action.run();
+    };
+  }
+  $("locate-note").hidden = false;
+}
+
+function hideLocateNote() {
+  $("locate-note").hidden = true;
+}
+
+/** selectCity, with the picker kept in step -- it only listens for user changes. */
+async function switchCity(sourceId) {
+  $("f-city").value = sourceId;
+  await selectCity(sourceId);
+}
+
+/**
+ * Take the visitor to their own cell.
+ *
+ * If they are standing in a different served city from the one on screen, that
+ * city opens first -- declaring them "outside coverage" while they stand in
+ * Chicago with Philadelphia selected was the picker's fault, not theirs.
+ * Outside every city, the nearest one is named with a way to open it.
+ */
+async function goToLocation(point) {
+  hideLocateNote();
+  const home = cityAt(point);
+
+  if (!home) {
+    const near = nearestCity(point);
+    renderCompass();
+    if (!near) {
+      showLocateNote("You are outside the cities this map covers.");
+      return;
+    }
+    showLocateNote(
+      `You are outside the cities this map covers. The nearest is ` +
+        `${near.city.city_name}, about ${kmLabel(near.km)} away.`,
+      near.city.source_id === state.city
+        ? null
+        : { label: `View ${near.city.city_name}`, run: () => switchCity(near.city.source_id) }
+    );
+    return;
+  }
+
+  if (home.source_id !== state.city) await switchCity(home.source_id);
+
+  const cell = h3.latLngToCell(point.lat, point.lng, state.res);
+  if (!state.featureIndex.has(cell)) {
+    // Inside the box but past the edge of the data: across the city line, or
+    // somewhere the source publishes nothing.
+    showLocateNote(
+      `You are near ${home.city_name}, but just outside the area its data covers.`
+    );
+    map.flyTo({ center: [point.lng, point.lat], zoom: Math.max(map.getZoom(), 12), duration: 900 });
+    renderCompass();
+    return;
+  }
+  const [lat, lng] = h3.cellToLatLng(cell);
+  map.flyTo({ center: [lng, lat], zoom: Math.max(map.getZoom(), 13), duration: 900 });
+  selectCell(cell);
+}
+
 function locateMe() {
   if (!navigator.geolocation) {
-    alert("This browser does not expose a location.");
+    showLocateNote("This browser does not expose a location.");
     return;
   }
   const button = $("btn-locate");
@@ -1481,33 +1837,45 @@ function locateMe() {
 
   navigator.geolocation.getCurrentPosition(
     (position) => {
-      const { latitude, longitude } = position.coords;
-      // S10: the cell is computed here, on the client, from GPS coordinates --
-      // no server round trip and no spatial query is involved in "which cell
-      // am I in".
-      const cell = h3.latLngToCell(latitude, longitude, state.res);
       button.disabled = false;
       button.textContent = "Use my location";
-
-      const known = state.features.some((f) => f.properties.h3 === cell);
-      if (!known) {
-        alert(
-          `That location is outside the ${
-            state.cityRecord?.city_name ?? "selected city"
-          } coverage area.`
-        );
-        return;
-      }
-      const [lat, lng] = h3.cellToLatLng(cell);
-      map.flyTo({ center: [lng, lat], zoom: Math.max(map.getZoom(), 13), duration: 900 });
-      selectCell(cell);
+      // S10: the cell is computed here, on the client, from GPS coordinates --
+      // no server round trip and no spatial query is involved in "which cell
+      // am I in". Which *city* is the same: every bounding box is already here.
+      state.userLocation = {
+        lat: position.coords.latitude,
+        lng: position.coords.longitude,
+      };
+      followLocation();
+      goToLocation(state.userLocation);
     },
     (error) => {
       button.disabled = false;
       button.textContent = "Use my location";
-      alert(`Could not read your location: ${error.message}`);
+      showLocateNote(`Could not read your location: ${error.message}`);
     },
     { enableHighAccuracy: false, timeout: 10000 }
+  );
+}
+
+/**
+ * Keep the compass on the visitor as they move, once they have shared a
+ * location. Only the compass follows -- the map and the open cell stay where
+ * the visitor put them.
+ */
+let locationWatch = null;
+function followLocation() {
+  if (locationWatch !== null || !navigator.geolocation?.watchPosition) return;
+  locationWatch = navigator.geolocation.watchPosition(
+    (position) => {
+      state.userLocation = {
+        lat: position.coords.latitude,
+        lng: position.coords.longitude,
+      };
+      renderCompass();
+    },
+    () => { /* keep the last fix */ },
+    { enableHighAccuracy: true, maximumAge: 15000 }
   );
 }
 
@@ -1580,6 +1948,13 @@ async function initMap() {
     if (feature) selectCell(feature.properties.h3);
   });
 
+  // The compass reads from the map centre until a location is shared, and its
+  // rose turns with the map either way.
+  map.on("moveend", renderCompass);
+  map.on("rotate", () => {
+    $("compass-rose").style.transform = `rotate(${-map.getBearing()}deg)`;
+  });
+
   window.__safetyMap = map;
 }
 
@@ -1589,6 +1964,7 @@ async function initMap() {
 function repaint() {
   map.setPaintProperty("cells-fill", "fill-color", fillColorExpression());
   renderLegend();
+  renderCompass();
 }
 
 /** Fill the time-of-day control with the 24 hour blocks, after "All hours". */
@@ -1889,6 +2265,7 @@ function wireControls() {
   });
 
   $("btn-locate").onclick = locateMe;
+  $("locate-note-close").onclick = hideLocateNote;
   $("detail-close").onclick = closeDetail;
 
   const tableButton = $("btn-table");
