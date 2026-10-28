@@ -22,33 +22,25 @@ const BASELINE = "#c3c2b7";
 
 /* Safety ramp, least safe -> safest, applied continuously to the percentile.
 
-   Built in OKLCH with lightness forced monotone from 0.38 to 0.86 across the
-   twenty steps, because lightness is what keeps the ordering readable when the
-   hue channel collapses: green against red is the classic red-green blindness
-   failure, and a deuteranope reads this ramp as dark -> light regardless. The
-   poles separate at dE 47.0 under deuteranopia and 56.9 under normal vision.
+   Built in OKLCH, running red -> orange -> yellow -> green with chroma held as
+   high as sRGB allows at every step, so the whole ramp stays vivid. An earlier
+   version pinched chroma to nothing at the midpoint, and the two arms met in a
+   dull grey that read as "no data" rather than "middling"; passing through
+   yellow keeps the centre as saturated as the ends.
 
-   Each arm holds its own hue and chroma is pinched almost to nothing at the
-   midpoint, so the two meet through a desaturated zone rather than passing
-   through yellow. Pinching matters twice over: it is the diverging
-   construction, and it is what removes the visible seam where the arms meet --
-   letting chroma stay up across the middle produces a green block butting
-   straight into a red one, which is the opposite of a smooth ramp.
+   Lightness rises from red to a peak at yellow and settles back for green, so
+   the safest end is not the lightest. Red-green is still separated by
+   lightness (dark red against mid green), and the table view carries the exact
+   percentile for anyone who cannot rely on hue.
 
-   Deep reds fall outside sRGB, so the generator gamut-maps by reducing chroma
-   rather than letting channels clamp; left to clamp, the last few steps
-   collapse onto the same hex exactly where the ramp matters most. All twenty
-   are distinct.
-
-   Adjacent steps are deliberately close (dL ~0.025) -- that is what makes the
-   ramp read as smooth rather than banded, and it is why the categorical
-   adjacent-separation gate does not apply here. The table view carries the
-   exact percentile for anyone who needs to read a value rather than compare. */
+   Out-of-gamut steps are mapped by reducing chroma rather than letting
+   channels clamp, so no two steps collapse onto the same hex. All twenty are
+   distinct. */
 const SAFETY = [
-  "#810009", "#8d000b", "#99000d", "#a11518", "#a52b27",
-  "#a83b35", "#aa4a42", "#aa5850", "#a8675f", "#a07671",
-  "#75937a", "#6e9f78", "#6bab78", "#68b57a", "#66c07c",
-  "#65ca7e", "#63d481", "#62de84", "#62e988", "#61f38b",
+  "#db0118", "#e32503", "#e74001", "#ea5403", "#ef6403",
+  "#f47204", "#f68a07", "#f9a000", "#fab60a", "#f9cc06",
+  "#f0d80a", "#dfd80d", "#cdd904", "#b9da04", "#a2dc02",
+  "#8bd802", "#73d216", "#5acc25", "#39c631", "#09bf3f",
 ];
 
 /* The incident count rides the same ramp, reversed: both views then agree that
