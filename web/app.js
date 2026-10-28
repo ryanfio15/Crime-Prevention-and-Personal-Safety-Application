@@ -71,7 +71,7 @@ function mixHex(a, b) {
  * The ramp with an explicit centre step inserted.
  *
  * Twenty steps have no middle one: they sit at i/19, and 0.5 falls between the
- * tenth and eleventh. The value scale puts the city average on the centre step,
+ * tenth and eleventh. The value scale puts 150% of the city average on the centre step,
  * so without a stop there the average lands inside a segment and its colour is
  * a blend rather than the yellow the legend promises. Both the fill and the
  * legend gradient are built from this list, so they cannot drift apart.
@@ -85,13 +85,15 @@ function withMidpoint(colors) {
   ];
 }
 
-/* Twenty-one steps: the ramp plus the centre the city average sits on. */
+/* Twenty-one steps: the ramp plus the centre the yellow point sits on. */
 const VALUE_RAMP = withMidpoint(COUNT_RAMP);
 
 /* Where the ramp is pinned, as [step, multiple of the city average]: green up
-   to the average, yellow at it, orange by double, the deepest red from triple
-   on. Steps between two hinges are spread evenly across them. */
-const RAMP_HINGES = [[0, 0], [10, 1], [15, 2], [20, 3]];
+   to one and a half times the average, yellow there, orange by double, the
+   deepest red from triple on. Yellow sits above the average rather than at it
+   so an ordinary cell reads green -- a little over average is not a warning.
+   Steps between two hinges are spread evenly across them. */
+const RAMP_HINGES = [[0, 0], [10, 1.5], [15, 2], [20, 3]];
 
 /** Fraction of the legend bar a multiple of the average sits at. */
 function rampPosition(ratio) {
@@ -109,7 +111,7 @@ function rampPosition(ratio) {
  * Ramp stops laid out over a cell's multiple of its city average (1 = average).
  *
  * Colour says how a cell compares with the city rather than where it ranks:
- * under the average is green, the average itself is yellow, double is orange
+ * up to 150% of the average is green, 150% is yellow, double is orange
  * and triple or more is red. Fixed multiples rather than the layer's own
  * min / median / max, so a colour means the same thing in every city and at
  * every hour, and a quiet city is allowed to come out mostly green.
@@ -649,7 +651,7 @@ function renderLegend() {
   }
 
   // The multiples the ramp is pinned to, at the positions they occupy on the
-  // bar -- not evenly spaced, because the green half covers 0..1x on its own.
+  // bar -- not evenly spaced, because the green half covers 0..1.5x on its own.
   $("legend-ticks").innerHTML = html`${RAMP_HINGES.map(([, ratio], k) => html`<span style="left:${
     (rampPosition(ratio) * 100).toFixed(1)
   }%">${ratio * 100}%${k === RAMP_HINGES.length - 1 ? "+" : ""}</span>`)}`;
@@ -657,7 +659,7 @@ function renderLegend() {
   const rated = (domain.own?.painted ?? 0) + domain.borrowed;
   const skew =
     `Colour is each cell's value as a percentage of the city average ` +
-    `(${nf.format(rated)} cells): green below average, yellow at average, ` +
+    `(${nf.format(rated)} cells): green up to 150% of average, yellow at 150%, ` +
     `orange from double, red at triple and above.` +
     (domain.borrowed
       ? ` ${nf.format(domain.borrowed)} cells with nothing of this kind reported` +
