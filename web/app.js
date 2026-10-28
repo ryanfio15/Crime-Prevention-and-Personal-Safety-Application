@@ -106,7 +106,7 @@ function rampPosition(ratio) {
 }
 
 /**
- * Ramp stops laid out over a measured quantity, as multiples of its city average.
+ * Ramp stops laid out over a cell's multiple of its city average (1 = average).
  *
  * Colour says how a cell compares with the city rather than where it ranks:
  * under the average is green, the average itself is yellow, double is orange
@@ -118,23 +118,13 @@ function rampPosition(ratio) {
  * the deepest red instead of stretching the scale and washing everything else
  * out to orange.
  */
-function valueRampStops(colors, domain) {
-  const { average } = domain;
+function valueRampStops(colors) {
   const stops = [];
-  let previous = -Infinity;
   colors.forEach((hex, i) => {
     const k = RAMP_HINGES.findIndex(([step]) => step >= i);
     const [i1, r1] = RAMP_HINGES[k];
     const [i0, r0] = RAMP_HINGES[Math.max(k - 1, 0)];
-    const ratio = i1 === i0 ? r1 : r0 + ((i - i0) / (i1 - i0)) * (r1 - r0);
-    let value = average * ratio;
-    // MapLibre rejects an interpolate whose inputs are not strictly ascending.
-    if (!(value > previous)) {
-      previous = previous + Math.max(Math.abs(previous), 1) * 1e-6;
-      value = previous;
-    }
-    previous = value;
-    stops.push(value, hex);
+    stops.push(i1 === i0 ? r1 : r0 + ((i - i0) / (i1 - i0)) * (r1 - r0), hex);
   });
   return stops;
 }
@@ -518,12 +508,24 @@ let map;
  * severity-weighted rate -- the quantity its ranking is built on, so colour and
  * percentile order cells identically even though only one of them is a rank.
  *
+ * Every cell is coloured by its multiple of the city average rather than by the
+ * raw value, so a cell borrowing its all-hours standing (see `paintedMeasure`)
+ * sits on the same bar as the cells rated at this hour.
+ *
  * The chosen domain is stashed on `state` for the legend, so the key and the
  * fill can never disagree about what the middle of the bar means.
  */
 /** The property the map is coloured by right now, and which cells take a
     colour from the ramp. Shared by the fill and the compass, so the compass
-    can never point along a different measure from the one on screen. */
+    can never point along a different measure from the one on screen.
+
+    `fallback` is the all-hours measure the safety view falls back to for a
+    cell with nothing of this track reported. At one hour that is the common
+    case -- most of the city in the small hours -- and the map would be mostly
+    grey. Those cells take their all-hours smoothed rate instead, and so does a
+    cell with nothing reported at any hour: its rate is still a ranking, built
+    from its neighbours and the city baseline, so every ranked cell is coloured.
+    Only a cell with no rate at all stays in the neutral fill. */
 function paintedMeasure() {
   const props = TRACK_PROPS[state.track];
   const hourly = state.hour !== null;
@@ -537,42 +539,80 @@ function paintedMeasure() {
     // the scale: an absence of reports is not evidence of safety.
     ? (p) => (p[tier] ?? 0) !== 0
     : (p) => (p[valueProp] ?? 0) > 0;
-  return { valueProp, tier, isPainted };
+  const fallback = state.scale === "safety"
+    ? { valueProp: props.rate, tier: props.tier }
+    : null;
+  return { valueProp, tier, isPainted, fallback };
+}
+
+/** City averages for a measure and its fallback, plus how many cells borrow. */
+function measureDomain(measure) {
+  const { valueProp, isPainted, fallback } = measure;
+  const own = valueDomain(valueProp, isPainted, state.scale === "safety");
+  if (!fallback) return own && { own, overall: null, borrowed: 0 };
+
+  // The average is taken over cells with reports of their own, so borrowing
+  // cells are placed on the scale without moving it.
+  const ranked = (p) => (p[fallback.tier] ?? 0) !== 0;
+  const overall = valueDomain(fallback.valueProp, ranked, true);
+  if (!own && !overall) return null;
+  const borrowed = overall
+    ? state.features.filter(
+        (f) => !isPainted(f.properties) && typeof f.properties[fallback.valueProp] === "number"
+      ).length
+    : 0;
+  return { own, overall, borrowed };
+}
+
+/** A cell's multiple of its city average, or null for the neutral fill. The
+    JS twin of the ratio in `fillColorExpression`, for the compass. */
+function cellRatio(p, measure, domain) {
+  if (!domain) return null;
+  const { valueProp, isPainted, fallback } = measure;
+  if (isPainted(p)) return domain.own ? (p[valueProp] ?? 0) / domain.own.average : null;
+  if (fallback && domain.overall && typeof p[fallback.valueProp] === "number") {
+    return p[fallback.valueProp] / domain.overall.average;
+  }
+  return null;
 }
 
 function fillColorExpression() {
-  const { valueProp, tier, isPainted } = paintedMeasure();
+  const measure = paintedMeasure();
+  const { valueProp, tier, fallback } = measure;
 
-  const domain = valueDomain(valueProp, isPainted, state.scale === "safety");
+  const domain = measureDomain(measure);
   state.rampDomain = domain;
 
   if (!domain) return ZERO_FILL;
 
-  const guard = state.scale === "safety"
-    ? ["==", ["coalesce", ["get", tier], 0], 0]
-    : ["==", ["coalesce", ["get", valueProp], 0], 0];
+  const get = (prop) => ["coalesce", ["get", prop], 0];
+  // Mirrors cellRatio: -1 marks the neutral fill, since a real ratio is never negative.
+  const ratio = ["case"];
+  if (domain.own) {
+    ratio.push(
+      state.scale === "safety" ? ["!=", get(tier), 0] : [">", get(valueProp), 0],
+      ["/", get(valueProp), domain.own.average],
+    );
+  }
+  if (domain.overall) {
+    ratio.push(
+      ["==", ["typeof", ["get", fallback.valueProp]], "number"],
+      ["/", get(fallback.valueProp), domain.overall.average],
+    );
+  }
+  ratio.push(-1);
 
   return [
-    "case",
-    guard, ZERO_FILL,
+    "let", "ratio", ratio,
     [
-      "interpolate", ["linear"],
-      ["coalesce", ["get", valueProp], 0],
-      ...valueRampStops(VALUE_RAMP, domain),
+      "case",
+      ["<", ["var", "ratio"], 0], ZERO_FILL,
+      ["interpolate", ["linear"], ["var", "ratio"], ...valueRampStops(VALUE_RAMP)],
     ],
   ];
 }
 
 /* ------------------------------------------------------------------- legend */
-
-/** Tick label for a domain endpoint: as precise as the magnitude deserves. */
-function formatDomainValue(value) {
-  if (!Number.isFinite(value)) return "—";
-  if (Number.isInteger(value)) return nf.format(value);
-  if (Math.abs(value) >= 100) return nf.format(Math.round(value));
-  if (Math.abs(value) >= 10) return value.toFixed(1);
-  return value.toFixed(2);
-}
 
 function renderLegend() {
   const legend = $("legend");
@@ -614,10 +654,16 @@ function renderLegend() {
     (rampPosition(ratio) * 100).toFixed(1)
   }%">${ratio * 100}%${k === RAMP_HINGES.length - 1 ? "+" : ""}</span>`)}`;
 
+  const rated = (domain.own?.painted ?? 0) + domain.borrowed;
   const skew =
     `Colour is each cell's value as a percentage of the city average ` +
-    `(${formatDomainValue(domain.average)}, across ${nf.format(domain.painted)} cells): ` +
-    `green below average, yellow at average, orange from double, red at triple and above.`;
+    `(${nf.format(rated)} cells): green below average, yellow at average, ` +
+    `orange from double, red at triple and above.` +
+    (domain.borrowed
+      ? ` ${nf.format(domain.borrowed)} cells with nothing of this kind reported` +
+        `${state.hour === null ? "" : " at this hour"} are coloured by their ` +
+        `all-hours ranking, which leans on neighbouring cells and the city baseline.`
+      : "");
 
   // `skew` is plain text and is escaped like any other value; the markup lives
   // only in the literal parts.
@@ -657,9 +703,8 @@ const COMPASS_MIN_CELLS = 2;
  * the compass wedges and the hexagons under them agree.
  */
 function rampColorAt(value) {
-  const domain = state.rampDomain;
-  if (!domain) return ZERO_FILL;
-  const stops = valueRampStops(VALUE_RAMP, domain);
+  if (!state.rampDomain) return ZERO_FILL;
+  const stops = valueRampStops(VALUE_RAMP);
   if (value <= stops[0]) return stops[1];
   for (let i = 2; i < stops.length; i += 2) {
     if (value <= stops[i]) {
@@ -697,7 +742,8 @@ function compassOrigin() {
  * skipped rather than read as zero: no data is not low crime.
  */
 function compassSectors(origin) {
-  const { valueProp } = paintedMeasure();
+  const measure = paintedMeasure();
+  const ratioOf = (p) => cellRatio(p, measure, state.rampDomain) ?? 0;
   const byCell = state.featureIndex;
   const home = h3.latLngToCell(origin.lat, origin.lng, state.res);
   const homeProps = byCell.get(home);
@@ -717,14 +763,14 @@ function compassSectors(origin) {
       const index = Math.round(((bearing + 360) % 360) / 45) % 8;
       const weight = 1 / ring;
       const sector = sectors[index];
-      sector.sum += (p[valueProp] ?? 0) * weight;
+      sector.sum += ratioOf(p) * weight;
       sector.weight += weight;
       sector.cells += 1;
     }
   }
 
   return {
-    here: homeProps[valueProp] ?? 0,
+    here: ratioOf(homeProps),
     sectors: sectors.map((s, i) => ({
       point: COMPASS_POINTS[i],
       mean: s.cells >= COMPASS_MIN_CELLS ? s.sum / s.weight : null,
@@ -1335,9 +1381,14 @@ function renderHours(detail) {
     return;
   }
 
-  $("d-hour-safety").textContent = safety
-    ? `${safetyLabel(safety.safety_percentile)} · ${safety.tier_label ?? ""}`
-    : dash;
+  // Tier 0 is nothing of this track reported at this hour; the map colours
+  // that cell by its all-hours ranking, so say so rather than leave the two
+  // looking like they disagree.
+  $("d-hour-safety").textContent = !safety
+    ? dash
+    : safety.safety_tier === 0
+      ? `${safety.tier_label ?? "No reported incidents"} · map shows the all-hours ranking`
+      : `${safetyLabel(safety.safety_percentile)} · ${safety.tier_label ?? ""}`;
 
   $("d-hour-delta").textContent = safety?.percentile_delta == null
     ? dash
