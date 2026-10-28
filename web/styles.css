@@ -284,14 +284,19 @@ select:disabled { opacity: 0.55; cursor: not-allowed; }
 .legend-ramp.is-smooth { gap: 0; }
 .legend-ramp.is-smooth span { flex: 1 1 100%; }
 
+/* Ticks sit at the value they label, so they are placed rather than spread:
+   centred on their point, except the two ends, which stay inside the bar. */
 .legend-ticks {
-  display: flex;
-  justify-content: space-between;
+  position: relative;
+  height: 1.3em;
   margin-top: 5px;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
 }
+.legend-ticks span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.legend-ticks span:first-child { transform: none; }
+.legend-ticks span:last-child { transform: translateX(-100%); }
 
 .legend-foot {
   margin-top: 8px;

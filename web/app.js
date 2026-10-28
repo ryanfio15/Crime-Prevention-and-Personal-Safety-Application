@@ -71,12 +71,10 @@ function mixHex(a, b) {
  * The ramp with an explicit centre step inserted.
  *
  * Twenty steps have no middle one: they sit at i/19, and 0.5 falls between the
- * tenth and eleventh. A value scale hinges at the median, so without a stop
- * there the hinge lands inside a segment, MapLibre interpolates straight across
- * it, and the median comes out at 0.476 of the bar instead of the centre. Small
- * in pixels, but the centre of this bar is exactly the thing the scale claims
- * to mean, so it should be exact. Both the fill and the legend gradient are
- * built from this list, so they cannot drift apart.
+ * tenth and eleventh. The value scale puts the city average on the centre step,
+ * so without a stop there the average lands inside a segment and its colour is
+ * a blend rather than the yellow the legend promises. Both the fill and the
+ * legend gradient are built from this list, so they cannot drift apart.
  */
 function withMidpoint(colors) {
   const half = colors.length / 2;
@@ -87,33 +85,50 @@ function withMidpoint(colors) {
   ];
 }
 
-/* Twenty-one steps: the ramp plus the centre the value scale hinges on. */
+/* Twenty-one steps: the ramp plus the centre the city average sits on. */
 const VALUE_RAMP = withMidpoint(COUNT_RAMP);
 
+/* Where the ramp is pinned, as [step, multiple of the city average]: green up
+   to the average, yellow at it, orange by double, the deepest red from triple
+   on. Steps between two hinges are spread evenly across them. */
+const RAMP_HINGES = [[0, 0], [10, 1], [15, 2], [20, 3]];
+
+/** Fraction of the legend bar a multiple of the average sits at. */
+function rampPosition(ratio) {
+  for (let k = 1; k < RAMP_HINGES.length; k++) {
+    const [i0, r0] = RAMP_HINGES[k - 1];
+    const [i1, r1] = RAMP_HINGES[k];
+    if (ratio <= r1) {
+      return (i0 + ((ratio - r0) / (r1 - r0)) * (i1 - i0)) / (VALUE_RAMP.length - 1);
+    }
+  }
+  return 1;
+}
+
 /**
- * Ramp stops laid out over a measured quantity, hinged at its median.
+ * Ramp stops laid out over a measured quantity, as multiples of its city average.
  *
- * Colour is proportional to the value rather than to the cell's rank: the
- * bottom half of the ramp spans min..median and the top half median..max, so
- * the middle colour always falls on the median value. Cells do not divide
- * evenly either side of it -- the distribution is heavily skewed, and that
- * skew is the thing a value scale is supposed to show rather than flatten.
+ * Colour says how a cell compares with the city rather than where it ranks:
+ * under the average is green, the average itself is yellow, double is orange
+ * and triple or more is red. Fixed multiples rather than the layer's own
+ * min / median / max, so a colour means the same thing in every city and at
+ * every hour, and a quiet city is allowed to come out mostly green.
  *
- * Two hinged segments rather than one straight line because the skew is
- * severe: a single linear span from min to max would put the median down in
- * the first tenth of the ramp and render almost the whole city in one colour.
+ * Above triple, MapLibre's interpolate holds the last stop, so outliers share
+ * the deepest red instead of stretching the scale and washing everything else
+ * out to orange.
  */
 function valueRampStops(colors, domain) {
-  const { min, median, max } = domain;
+  const { average } = domain;
   const stops = [];
   let previous = -Infinity;
   colors.forEach((hex, i) => {
-    const t = i / (colors.length - 1);
-    let value = t <= 0.5
-      ? min + (median - min) * (t / 0.5)
-      : median + (max - median) * ((t - 0.5) / 0.5);
-    // MapLibre rejects an interpolate whose inputs are not strictly ascending,
-    // and a sparse layer readily puts min, median and max on the same number.
+    const k = RAMP_HINGES.findIndex(([step]) => step >= i);
+    const [i1, r1] = RAMP_HINGES[k];
+    const [i0, r0] = RAMP_HINGES[Math.max(k - 1, 0)];
+    const ratio = i1 === i0 ? r1 : r0 + ((i - i0) / (i1 - i0)) * (r1 - r0);
+    let value = average * ratio;
+    // MapLibre rejects an interpolate whose inputs are not strictly ascending.
     if (!(value > previous)) {
       previous = previous + Math.max(Math.abs(previous), 1) * 1e-6;
       value = previous;
@@ -125,31 +140,40 @@ function valueRampStops(colors, domain) {
 }
 
 /**
- * min / median / max of `prop` across the cells this view actually paints.
+ * City average of `prop` across the cells this view actually paints.
  *
  * Computed here rather than served, for the same reason the hourly count rank
  * is: the features are already in the browser, and the alternative is another
  * precomputed table existing only to colour one view. Cells that render in the
  * neutral fill are excluded -- they never take a colour from the ramp, so
- * letting them set its endpoints would hand half the gradient to cells that
- * are not drawn in it.
+ * letting them drag the average down would turn the rest of the city orange.
+ *
+ * A rate per person is averaged per person, weighted by each cell's exposure,
+ * so the average is the city's rate and not the mean of its cells' rates -- the
+ * same sense `cityExposureRate` gives the panel's percentage. A count has no
+ * denominator to weight by, and neither does a layer ranked by area, so those
+ * take a plain mean.
  */
-function valueDomain(prop, isPainted) {
-  const values = [];
+function valueDomain(prop, isPainted, perPerson) {
+  let sum = 0;
+  let painted = 0;
+  let weighted = 0;
+  let people = 0;
   for (const feature of state.features) {
     const p = feature.properties;
     if (!isPainted(p)) continue;
     const value = p[prop];
-    if (typeof value === "number") values.push(value);
+    if (typeof value !== "number") continue;
+    sum += value;
+    painted += 1;
+    if (perPerson && typeof p.exposure === "number" && p.exposure > 0) {
+      weighted += value * p.exposure;
+      people += p.exposure;
+    }
   }
-  if (!values.length) return null;
-  values.sort((a, b) => a - b);
-  return {
-    min: values[0],
-    median: values[Math.floor(values.length / 2)],
-    max: values[values.length - 1],
-    painted: values.length,
-  };
+  if (!painted) return null;
+  const average = people > 0 ? weighted / people : sum / painted;
+  return average > 0 ? { average, painted } : null;
 }
 
 /**
@@ -434,7 +458,7 @@ const state = {
   userLocation: null,
   // The open cell's detail payload, so a track switch re-reads rather than refetches.
   detail: null,
-  // Domain the ramp is currently hinged on, so the legend and the fill
+  // City average the ramp is currently pinned to, so the legend and the fill
   // cannot disagree about what the middle of the bar means.
   rampDomain: null,
   refreshStamp: null,
@@ -486,7 +510,7 @@ let map;
 /* ------------------------------------------------------------- colour scale */
 
 /**
- * Paint expression for both modes, on a value scale hinged at the median.
+ * Paint expression for both modes, on a value scale pinned to the city average.
  *
  * Both modes now run the ramp low-value-green to high-value-red, so red is the
  * concerning end in either and switching between them is a change of measure
@@ -519,7 +543,7 @@ function paintedMeasure() {
 function fillColorExpression() {
   const { valueProp, tier, isPainted } = paintedMeasure();
 
-  const domain = valueDomain(valueProp, isPainted);
+  const domain = valueDomain(valueProp, isPainted, state.scale === "safety");
   state.rampDomain = domain;
 
   if (!domain) return ZERO_FILL;
@@ -533,7 +557,7 @@ function fillColorExpression() {
     guard, ZERO_FILL,
     [
       "interpolate", ["linear"],
-      ["coalesce", ["get", valueProp], domain.min],
+      ["coalesce", ["get", valueProp], 0],
       ...valueRampStops(VALUE_RAMP, domain),
     ],
   ];
@@ -584,18 +608,16 @@ function renderLegend() {
     return;
   }
 
-  // The three values the ramp is hinged on, at the positions they occupy: the
-  // lowest painted cell at the left edge, the median in the middle, the highest
-  // at the right. The middle tick is the whole point of a value scale -- it is
-  // what the centre colour means.
-  $("legend-ticks").innerHTML = html`${[domain.min, domain.median, domain.max].map(
-    (value) => html`<span>${formatDomainValue(value)}</span>`
-  )}`;
+  // The multiples the ramp is pinned to, at the positions they occupy on the
+  // bar -- not evenly spaced, because the green half covers 0..1x on its own.
+  $("legend-ticks").innerHTML = html`${RAMP_HINGES.map(([, ratio], k) => html`<span style="left:${
+    (rampPosition(ratio) * 100).toFixed(1)
+  }%">${ratio * 100}%${k === RAMP_HINGES.length - 1 ? "+" : ""}</span>`)}`;
 
   const skew =
-    `Colour follows the value itself and the middle of the bar is the median ` +
-    `of the ${nf.format(domain.painted)} cells carrying one. The distribution ` +
-    `is heavily skewed, so most cells sit left of centre.`;
+    `Colour is each cell's value as a percentage of the city average ` +
+    `(${formatDomainValue(domain.average)}, across ${nf.format(domain.painted)} cells): ` +
+    `green below average, yellow at average, orange from double, red at triple and above.`;
 
   // `skew` is plain text and is escaped like any other value; the markup lives
   // only in the literal parts.
