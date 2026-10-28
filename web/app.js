@@ -1895,6 +1895,20 @@ function followLocation() {
 
 /* ----------------------------------------------------------------------- map */
 
+/**
+ * The basemap layer the cells are slotted in under: the first road, rail or
+ * label layer. Land, parks and water stay beneath the colour; streets and the
+ * neighbourhood and street names draw over it, so the map stays readable
+ * through the ramp. The raster fallback is one opaque image with nothing to
+ * slot under, so there the cells go on top.
+ */
+function cellsBeforeId() {
+  const above = map.getStyle().layers.find(
+    (layer) => layer.type === "symbol" || /^(tunnel|road|bridge|rail)/.test(layer.id)
+  );
+  return above?.id;
+}
+
 async function initMap() {
   const style = await resolveStyle();
   map = new maplibregl.Map({
@@ -1935,7 +1949,16 @@ async function initMap() {
         0.74,
       ],
     },
-  });
+  }, cellsBeforeId());
+
+  // Building footprints are fills the basemap draws after its roads. Left above
+  // the cells they would grey the colour out block by block at street zoom, so
+  // they go underneath with the land and water.
+  const layers = map.getStyle().layers;
+  const cellsAt = layers.findIndex((layer) => layer.id === "cells-fill");
+  for (const layer of layers.slice(cellsAt + 1)) {
+    if (layer.type === "fill") map.moveLayer(layer.id, "cells-fill");
+  }
 
   map.on("mousemove", "cells-fill", (event) => {
     const feature = event.features?.[0];
