@@ -89,6 +89,22 @@
     </select>
   </label>
 
+  <!-- "All days" or one weekday on the city's local calendar, 0 = Monday.
+       Available where the hour is (syncHourAvailability). -->
+  <label class="field" id="f-day-field">
+    <span class="field-label">Day of week</span>
+    <select id="f-day">
+      <option value="all" selected>All days</option>
+      <option value="0">Monday</option>
+      <option value="1">Tuesday</option>
+      <option value="2">Wednesday</option>
+      <option value="3">Thursday</option>
+      <option value="4">Friday</option>
+      <option value="5">Saturday</option>
+      <option value="6">Sunday</option>
+    </select>
+  </label>
+
   <div class="field">
     <span class="field-label">Colour by</span>
     <select id="f-scale">

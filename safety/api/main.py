@@ -530,7 +530,9 @@ def _resolve_period(
     return _resolve_window(conn, city, window), None
 
 
-def _validate_range(res: int, date_range: repo.DateRange | None, hour: int | None) -> None:
+def _validate_range(
+    res: int, date_range: repo.DateRange | None, hour: int | None, day: int | None = None
+) -> None:
     """What a custom range cannot be served with, said before the generic checks
     (which would blame a window the request never named)."""
     if date_range is None:
@@ -547,6 +549,12 @@ def _validate_range(res: int, date_range: repo.DateRange | None, hour: int | Non
             400,
             "the time-of-day layer is built for the stored last-12-months window "
             "only; pick that window rather than a custom range to use an hour",
+        )
+    if day is not None:
+        raise HTTPException(
+            400,
+            "the day-of-week factor is built for the stored last-12-months window "
+            "only; pick that window rather than a custom range to use a day",
         )
 
 
@@ -636,6 +644,27 @@ def _validate_hour(hour: int | None, res: int, window: dict[str, Any]) -> None:
         )
 
 
+def _validate_day(day: int | None, res: int, window: dict[str, Any]) -> None:
+    """Reject a weekday where the factor is not built: the same scope as the
+    hour layer (gold.refresh_hourly_layer builds both)."""
+    if day is None:
+        return
+    if day not in repo.VALID_DAYS:
+        raise HTTPException(400, "day must be an integer from 0 (Monday) to 6 (Sunday)")
+    if res not in repo.HOURLY_RESOLUTIONS:
+        raise HTTPException(
+            400,
+            f"the day-of-week factor is built for res {list(repo.HOURLY_RESOLUTIONS)} "
+            f"only, as the time-of-day layer is",
+        )
+    if not window["hourly"]:
+        raise HTTPException(
+            400,
+            f"the day-of-week factor is built for the last 12 months only "
+            f"({', '.join(repo.HOURLY_WINDOWS)}), as the time-of-day layer is",
+        )
+
+
 @app.get(f"{API}/cells", tags=["cells"])
 def cells(
     request: Request,
@@ -652,6 +681,16 @@ def cells(
         description=(
             "Local hour block 0-23; block h covers [h:00, h+1:00). Adds the "
             "time-of-day ratings to every feature."
+        ),
+    ),
+    day: int | None = Query(
+        None,
+        ge=0,
+        le=6,
+        description=(
+            "Local day of the week, 0 = Monday ... 6 = Sunday. Scales each cell's "
+            "rate -- all hours, or the `hour` block -- by its weekday factor and "
+            "re-ranks the city, into the same time-of-day fields."
         ),
     ),
     measure: str | None = Query(
@@ -679,9 +718,10 @@ def cells(
     For a stored window (`window`), or for any two dates (`from`, `to`).
     """
     served, date_range = _resolve_period(conn, city, window, from_, to)
-    _validate_range(res, date_range, hour)
+    _validate_range(res, date_range, hour, day)
     _validate_layer(res, served, category)
     _validate_hour(hour, res, served)
+    _validate_day(day, res, served)
     window = served["id"]
     if measure is not None:
         if measure not in ("activity", "safety"):
@@ -703,7 +743,7 @@ def cells(
 
     key = (
         "cells", city, res, _period_key(served, date_range), category, min_count, hour,
-        parsed_bbox,
+        day, parsed_bbox,
     )
     payload = cached(
         conn,
@@ -723,6 +763,7 @@ def cells(
                     category=category,
                     min_count=min_count,
                     hour=hour,
+                    day=day,
                     bbox=parsed_bbox,
                     date_range=date_range,
                 ),

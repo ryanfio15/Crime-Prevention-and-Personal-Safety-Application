@@ -1070,3 +1070,171 @@ def test_promote_marks_only_real_changes(built):
         assert pending.get(conn, SOURCE).dirty_from == row["date"]
     finally:
         conn.rollback()
+
+
+# ------------------------------------------------------------ day of week (022)
+
+
+@pytest.fixture(scope="module")
+def dow_built(built):
+    # As hour_built: the enabled per-capita scheme is skipped with no census, so
+    # build the area scheme's factor explicitly.
+    conn = built["conn"]
+    gold.refresh_cell_dow_factor(conn, SOURCE, built["windows"], gold.get_scheme(conn, AREA_SCHEME))
+    conn.commit()
+    return built
+
+
+_DOW_ROWS = """
+SELECT h3_index, h3_res, time_window, track, dow, incident_count, weighted_total,
+       day_factor, window_start, window_end
+FROM gold.cell_dow_factor
+WHERE source_id = %s AND scheme_version = %s
+"""
+
+
+def test_dow_factor_is_built_where_the_hour_layer_is(dow_built):
+    rows = _rows(dow_built["conn"], _DOW_ROWS, (SOURCE, AREA_SCHEME))
+    assert rows
+    assert {r["h3_res"] for r in rows} == set(gold.HOURLY_RESOLUTIONS)
+    assert {r["time_window"] for r in rows} <= set(gold.HOURLY_WINDOWS)
+
+
+def test_dow_factors_average_one(dow_built):
+    # A blend of two per-occurrence shares of the week, each summing to 1 over
+    # the seven days, times 7.
+    sums = _rows(
+        dow_built["conn"],
+        """
+        SELECT h3_index, h3_res, time_window, track, count(*) AS days, avg(day_factor) AS mean
+        FROM gold.cell_dow_factor
+        WHERE source_id = %s AND scheme_version = %s
+        GROUP BY 1, 2, 3, 4
+        """,
+        (SOURCE, AREA_SCHEME),
+    )
+    assert sums
+    for r in sums:
+        assert r["days"] == gold.DAY_BLOCKS
+        assert r["mean"] == pytest.approx(1.0, abs=1e-9), r
+
+
+def test_dow_factor_blends_per_occurrence_toward_the_city_week(dow_built):
+    # f = 7 * (lam * (w_d/k_d) / sum(w/k) + (1 - lam) * S_d),
+    # lam = N / (N + DAY_SHAPE_PRIOR), k_d = how often weekday d falls in the window.
+    rows = _rows(dow_built["conn"], _DOW_ROWS, (SOURCE, AREA_SCHEME))
+    occurrences: dict = {}
+    by_cell: dict = {}
+    city: Counter = Counter()
+    for r in rows:
+        key = (r["h3_res"], r["time_window"], r["track"])
+        if key not in occurrences:
+            k = Counter()
+            day = r["window_start"]
+            while day <= r["window_end"]:
+                k[day.weekday()] += 1
+                day += timedelta(days=1)
+            occurrences[key] = k
+        by_cell.setdefault((r["h3_index"], *key), []).append(r)
+        city[(*key, r["dow"])] += r["weighted_total"] / occurrences[key][r["dow"]]
+    city_week = Counter()
+    for (*key, _), v in city.items():
+        city_week[tuple(key)] += v
+
+    empty_seen = False
+    for (_, *key), cell in by_cell.items():
+        key = tuple(key)
+        k = occurrences[key]
+        n = sum(r["incident_count"] for r in cell)
+        week = sum(r["weighted_total"] / k[r["dow"]] for r in cell)
+        lam = n / (n + gold.DAY_SHAPE_PRIOR)
+        empty_seen |= n == 0
+        for r in cell:
+            share = city[(*key, r["dow"])] / city_week[key]
+            own = r["weighted_total"] / k[r["dow"]] / week if week else 0.0
+            expected = gold.DAY_BLOCKS * (lam * own + (1 - lam) * share)
+            assert r["day_factor"] == pytest.approx(expected, rel=1e-9, abs=1e-12), r
+    assert empty_seen
+
+
+def test_dow_counts_every_incident_in_the_window(dow_built):
+    # Unlike the hour layer, no incident is lost to a missing clock time.
+    conn = dow_built["conn"]
+    for res in gold.HOURLY_RESOLUTIONS:
+        for w in dow_built["windows"]:
+            if w.name not in gold.HOURLY_WINDOWS:
+                continue
+            stored = _scalar(
+                conn,
+                """
+                SELECT COALESCE(sum(incident_count), 0) FROM gold.cell_dow_factor
+                WHERE source_id = %s AND scheme_version = %s AND h3_res = %s AND time_window = %s
+                """,
+                (SOURCE, AREA_SCHEME, res, w.name),
+            )
+            silver = _scalar(
+                conn,
+                """
+                SELECT count(*) FROM silver.incident
+                WHERE source_id = %s AND occurred_local_date BETWEEN %s AND %s
+                """,
+                (SOURCE, w.start, w.end),
+            )
+            assert stored == silver, (res, w.name)
+
+
+@pytest.mark.parametrize("hour", [None, 22])
+def test_day_layer_scales_the_rate_and_ranks_the_whole_city(dow_built, hour_built, hour):
+    # safety.api.repository `timed`: the all-hours (or hour-block) rate times
+    # the weekday factor, ranked across every cell of the city.
+    from safety.api import repository as repo
+
+    conn = dow_built["conn"]
+    saturday = 5
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE reference.source_registry SET severity_scheme_version = %s "
+                "WHERE source_id = %s",
+                (AREA_SCHEME, SOURCE),
+            )
+        window = next(w for w in dow_built["windows"] if w.name in gold.HOURLY_WINDOWS)
+        for res in gold.HOURLY_RESOLUTIONS:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT h3_index, track, day_factor FROM gold.cell_dow_factor
+                    WHERE source_id = %s AND h3_res = %s AND time_window = %s
+                      AND scheme_version = %s AND dow = %s
+                    """,
+                    (SOURCE, res, window.name, AREA_SCHEME, saturday),
+                )
+                factor = {(r["h3_index"], r["track"]): r["day_factor"] for r in cur.fetchall()}
+            args = dict(
+                source_id=SOURCE, h3_res=res, time_window=window.name, category="all", hour=hour
+            )
+            plain = _features(repo.cells_geojson(conn, **args))
+            timed = _features(repo.cells_geojson(conn, **args, day=saturday))
+            assert timed.keys() == plain.keys() and timed
+
+            for track, suffix in (("violent", "violent"), ("non_violent", "nonviolent")):
+                for h3, p in timed.items():
+                    base = plain[h3][f"hsm_{suffix}" if hour is not None else f"sm_{suffix}"]
+                    expected = base * factor[(h3, track)]
+                    assert p[f"hsm_{suffix}"] == pytest.approx(expected, rel=1e-3, abs=2e-3), h3
+                    # Tier 0 stays the all-hours tier 0.
+                    assert (p[f"hstier_{suffix}"] == 0) == (plain[h3][f"stier_{suffix}"] == 0)
+                # A higher rate never ranks safer.
+                ordered = sorted(timed.values(), key=lambda p: p[f"hsafety_{suffix}"])
+                for safer, riskier in zip(ordered[1:], ordered):
+                    assert safer[f"hsm_{suffix}"] <= riskier[f"hsm_{suffix}"] + 1e-3
+
+            # A bbox narrows what is returned, never what a cell is ranked against.
+            west, south, east, north = BOX
+            half = (west, south, (west + east) / 2, north)
+            boxed = _features(repo.cells_geojson(conn, **args, day=saturday, bbox=half))
+            assert boxed and len(boxed) < len(timed)
+            for h3, p in boxed.items():
+                assert p["hsafety_violent"] == timed[h3]["hsafety_violent"], h3
+    finally:
+        conn.rollback()

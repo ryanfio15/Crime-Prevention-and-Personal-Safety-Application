@@ -46,6 +46,7 @@ def _state(**overrides):
         "last_incident_pull_at": datetime(2026, 10, 1, tzinfo=UTC),
         "has_census": True,
         "has_hourly": True,
+        "has_dow": True,
         "has_clock_hours": True,
         "gold_refreshed_at": datetime(2026, 10, 2, tzinfo=UTC),
         "gold_pipeline_version": PIPELINE_VERSION,
@@ -193,3 +194,16 @@ def test_the_city_floor_cuts_older_datasets_short(monkeypatch):
     plan = run.history_remaining(None, _lax_config(history_start_date=date(2022, 1, 1)))
     assert {d for d, _, _ in plan} == {"k7nn-b2ep", "2nrs-mtv8"}
     assert plan[-1][1] == datetime(2022, 1, 1, tzinfo=UTC)
+
+
+def test_missing_day_factor_plans_an_hourly_run():
+    # A city whose hourly layer predates gold.cell_dow_factor (022).
+    steps = ops.plan_from_state(_state(has_dow=False), "phl")
+    hourly = [s for s in steps if s.task == "hourly"]
+    assert len(hourly) == 1 and "day-of-week" in hourly[0].reason
+
+
+def test_missing_day_factor_alone_never_plans_for_a_city_without_hours():
+    # No hourly layer and no clock hours: nothing to rebuild, so no loop.
+    steps = ops.plan_from_state(_state(has_hourly=False, has_clock_hours=False, has_dow=False), "phl")
+    assert not [s for s in steps if s.task == "hourly"]

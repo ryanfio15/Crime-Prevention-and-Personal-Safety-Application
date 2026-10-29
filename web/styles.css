@@ -886,6 +886,16 @@ body { grid-template-rows: minmax(0, 1fr); }
    wins where the two overlap, being declared after it in the base styles. */
 .cp .hours i[data-safer] { background: #39c631; }
 .cp .hours i[data-selected] { background: var(--text-primary); }
+/* The week chart: seven wider bars under the hour chart, Monday first. */
+.cp .hours.days { grid-template-columns: repeat(7, 1fr); gap: 4px; height: 36px; }
+.days-axis {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  margin-top: 4px;
+  font-size: 10.5px;
+  text-align: center;
+  color: var(--text-muted);
+}
 .cp-outlook { margin-top: 7px; font-size: 12px; line-height: 1.35; color: var(--text-primary); }
 .cp-foot { margin-top: 5px; font-size: 10.5px; color: var(--text-muted); }
 

@@ -195,6 +195,17 @@ HOURLY_WINDOWS = ("last_1y",)
 # run does not change how hard the blend bites.
 HOUR_SHAPE_PRIOR = 12
 
+# Day of the week (022_day_of_week.sql). 0 = Monday ... 6 = Sunday.
+DAY_BLOCKS = 7
+
+# Credibility prior on a cell's week shape, in incidents. Stronger than the
+# hour prior per block: weekday differences are small next to hour-of-day ones
+# -- a busy evening is several times a quiet morning, a busy day rarely half as
+# much again as a quiet one -- so a few incidents falling on a Saturday is far
+# more likely chance than pattern. At 28, four a day, a cell and the city
+# count equally; an empty cell follows the city's week outright.
+DAY_SHAPE_PRIOR = 28
+
 
 @dataclass(frozen=True, slots=True)
 class Window:
@@ -1455,6 +1466,144 @@ def refresh_cell_hour_profile(
     return written
 
 
+# ---------------------------------------------------------------------------
+# Day of the week: each cell's weekday factor (022_day_of_week.sql)
+# ---------------------------------------------------------------------------
+
+# The week's twin of the hour factor, stored as a factor only: the serving
+# layer multiplies it into the all-hours or hour-block rate and ranks the
+# result on request, so a weekday never needs a ranking of its own here.
+_DOW_FACTOR_SQL = """
+WITH weighted AS (
+    SELECT
+        i.{h3_column} AS h3_index,
+        -- 0 = Monday ... 6 = Sunday. The local date, so every incident counts,
+        -- including the ones published with no clock time.
+        EXTRACT(isodow FROM i.occurred_local_date)::int - 1 AS dow,
+        count(*) FILTER (WHERE i.product_category =  'violent') AS n_violent,
+        count(*) FILTER (WHERE i.product_category <> 'violent') AS n_non_violent,
+        COALESCE(sum(COALESCE(w.weight, 1.0))
+                 FILTER (WHERE i.product_category =  'violent'), 0) AS w_violent,
+        COALESCE(sum(COALESCE(w.weight, 1.0))
+                 FILTER (WHERE i.product_category <> 'violent'), 0) AS w_non_violent
+    FROM silver.incident i
+    {weight_lookup}
+    WHERE i.source_id = %(source_id)s
+      AND i.occurred_local_date BETWEEN %(window_start)s AND %(window_end)s
+    GROUP BY 1, 2
+),
+day_counts AS (
+    -- How often each weekday falls in the window: a year has 53 of one of
+    -- them, so totals are compared per occurrence, not as they stand.
+    SELECT EXTRACT(isodow FROM d)::int - 1 AS dow, count(*) AS k
+    FROM generate_series(%(window_start)s::date, %(window_end)s::date, interval '1 day') AS d
+    GROUP BY 1
+),
+universe AS (
+    -- Every cell on every weekday, as in the hour layer: a quiet day is a
+    -- factor below 1, not a missing row.
+    SELECT g.h3_index, c.dow, c.k
+    FROM gold.cell_geometry g
+    CROSS JOIN day_counts c
+    WHERE g.source_id = %(source_id)s AND g.h3_res = %(h3_res)s
+),
+unpivoted AS (
+    SELECT u.h3_index, u.dow, u.k, v.track, v.n, v.w, v.w / u.k AS per_day
+    FROM universe u
+    LEFT JOIN weighted x ON x.h3_index = u.h3_index AND x.dow = u.dow
+    CROSS JOIN LATERAL (VALUES
+        ('violent',     COALESCE(x.n_violent, 0),     COALESCE(x.w_violent, 0)),
+        ('non_violent', COALESCE(x.n_non_violent, 0), COALESCE(x.w_non_violent, 0))
+    ) AS v(track, n, w)
+),
+cell_week AS (
+    -- The cell's own totals across the week: the denominator of its shape,
+    -- and the evidence its blend weight is counted from.
+    SELECT h3_index, track, sum(n) AS n_week, sum(per_day) AS per_day_week
+    FROM unpivoted
+    GROUP BY 1, 2
+),
+city_shape AS (
+    -- The share of this track's citywide weighted offence on each weekday,
+    -- per occurrence: the curve a cell with little evidence follows.
+    SELECT track, dow,
+           sum(per_day) / NULLIF(sum(sum(per_day)) OVER (PARTITION BY track), 0) AS share
+    FROM unpivoted
+    GROUP BY track, dow
+)
+INSERT INTO gold.cell_dow_factor (
+    source_id, h3_index, h3_res, time_window, dow, track, scheme_version,
+    window_start, window_end, incident_count, weighted_total, day_factor, refreshed_at
+)
+SELECT
+    %(source_id)s, u.h3_index, %(h3_res)s, %(time_window)s, u.dow, u.track, %(scheme)s,
+    %(window_start)s, %(window_end)s, u.n, u.w,
+    -- This cell's share of its own week on this weekday, times 7, blended
+    -- toward the city's share by n / (n + DAY_SHAPE_PRIOR). The seven
+    -- factors of a cell average exactly 1.
+    %(day_blocks)s * (
+        lam.own * CASE WHEN t.per_day_week > 0 THEN u.per_day / t.per_day_week ELSE 0 END
+        + (1 - lam.own) * COALESCE(s.share, 1.0 / %(day_blocks)s)
+    ),
+    now()
+FROM unpivoted u
+JOIN cell_week t ON t.h3_index = u.h3_index AND t.track = u.track
+LEFT JOIN city_shape s ON s.track = u.track AND s.dow = u.dow
+CROSS JOIN LATERAL (
+    SELECT t.n_week / (t.n_week + %(shape_prior)s::double precision) AS own
+) lam
+"""
+
+
+def refresh_cell_dow_factor(
+    conn: psycopg.Connection,
+    source_id: str,
+    windows: list[Window],
+    scheme: Scheme,
+) -> int:
+    """Rebuild gold.cell_dow_factor for one scheme, where the hour layer is
+    built. Needs no clock hour and no all-hours ranking: the factor is a shape
+    only, and the serving layer multiplies it into whichever rate is shown."""
+    written = 0
+    with conn.cursor() as cur:
+        _build_weight_table(cur, source_id, scheme.version)
+        for res in HOURLY_RESOLUTIONS:
+            sql = _DOW_FACTOR_SQL.format(h3_column=_h3_column(res), weight_lookup=_WEIGHT_JOIN)
+            # Every window, then skip; see refresh_cell_hour_safety.
+            cur.execute(
+                """
+                DELETE FROM gold.cell_dow_factor
+                WHERE source_id = %s AND h3_res = %s AND scheme_version = %s
+                """,
+                (source_id, res, scheme.version),
+            )
+            for window in windows:
+                if window.name not in HOURLY_WINDOWS or not safety_builds(window.name):
+                    continue
+                cur.execute(
+                    sql,
+                    {
+                        "source_id": source_id,
+                        "h3_res": res,
+                        "time_window": window.name,
+                        "window_start": window.start,
+                        "window_end": window.end,
+                        "scheme": scheme.version,
+                        "day_blocks": DAY_BLOCKS,
+                        "shape_prior": DAY_SHAPE_PRIOR,
+                    },
+                )
+                written += cur.rowcount
+                log.info(
+                    "cell_dow_factor scheme=%s res=%s window=%s -> %s rows",
+                    scheme.version,
+                    res,
+                    window.name,
+                    cur.rowcount,
+                )
+    return written
+
+
 _HOUR_COVERAGE_SQL = """
 SELECT
     count(*)                                                  AS total,
@@ -1544,6 +1693,13 @@ def refresh_hourly_layer(
     if not schemes:
         log.warning("no enabled severity scheme; skipping the hourly ranking")
         return 0, 0, 0.0
+
+    # The weekday factor first: it needs no clock hour, so a source that
+    # publishes none still gets it.
+    dow_rows = 0
+    for scheme in schemes:
+        dow_rows += refresh_cell_dow_factor(conn, source_id, windows, scheme)
+    log.info("cell_dow_factor -> %s rows", dow_rows)
 
     share = hour_coverage(conn, source_id)
     log.info("%.1f%% of incidents carry a published clock hour", share * 100)

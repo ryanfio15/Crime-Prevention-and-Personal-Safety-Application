@@ -141,6 +141,13 @@ SELECT
         SELECT 1 FROM gold.cell_hour_safety h
         WHERE h.source_id = %(source_id)s AND h.time_window = ANY(%(hourly_windows)s)
     ) AS has_hourly,
+    -- The weekday factor (022_day_of_week.sql), built by the same `hourly`
+    -- step. Absent for a city whose hourly layer predates it, until that step
+    -- runs again.
+    EXISTS (
+        SELECT 1 FROM gold.cell_dow_factor d
+        WHERE d.source_id = %(source_id)s AND d.time_window = ANY(%(hourly_windows)s)
+    ) AS has_dow,
     -- Whether the time-of-day layers are *buildable*, which is a separate
     -- question from whether they exist. gold.refresh_hourly_layer omits every
     -- incident with a NULL occurred_local_hour and skips the layers entirely
@@ -225,6 +232,11 @@ def plan_from_state(state: dict, source_id: str) -> list[Step]:
     needs_hourly = not state["has_hourly"] and (
         state["has_clock_hours"] or needs_backfill
     )
+    # A city whose time-of-day layer was built before the weekday factor
+    # existed: one more `hourly` run adds it. Only where the hourly layer is
+    # already there, so a city that can never build that layer is not asked
+    # for it on every run.
+    needs_hourly = needs_hourly or (state["has_hourly"] and not state.get("has_dow", True))
 
     if needs_backfill:
         # `cmd_backfill` refreshes gold itself once the ingest succeeds, so
@@ -293,7 +305,11 @@ def plan_from_state(state: dict, source_id: str) -> list[Step]:
             Step(
                 task="hourly",
                 city=source_id,
-                reason="time-of-day layers have never been built for this city",
+                reason=(
+                    "time-of-day layers have never been built for this city"
+                    if not state["has_hourly"]
+                    else "the day-of-week factor has not been built for this city"
+                ),
                 argv=("hourly", "--city", source_id),
             )
         )

@@ -115,3 +115,62 @@ def test_route_cells_carries_both_hours(db_conn):
         }
     finally:
         db_conn.rollback()
+
+
+SATURDAY = 5
+
+
+def _seed_day(conn, factors: dict[str, float]) -> None:
+    scheme = conn.execute(
+        "SELECT severity_scheme_version AS v FROM reference.source_registry WHERE source_id = %s",
+        (SOURCE,),
+    ).fetchone()["v"]
+    conn.execute(
+        "DELETE FROM gold.cell_dow_factor WHERE source_id = %s AND h3_res = %s AND time_window = %s",
+        (SOURCE, RES, WINDOW),
+    )
+    for cell, factor in factors.items():
+        conn.execute(
+            """
+            INSERT INTO gold.cell_dow_factor (
+                source_id, h3_index, h3_res, time_window, dow, track, scheme_version,
+                window_start, window_end, incident_count, weighted_total, day_factor
+            ) VALUES (%s, %s, %s, %s, %s, 'violent', %s, %s, %s, 1, 1, %s)
+            """,
+            (SOURCE, cell, RES, WINDOW, SATURDAY, scheme, date(2026, 4, 1), date(2026, 9, 30), factor),
+        )
+
+
+def test_baseline_per_hour_and_weekday(db_conn):
+    # The map's `timed` layer, averaged: the hour-block rate times each cell's
+    # day factor, over the cells reported at that hour.
+    try:
+        _seed(db_conn)
+        _seed_day(db_conn, {cell: 2.0 for cell in CELLS})
+        rows = repo.route_baseline(db_conn, SOURCE, RES, WINDOW, hourly=True, days=[SATURDAY])
+        timed = {(r["track"], r["hour_block"], r["dow"]): r for r in rows}
+        row = timed[("violent", HOUR, SATURDAY)]
+        assert row["painted"] == 1
+        assert row["weighted"] / row["people"] == pytest.approx(0.2 / 24 * 2.0)
+        # The plain hour row is still there, with no weekday.
+        assert ("violent", HOUR, None) in timed
+        # No days asked for, no weekday rows.
+        assert all(
+            r["dow"] is None
+            for r in repo.route_baseline(db_conn, SOURCE, RES, WINDOW, hourly=True)
+        )
+    finally:
+        db_conn.rollback()
+
+
+def test_route_cells_carries_the_day_factor(db_conn):
+    try:
+        _seed(db_conn)
+        first = next(iter(CELLS))
+        _seed_day(db_conn, {first: 1.25})
+        rows = repo.route_cells(db_conn, SOURCE, RES, WINDOW, list(CELLS), [HOUR], [SATURDAY])["violent"]
+        assert rows[first][f"df.{SATURDAY}"] == pytest.approx(1.25)
+        # A cell with no factor row carries none, and is scored by hour alone.
+        assert all(f"df.{SATURDAY}" not in r for c, r in rows.items() if c != first)
+    finally:
+        db_conn.rollback()

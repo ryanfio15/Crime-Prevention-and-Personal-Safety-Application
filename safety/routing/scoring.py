@@ -222,6 +222,10 @@ class Baseline:
 
     overall: float | None
     hourly: dict[int, float] = field(default_factory=dict)
+    # Per (hour block, weekday 0 = Monday), where the day factor is built
+    # (022): the hour-block rate times each cell's day factor, averaged the
+    # same way.
+    timed: dict[tuple[int, int], float] = field(default_factory=dict)
 
 
 def domain_average(rows: Iterable[Mapping[str, Any]], value_key: str, tier_key: str) -> float | None:
@@ -256,20 +260,30 @@ def average_from_sums(weighted: float, people: float, total: float, painted: int
 
 
 def cell_ratio(
-    cell: Mapping[str, Any] | None, baseline: Baseline, hour: int | None
+    cell: Mapping[str, Any] | None,
+    baseline: Baseline,
+    hour: int | None,
+    day: int | None = None,
 ) -> float | None:
     """A cell's multiple of its city average, or None where the map paints it
     in the neutral fill. The port of cellRatio (web/app.js), for one track.
 
     `cell` carries `sm` and `tier` (all hours) and, when `hour` is not None,
-    `hsm` / `htier` for that hour block. As on the map: a cell with something
+    `hsm` / `htier` for that hour block -- already times the day factor when
+    `day` is given, in which case it is compared against that hour and day's
+    average (Baseline.timed). As on the map: a cell with something
     of the track reported in that hour is compared at that hour; any other
     cell with an all-hours rate borrows it, against the all-hours average.
     Shared cases: tests/fixtures/routing/ratio_cases.json, run against both.
     """
     if cell is None:
         return None
-    own = baseline.hourly.get(hour) if hour is not None else baseline.overall
+    if hour is None:
+        own = baseline.overall
+    elif day is not None:
+        own = baseline.timed.get((hour, day))
+    else:
+        own = baseline.hourly.get(hour)
     if hour is not None:
         painted = (cell.get("htier") or 0) != 0
         value = cell.get("hsm")

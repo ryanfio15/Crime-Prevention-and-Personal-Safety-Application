@@ -8,7 +8,10 @@ import vm from "node:vm";
 const src = readFileSync(new URL("../../web/hours.js", import.meta.url), "utf8");
 const ctx = { Intl, Date };
 vm.runInNewContext(src, ctx);
-const { cityHour, cityTimeLabel, hourVsUsual, hourOutlook, quietestWindow, hourName } = ctx;
+const {
+  cityHour, cityTimeLabel, hourVsUsual, hourOutlook, quietestWindow, hourName,
+  cityDay, dayName, dayVsUsual,
+} = ctx;
 // Arrays built inside the vm context have that context's prototype, which
 // deepStrictEqual treats as different; copy into this realm before comparing.
 const plain = (a) => [...a];
@@ -145,4 +148,34 @@ test("hourName reads as the clock does", () => {
   assert.equal(hourName(12), "12 PM");
   assert.equal(hourName(22), "10 PM");
   assert.equal(hourName(24), "12 AM");
+});
+
+
+test("cityDay reads the city's zone, Monday first", () => {
+  // 2026-07-04 is a Saturday. 02:30 UTC on the 5th is still Saturday evening
+  // in New York and Los Angeles, and already Sunday in UTC.
+  const at = new Date(Date.UTC(2026, 6, 5, 2, 30));
+  assert.equal(cityDay("America/New_York", at), 5);
+  assert.equal(cityDay("America/Los_Angeles", at), 5);
+  assert.equal(cityDay("UTC", at), 6);
+  assert.equal(dayName(5), "Saturday");
+  assert.equal(dayName(0), "Monday");
+});
+
+test("cityDay falls back to the browser's weekday for an unknown zone", () => {
+  const at = new Date(Date.UTC(2026, 0, 5, 12)); // a Monday
+  assert.equal(cityDay("Not/AZone", at), (at.getDay() + 6) % 7);
+});
+
+test("dayVsUsual reads a weekday against the average day", () => {
+  const week = [10, 10, 10, 10, 10, 20, 10]; // a busy Saturday, 80 in all
+  const sat = dayVsUsual(week, 5);
+  assert.equal(sat.direction, "up");
+  assert.ok(Math.abs(sat.change - (20 / (80 / 7) - 1)) < 1e-12);
+  assert.equal(dayVsUsual(week, 0).direction, "down");
+  assert.equal(dayVsUsual([5, 5, 5, 5, 5, 5, 5], 2).direction, "flat");
+  // Too little evidence, a bad index, or the wrong shape: no reading.
+  assert.equal(dayVsUsual([1, 1, 1, 1, 1, 1, 1], 0), null);
+  assert.equal(dayVsUsual(week, 7), null);
+  assert.equal(dayVsUsual(flat(10), 0), null);
 });

@@ -64,6 +64,9 @@ class Env:
         self.cells_asked: list[list[str]] = []
         # Every cell rated at the city average, unless a test says otherwise.
         self.cell_row = {"sm": 0.1, "tier": 2}
+        # Each cell's day factor on every weekday; None for a city whose
+        # factor (022) is not built.
+        self.day_factor: float | None = None
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -82,7 +85,7 @@ class Env:
     def upstream(self, path):
         return [r for r in self.requests if r.url.path == path]
 
-    def route_cells(self, conn, source_id, h3_res, window, cells, hours):
+    def route_cells(self, conn, source_id, h3_res, window, cells, hours, days=()):
         self.cells_asked.append(list(cells))
         if self.cell_row is None:
             return {t: {} for t in scoring.TRACKS}
@@ -90,21 +93,32 @@ class Env:
         for h in hours:
             row[f"hsm.{h}"] = row["sm"] / 24
             row[f"htier.{h}"] = row["tier"]
+        if self.day_factor is not None:
+            for d in days:
+                row[f"df.{d}"] = self.day_factor
         return {t: {c: dict(row) for c in cells} for t in scoring.TRACKS}
 
-
-def baseline(conn, source_id, h3_res, window, hourly):
-    rows = [
-        {"track": t, "hour_block": None, "weighted": 100.0, "people": 1000.0, "total": 0, "painted": 10}
-        for t in scoring.TRACKS
-    ]
-    if hourly:
-        rows += [
-            {"track": t, "hour_block": h, "weighted": 100.0 / 24, "people": 1000.0, "total": 0, "painted": 10}
+    def baseline(self, conn, source_id, h3_res, window, hourly, days=()):
+        rows = [
+            {"track": t, "hour_block": None, "dow": None, "weighted": 100.0, "people": 1000.0, "total": 0, "painted": 10}
             for t in scoring.TRACKS
-            for h in range(24)
         ]
-    return rows
+        if hourly:
+            rows += [
+                {"track": t, "hour_block": h, "dow": None, "weighted": 100.0 / 24, "people": 1000.0, "total": 0, "painted": 10}
+                for t in scoring.TRACKS
+                for h in range(24)
+            ]
+        if hourly and self.day_factor is not None:
+            # The city's average on each weekday stays the hour's: the factor
+            # moves this cell against it.
+            rows += [
+                {"track": t, "hour_block": h, "dow": d, "weighted": 100.0 / 24, "people": 1000.0, "total": 0, "painted": 10}
+                for t in scoring.TRACKS
+                for h in range(24)
+                for d in days
+            ]
+        return rows
 
 
 @pytest.fixture
@@ -114,7 +128,7 @@ def env(monkeypatch):
     monkeypatch.setattr(main.repo, "list_cities", lambda conn: [dict(c) for c in CITIES])
     monkeypatch.setattr(main, "city_windows", lambda conn, source_id: WINDOWS)
     monkeypatch.setattr(main, "cached_json", lambda conn, key, producer, source_id: producer())
-    monkeypatch.setattr(main.repo, "route_baseline", baseline)
+    monkeypatch.setattr(main.repo, "route_baseline", e.baseline)
     monkeypatch.setattr(main.repo, "route_cells", e.route_cells)
     http = httpx.AsyncClient(transport=httpx.MockTransport(e.handler))
     main.app.state.routing = Routing.build(http)
@@ -230,8 +244,8 @@ def test_hourly_rows_are_fetched_for_each_new_hour(env):
     cell = h3.latlng_to_cell(*DUPONT.values(), scoring.SCORE_RES)
 
     async def both():
-        await scorer.load({cell}, {17})
-        await scorer.load({cell}, {18})
+        await scorer.load({cell}, {(17, 0)})
+        await scorer.load({cell}, {(18, 0)})
 
     asyncio.run(both())
     assert env.cells_asked == [[cell], [cell]]
@@ -301,3 +315,17 @@ def test_logs_carry_no_coordinates(env, caplog):
     for coordinate in ("38.9096", "-77.0434", "38.8973", "-77.0063", "38.909", "77.04"):
         assert coordinate not in text
     assert "directions drive dc" in text
+
+
+def test_day_factor_moves_the_route_against_the_city(env):
+    # Every cell at the city average by hour; a weekday factor of 1.5 puts the
+    # whole route half as much again above it, and the response says the day
+    # was used.
+    plain = trip("walk").json()
+    assert plain["daily"] is False
+    env.day_factor = 1.5
+    body = trip("walk").json()
+    assert body["daily"] is True
+    for before, after in zip(plain["routes"], body["routes"]):
+        a, b = before["activity"]["violent"], after["activity"]["violent"]
+        assert b["mean_ratio"] == pytest.approx(a["mean_ratio"] * 1.5, rel=1e-3)

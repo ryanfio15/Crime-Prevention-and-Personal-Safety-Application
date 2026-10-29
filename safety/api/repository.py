@@ -15,6 +15,7 @@ Two rules hold throughout this module:
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -38,6 +39,8 @@ LEGACY_WINDOWS = {"last_90d": "last_3m", "last_12m": "last_1y", "last_24m": "las
 ALIASES = {**LEGACY_WINDOWS, "last_30d": "last_3m"}
 VALID_CATEGORIES = ("all", "violent", "property", "quality_of_life", "other")
 VALID_HOURS = tuple(range(24))
+# 0 = Monday ... 6 = Sunday (gold.cell_dow_factor, 022_day_of_week.sql).
+VALID_DAYS = tuple(range(7))
 
 # Mirrors safety.etl.gold.HOURLY_RESOLUTIONS / HOURLY_WINDOWS. Duplicated rather
 # than imported so the serving layer keeps no dependency on the ETL package, and
@@ -297,7 +300,12 @@ _SERVED_SCHEME = (
 
 
 def route_baseline(
-    conn: psycopg.Connection, source_id: str, h3_res: int, time_window: str, hourly: bool
+    conn: psycopg.Connection,
+    source_id: str,
+    h3_res: int,
+    time_window: str,
+    hourly: bool,
+    days: Sequence[int] = (),
 ) -> list[dict[str, Any]]:
     """The city averages a route is compared against, per track and hour block.
 
@@ -308,11 +316,21 @@ def route_baseline(
     all-hours row. The hourly rows take each cell's exposure from its
     all-hours row, which is where the map reads it from too. Plain types, so
     the result can ride the stamped JSON cache (safety/api/directions.py).
+
+    With `days` (0 = Monday), also one row per track, hour block and weekday
+    in it: the same average over the hour-block rate times each cell's day
+    factor (022), as the map's `timed` layer paints it. dow is NULL on every
+    other row. A weekday whose factor is not built yet has no rows.
     """
-    params = {"source_id": source_id, "h3_res": h3_res, "time_window": time_window}
+    params = {
+        "source_id": source_id,
+        "h3_res": h3_res,
+        "time_window": time_window,
+        "days": list(days),
+    }
     hourly_sql = f"""
         UNION ALL
-        SELECT h.track, h.hour_block,
+        SELECT h.track, h.hour_block, NULL::smallint AS dow,
                sum(h.smoothed_per_km2 * s.exposure)
                    FILTER (WHERE h.safety_tier <> 0 AND s.exposure > 0),
                sum(s.exposure) FILTER (WHERE h.safety_tier <> 0 AND s.exposure > 0),
@@ -327,8 +345,30 @@ def route_baseline(
           AND h.time_window = %(time_window)s AND h.scheme_version = {_SERVED_SCHEME}
         GROUP BY h.track, h.hour_block
     """
+    daily_sql = f"""
+        UNION ALL
+        SELECT h.track, h.hour_block, d.dow,
+               sum(h.smoothed_per_km2 * d.day_factor * s.exposure)
+                   FILTER (WHERE h.safety_tier <> 0 AND s.exposure > 0),
+               sum(s.exposure) FILTER (WHERE h.safety_tier <> 0 AND s.exposure > 0),
+               sum(h.smoothed_per_km2 * d.day_factor) FILTER (WHERE h.safety_tier <> 0),
+               count(*) FILTER (WHERE h.safety_tier <> 0)
+        FROM gold.cell_hour_safety h
+        JOIN gold.cell_dow_factor d
+          ON d.source_id = h.source_id AND d.h3_res = h.h3_res
+         AND d.time_window = h.time_window AND d.scheme_version = h.scheme_version
+         AND d.track = h.track AND d.h3_index = h.h3_index
+         AND d.dow = ANY(%(days)s::smallint[])
+        LEFT JOIN gold.cell_safety s
+               ON s.source_id = h.source_id AND s.h3_index = h.h3_index
+              AND s.h3_res = h.h3_res AND s.time_window = h.time_window
+              AND s.track = h.track AND s.scheme_version = h.scheme_version
+        WHERE h.source_id = %(source_id)s AND h.h3_res = %(h3_res)s
+          AND h.time_window = %(time_window)s AND h.scheme_version = {_SERVED_SCHEME}
+        GROUP BY h.track, h.hour_block, d.dow
+    """
     sql = f"""
-        SELECT track, NULL::smallint AS hour_block,
+        SELECT track, NULL::smallint AS hour_block, NULL::smallint AS dow,
                sum(smoothed_per_km2 * exposure)
                    FILTER (WHERE safety_tier <> 0 AND exposure > 0) AS weighted,
                sum(exposure) FILTER (WHERE safety_tier <> 0 AND exposure > 0) AS people,
@@ -339,6 +379,7 @@ def route_baseline(
           AND time_window = %(time_window)s AND scheme_version = {_SERVED_SCHEME}
         GROUP BY track
         {hourly_sql if hourly else ""}
+        {daily_sql if hourly and days else ""}
     """
     with conn.cursor() as cur:
         cur.execute(sql, params)
@@ -346,6 +387,7 @@ def route_baseline(
             {
                 "track": r["track"],
                 "hour_block": r["hour_block"],
+                "dow": r["dow"],
                 "weighted": float(r["weighted"] or 0),
                 "people": float(r["people"] or 0),
                 "total": float(r["total"] or 0),
@@ -362,13 +404,15 @@ def route_cells(
     time_window: str,
     cells: list[str],
     hour_blocks: list[int],
+    days: Sequence[int] = (),
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """The safety rows for the cells a route crosses: {track: {h3: row}}.
 
     Each row carries `sm` and `tier` (all hours) and, for each hour block in
     `hour_blocks`, `hsm.<h>` / `htier.<h>` -- the same properties a map
     feature carries, under the names the endpoint maps onto
-    scoring.cell_ratio. A cell with no row is absent, and is unrated on the
+    scoring.cell_ratio -- and, for each weekday in `days`, `df.<d>`, the
+    cell's day factor (022). A cell with no row is absent, and is unrated on the
     route as it is unpainted on the map. Two index probes per cell list; a
     route crosses tens to a few hundred.
     """
@@ -381,6 +425,7 @@ def route_cells(
         "time_window": time_window,
         "cells": list(cells),
         "hours": list(hour_blocks),
+        "days": list(days),
     }
     with conn.cursor() as cur:
         cur.execute(
@@ -413,6 +458,20 @@ def route_cells(
                 row = out.setdefault(r["track"], {}).setdefault(r["h3_index"], {})
                 row[f"hsm.{r['hour_block']}"] = float(r["smoothed_per_km2"])
                 row[f"htier.{r['hour_block']}"] = r["safety_tier"]
+        if days:
+            cur.execute(
+                f"""
+                SELECT h3_index, track, dow, day_factor
+                FROM gold.cell_dow_factor
+                WHERE source_id = %(source_id)s AND h3_res = %(h3_res)s
+                  AND time_window = %(time_window)s AND scheme_version = {_SERVED_SCHEME}
+                  AND dow = ANY(%(days)s::smallint[]) AND h3_index = ANY(%(cells)s)
+                """,
+                params,
+            )
+            for r in cur.fetchall():
+                row = out.setdefault(r["track"], {}).setdefault(r["h3_index"], {})
+                row[f"df.{r['dow']}"] = float(r["day_factor"])
     return out
 
 
@@ -440,6 +499,18 @@ def hour_profile(by_hour: list[dict[str, Any]]) -> dict[str, list[int]]:
         "violent": totals["violent"],
         "non_violent": [a - v for a, v in zip(totals["all"], totals["violent"])],
     }
+
+
+def day_profile(by_day: list[dict[str, Any]]) -> dict[str, list[int]] | None:
+    """Reported incidents per weekday (0 = Monday), one 7-long list per track,
+    or None when there are no rows."""
+    if not by_day:
+        return None
+    totals = {t: [0] * len(VALID_DAYS) for t in ("violent", "non_violent")}
+    for row in by_day:
+        if row["track"] in totals:
+            totals[row["track"]][row["dow"]] = row["incident_count"]
+    return totals
 
 
 # ---------------------------------------------------------------------------
@@ -839,6 +910,67 @@ WITH scheme AS (
         WHERE source_id = %(source_id)s
     ) AS version
 ),
+timed AS (
+    -- The day of the week (022): the all-hours rate -- or the requested hour
+    -- block's -- times each cell's factor for that weekday. Every cell of the
+    -- city, not just those this request returns, so a bbox or min_count never
+    -- changes what a cell is ranked against. Empty unless a day was asked for;
+    -- a city whose factor is not built yet reads as a factor of 1.
+    SELECT s.h3_index, s.track, s.safety_tier AS base_tier,
+           COALESCE(h.smoothed_per_km2, s.smoothed_per_km2)
+               * COALESCE(d.day_factor, 1) AS rate,
+           -- The day's incidents, or the hour's where an hour was asked for:
+           -- nothing is stored for an hour on a given weekday.
+           CASE WHEN %(hour_block)s::smallint IS NULL
+                THEN d.incident_count ELSE h.incident_count END AS n
+    FROM gold.cell_safety s
+    CROSS JOIN scheme
+    LEFT JOIN gold.cell_hour_safety h
+           ON %(hour_block)s::smallint IS NOT NULL
+          AND h.source_id      = s.source_id
+          AND h.h3_index       = s.h3_index
+          AND h.h3_res         = s.h3_res
+          AND h.time_window    = s.time_window
+          AND h.hour_block     = %(hour_block)s::smallint
+          AND h.scheme_version = s.scheme_version
+          AND h.track          = s.track
+    LEFT JOIN gold.cell_dow_factor d
+           ON d.source_id      = s.source_id
+          AND d.h3_res         = s.h3_res
+          AND d.time_window    = s.time_window
+          AND d.scheme_version = s.scheme_version
+          AND d.dow            = %(dow)s::smallint
+          AND d.track          = s.track
+          AND d.h3_index       = s.h3_index
+    WHERE %(dow)s::smallint IS NOT NULL
+      AND s.source_id      = %(source_id)s
+      AND s.h3_res         = %(h3_res)s
+      AND s.time_window    = %(time_window)s
+      AND s.scheme_version = scheme.version
+),
+timed_ranked AS (
+    -- Ranked as gold.cell_hour_safety is (Hazen midrank, 1.0 = safest), and
+    -- tiered the same way: tier 0 stays the all-hours tier 0, nothing of the
+    -- track reported here at all.
+    SELECT t.h3_index, t.track, t.rate, t.n, t.base_tier,
+           (
+               (rank() OVER (PARTITION BY t.track ORDER BY t.rate DESC)
+                + (count(*) OVER (PARTITION BY t.track, t.rate) - 1) / 2.0)
+               - 0.5
+           ) / count(*) OVER (PARTITION BY t.track) AS pct
+    FROM timed t
+),
+timed_tiered AS (
+    SELECT r.*,
+           CASE
+               WHEN r.base_tier = 0 THEN 0
+               WHEN r.pct < 0.25    THEN 1
+               WHEN r.pct < 0.50    THEN 2
+               WHEN r.pct < 0.75    THEN 3
+               ELSE 4
+           END AS tier
+    FROM timed_ranked r
+),
 /*RANGE_CTES*/
 layer AS (
     -- Both safety tracks ride along on every feature, so switching the map
@@ -866,17 +998,19 @@ layer AS (
            -- The denominator itself, so the panel can state what a cell was
            -- ranked against rather than leaving it implicit.
            sv.exposure          AS exposure,
-           -- Time of day. All NULL unless the request named an hour; unlike the
-           -- two tracks these cannot ride along, because carrying all 24 blocks
-           -- on every feature multiplies the payload by 24.
-           hv.safety_percentile AS hsafety_violent,
-           hv.safety_tier       AS htier_violent,
-           hv.smoothed_per_km2  AS hsmoothed_violent,
-           hv.incident_count    AS hcount_violent,
-           hn.safety_percentile AS hsafety_nonviolent,
-           hn.safety_tier       AS htier_nonviolent,
-           hn.smoothed_per_km2  AS hsmoothed_nonviolent,
-           hn.incident_count    AS hcount_nonviolent
+           -- Time of day, and the day of the week. All NULL unless the request
+           -- named an hour or a day; unlike the two tracks these cannot ride
+           -- along, because carrying all 24 blocks on every feature multiplies
+           -- the payload by 24. With a day they come from the ranking above;
+           -- with an hour alone, from the stored hourly layer.
+           CASE WHEN %(dow)s::smallint IS NULL THEN hv.safety_percentile ELSE tv.pct  END AS hsafety_violent,
+           CASE WHEN %(dow)s::smallint IS NULL THEN hv.safety_tier       ELSE tv.tier END AS htier_violent,
+           CASE WHEN %(dow)s::smallint IS NULL THEN hv.smoothed_per_km2  ELSE tv.rate END AS hsmoothed_violent,
+           CASE WHEN %(dow)s::smallint IS NULL THEN hv.incident_count    ELSE tv.n    END AS hcount_violent,
+           CASE WHEN %(dow)s::smallint IS NULL THEN hn.safety_percentile ELSE tn.pct  END AS hsafety_nonviolent,
+           CASE WHEN %(dow)s::smallint IS NULL THEN hn.safety_tier       ELSE tn.tier END AS htier_nonviolent,
+           CASE WHEN %(dow)s::smallint IS NULL THEN hn.smoothed_per_km2  ELSE tn.rate END AS hsmoothed_nonviolent,
+           CASE WHEN %(dow)s::smallint IS NULL THEN hn.incident_count    ELSE tn.n    END AS hcount_nonviolent
     FROM /*ACTIVITY*/ a
     JOIN gold.cell_geometry g ON g.h3_index = a.h3_index
     CROSS JOIN scheme
@@ -906,6 +1040,7 @@ layer AS (
           AND hv.hour_block     = %(hour_block)s::smallint
           AND hv.scheme_version = scheme.version
           AND hv.track          = 'violent'
+          AND %(dow)s::smallint IS NULL
     LEFT JOIN gold.cell_hour_safety hn
            ON %(hour_block)s::smallint IS NOT NULL
           AND hn.source_id      = a.source_id
@@ -915,6 +1050,9 @@ layer AS (
           AND hn.hour_block     = %(hour_block)s::smallint
           AND hn.scheme_version = scheme.version
           AND hn.track          = 'non_violent'
+          AND %(dow)s::smallint IS NULL
+    LEFT JOIN timed_tiered tv ON tv.h3_index = a.h3_index AND tv.track = 'violent'
+    LEFT JOIN timed_tiered tn ON tn.h3_index = a.h3_index AND tn.track = 'non_violent'
     WHERE a.source_id   = %(source_id)s
       AND a.h3_res      = %(h3_res)s
       AND a.time_window = %(time_window)s
@@ -951,6 +1089,7 @@ SELECT jsonb_build_object(
         'time_window', %(time_window)s,
         'category',    %(category)s,
         'hour_block',  %(hour_block)s::smallint,
+        'dow',         %(dow)s::smallint,
         -- Whether the per-capita ranking exists at this cell size. The client
         -- needs it as a distinct state: without it, a resolution where the
         -- ranking is not built and a city where every cell happens to be
@@ -1039,17 +1178,19 @@ def cells_geojson(
     category: str,
     min_count: int = 0,
     hour: int | None = None,
+    day: int | None = None,
     bbox: tuple[float, float, float, float] | None = None,
     date_range: DateRange | None = None,
 ) -> dict[str, Any]:
     """The layer for a stored window, or for `date_range` when given (in which
-    case `time_window` is ignored and `hour` must be None)."""
+    case `time_window` is ignored and `hour` and `day` must be None)."""
     params = {
         "source_id": source_id,
         "h3_res": h3_res,
         "time_window": time_window,
         "category": category,
         "hour_block": hour,
+        "dow": day,
         "safety_available": h3_res in SAFETY_RESOLUTIONS,
         "min_count": min_count,
         "bbox": "set" if bbox else None,
@@ -1237,6 +1378,23 @@ def cell_detail(
             )
             by_hour = cur.fetchall()
 
+        # The week's shape, per track, from the weekday factor's own counts
+        # (022). Built where the hourly layer is, so a custom range has none.
+        by_day: list[dict[str, Any]] = []
+        if date_range is None:
+            cur.execute(
+                """
+                SELECT f.track, f.dow, f.incident_count
+                FROM gold.cell_dow_factor f
+                JOIN reference.source_registry r
+                  ON r.source_id = f.source_id
+                 AND r.severity_scheme_version = f.scheme_version
+                WHERE f.h3_index = %s AND f.time_window = %s
+                """,
+                (h3_index, time_window),
+            )
+            by_day = cur.fetchall()
+
         hour_safety: list[dict[str, Any]] = []
         if hour is not None:
             cur.execute(
@@ -1293,6 +1451,10 @@ def cell_detail(
         "hour": hour,
         "hour_label": hour_label(hour) if hour is not None else None,
         "hour_profile": hour_profile(by_hour) if date_range is None else None,
+        # Incidents per weekday, Monday first, one 7-long list per track; null
+        # where the weekday factor is not built (a custom range, res 10, or a
+        # city not rebuilt since 022).
+        "day_profile": day_profile(by_day),
         "hour_safety": [
             {
                 **row,

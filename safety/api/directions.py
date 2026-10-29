@@ -383,9 +383,12 @@ def _departure(city: dict[str, Any], depart_at: str | None) -> datetime:
     return when
 
 
-def _window_and_baseline(conn: Any, source_id: str, requested: str | None) -> dict[str, Any]:
+def _window_and_baseline(
+    conn: Any, source_id: str, requested: str | None, days: tuple[int, ...] = ()
+) -> dict[str, Any]:
     """The served window a request means, and its city averages (cached on
-    the city's refresh stamp, like every other per-city figure)."""
+    the city's refresh stamp, like every other per-city figure) -- per hour
+    and, for each weekday in `days`, per hour on that day."""
     from safety.api import main
 
     windows = main.city_windows(conn, source_id)
@@ -399,8 +402,10 @@ def _window_and_baseline(conn: Any, source_id: str, requested: str | None) -> di
     hourly = bool(window.get("hourly"))
     rows = main.cached_json(
         conn,
-        ("route_baseline", source_id, window["id"], hourly),
-        lambda: repo.route_baseline(conn, source_id, scoring.SCORE_RES, window["id"], hourly),
+        ("route_baseline", source_id, window["id"], hourly, days),
+        lambda: repo.route_baseline(
+            conn, source_id, scoring.SCORE_RES, window["id"], hourly, days
+        ),
         source_id,
     )
     return {"window": window, "rows": rows, "hourly": hourly}
@@ -413,13 +418,22 @@ def _baselines(rows: list[dict[str, Any]]) -> dict[str, scoring.Baseline]:
         base = out.setdefault(r["track"], scoring.Baseline(None))
         if r["hour_block"] is None:
             base.overall = average
-        elif average is not None:
+        elif average is None:
+            continue
+        elif r.get("dow") is not None:
+            base.timed[(r["hour_block"], r["dow"])] = average
+        else:
             base.hourly[r["hour_block"]] = average
     return out
 
 
+# When a stretch of a route is passed: (hour block, weekday 0 = Monday), or
+# None where the window has no hourly layer.
+Time = tuple[int, int] | None
+
+
 class _Scorer:
-    """Runs, hours and ratios for a set of routes, one city, one window."""
+    """Runs, times and ratios for a set of routes, one city, one window."""
 
     def __init__(
         self,
@@ -435,11 +449,14 @@ class _Scorer:
         self.baselines = baselines
         self.departure = departure
         self.cells: dict[str, dict[str, dict[str, Any]]] = {t: {} for t in scoring.TRACKS}
+        # Whether any weekday has a city average, i.e. the day factor (022)
+        # is built here; without it every stretch is compared by hour alone.
+        self.daily = hourly and any(b.timed for b in baselines.values())
         # What has been fetched: cells with their all-hours rows, and
-        # (cell, hour) pairs with their hourly rows. A cell fetched for one
-        # hour still needs fetching for the next.
+        # (cell, time) pairs with their hour rows and day factors. A cell
+        # fetched for one time still needs fetching for the next.
         self.known: set[str] = set()
-        self.known_hours: set[tuple[str, int]] = set()
+        self.known_times: set[tuple[str, Time]] = set()
 
     def _start(self, route: Route) -> datetime:
         # A transit itinerary leaves when it leaves, not when it was asked for.
@@ -451,22 +468,26 @@ class _Scorer:
                 pass
         return self.departure
 
-    def hours(self, route: Route, runs: list[scoring.Run]) -> list[int | None]:
+    def times(self, route: Route, runs: list[scoring.Run]) -> list[Time]:
         if not self.hourly:
             return [None] * len(runs)
         start = self._start(route)
-        return [(start + timedelta(seconds=r.t_offset_s)).hour for r in runs]
+        out: list[Time] = []
+        for r in runs:
+            when = start + timedelta(seconds=r.t_offset_s)
+            out.append((when.hour, when.weekday()))
+        return out
 
-    async def load(self, cells: set[str], hours: set[int]) -> None:
-        """Fetch the rows for any cells, or cell-hours, not fetched yet. One
-        borrowed connection, two index probes."""
+    async def load(self, cells: set[str], times: set[Time]) -> None:
+        """Fetch the rows for any cells, or cell-times, not fetched yet. One
+        borrowed connection, up to three index probes."""
         if self.window is None:
             return
-        hours = hours if self.hourly else set()
+        times = {t for t in times if t is not None} if self.hourly else set()
         missing = sorted(
             c
             for c in cells
-            if c not in self.known or any((c, h) not in self.known_hours for h in hours)
+            if c not in self.known or any((c, t) not in self.known_times for t in times)
         )
         if not missing:
             return
@@ -476,7 +497,8 @@ class _Scorer:
             scoring.SCORE_RES,
             self.window["id"],
             missing,
-            sorted(hours),
+            sorted({h for h, _ in times}),
+            sorted({d for _, d in times}) if self.daily else [],
         )
         # Merged into what is there, so an earlier fetch's hours are kept.
         for track, by_cell in rows.items():
@@ -484,19 +506,30 @@ class _Scorer:
             for cell, row in by_cell.items():
                 have.setdefault(cell, {}).update(row)
         self.known.update(missing)
-        self.known_hours.update((c, h) for c in missing for h in hours)
+        self.known_times.update((c, t) for c in missing for t in times)
 
     def ratios(
-        self, track: str, runs: list[scoring.Run], hours: list[int | None]
+        self, track: str, runs: list[scoring.Run], times: list[Time]
     ) -> dict[int, float | None]:
         base = self.baselines.get(track) or scoring.Baseline(None)
         by_cell = self.cells.get(track, {})
         out: dict[int, float | None] = {}
-        for i, (run, hour) in enumerate(zip(runs, hours)):
+        for i, (run, time_) in enumerate(zip(runs, times)):
             row = by_cell.get(run.cell)
+            hour, day = time_ if time_ is not None else (None, None)
             if row is not None and hour is not None:
-                row = {**row, "hsm": row.get(f"hsm.{hour}"), "htier": row.get(f"htier.{hour}")}
-            out[i] = scoring.cell_ratio(row, base, hour)
+                hsm = row.get(f"hsm.{hour}")
+                factor = row.get(f"df.{day}")
+                # The day only where both the cell's factor and the city's
+                # average for that hour and day exist -- as the map paints it.
+                if factor is not None and (hour, day) in base.timed and hsm is not None:
+                    hsm *= factor
+                else:
+                    day = None
+                row = {**row, "hsm": hsm, "htier": row.get(f"htier.{hour}")}
+            else:
+                day = None
+            out[i] = scoring.cell_ratio(row, base, hour, day)
         return out
 
 
@@ -519,18 +552,18 @@ async def _street_routes(
     # The quietest rated cell near the fastest route's worst stretch, on the
     # violent track: the one the map opens on.
     fast_runs = runs[0]
-    hours = scorer.hours(fastest, fast_runs)
-    await scorer.load(scoring.route_cells(fast_runs), {h for h in hours if h is not None})
-    ratios = scorer.ratios("violent", fast_runs, hours)
+    times = scorer.times(fastest, fast_runs)
+    await scorer.load(scoring.route_cells(fast_runs), set(times))
+    ratios = scorer.ratios("violent", fast_runs, times)
     worst = scoring.worst_run(fast_runs, ratios)
     if worst is not None:
         near = grid_disk(fast_runs[worst].cell, detours.NEAR_RINGS)
-        hour = hours[worst]
-        await scorer.load(set(near), {hour} if hour is not None else set())
+        when = times[worst]
+        await scorer.load(set(near), {when})
         candidates = []
         for cell in near:
             probe = scoring.Run(cell, 1.0, fast_runs[worst].t_offset_s)
-            r = scorer.ratios("violent", [probe], [hour])[0]
+            r = scorer.ratios("violent", [probe], [when])[0]
             if r is not None and r < (ratios[worst] or 0):
                 candidates.append((r, cell))
         if candidates:
@@ -598,7 +631,10 @@ async def directions(body: DirectionsRequest, request: Request) -> JSONResponse:
 
     departure = _departure(city, body.depart_at)
 
-    context = await db(_window_and_baseline, city["source_id"], body.window)
+    # The departure's weekday and the next: a trip, or a transit itinerary
+    # that leaves later, can run past midnight.
+    days = tuple(sorted({departure.weekday(), (departure + timedelta(days=1)).weekday()}))
+    context = await db(_window_and_baseline, city["source_id"], body.window, days)
     window = context["window"]
     scorer = _Scorer(
         city["source_id"],
@@ -625,18 +661,18 @@ async def directions(body: DirectionsRequest, request: Request) -> JSONResponse:
         raise NoRoute(reason="nothing left after filtering")
 
     runs = [scoring.route_runs(r) for r in routes]
-    hours = [scorer.hours(r, rr) for r, rr in zip(routes, runs)]
+    times = [scorer.times(r, rr) for r, rr in zip(routes, runs)]
     await scorer.load(
         set().union(*(scoring.route_cells(rr) for rr in runs)),
-        {h for hs in hours for h in hs if h is not None},
+        {t for ts in times for t in ts},
     )
 
     activity: dict[str, list[dict[str, Any]]] = {}
     picks: dict[str, dict[str, Any]] = {}
     for track in scoring.TRACKS:
         activity[track] = [
-            scoring.track_activity(rr, scorer.ratios(track, rr, hs))
-            for rr, hs in zip(runs, hours)
+            scoring.track_activity(rr, scorer.ratios(track, rr, ts))
+            for rr, ts in zip(runs, times)
         ]
         picks[track] = scoring.pick(body.mode, routes, activity[track])
 
@@ -665,8 +701,10 @@ async def directions(body: DirectionsRequest, request: Request) -> JSONResponse:
             "depart_at": departure.strftime("%Y-%m-%dT%H:%M"),
             "timezone": str(departure.tzinfo),
             "window": {"id": window["id"], "label": window["label"]} if window else None,
-            # Whether each stretch was compared at the hour it would be passed.
+            # Whether each stretch was compared at the hour it would be passed,
+            # and on the weekday too.
             "hourly": scorer.hourly,
+            "daily": scorer.daily,
             "routes": out_routes,
             "picks": picks,
             "rules": {

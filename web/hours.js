@@ -40,6 +40,52 @@
     return date.getHours();
   }
 
+  /* The day of the week, Monday first: 0 = Monday ... 6 = Sunday, as
+     gold.cell_dow_factor numbers it (022_day_of_week.sql). */
+  const DAY_BLOCKS = 7;
+  const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  /* Weekday counts need more behind them than hours do before one day is
+     read against the rest: a week split seven ways at a few incidents a day
+     is mostly noise. Matches the ETL's DAY_SHAPE_PRIOR. */
+  const MIN_DAY_EVIDENCE = 28;
+
+  /** The local weekday 0-6 (0 = Monday) at `date` in `timeZone`; the
+      browser's own when the zone is missing or unknown to this browser. */
+  function cityDay(timeZone, date = new Date()) {
+    if (timeZone) {
+      try {
+        const name = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "long" }).format(date);
+        const day = DAY_NAMES.indexOf(name);
+        if (day >= 0) return day;
+      } catch {
+        /* RangeError for a zone this browser does not know; fall through. */
+      }
+    }
+    return (date.getDay() + 6) % DAY_BLOCKS;
+  }
+
+  /** "Saturday" for 5. */
+  function dayName(day) {
+    return DAY_NAMES[((day % DAY_BLOCKS) + DAY_BLOCKS) % DAY_BLOCKS];
+  }
+
+  /**
+   * This weekday against the cell's average day, from the 7-day profile.
+   * The same shape as hourVsUsual, with its own evidence floor.
+   */
+  function dayVsUsual(counts, day, { minTotal = MIN_DAY_EVIDENCE } = {}) {
+    if (!Array.isArray(counts) || counts.length !== DAY_BLOCKS) return null;
+    if (!Number.isInteger(day) || day < 0 || day >= DAY_BLOCKS) return null;
+    const total = counts.reduce((sum, n) => sum + n, 0);
+    if (total < minTotal) return null;
+
+    const average = total / DAY_BLOCKS;
+    const change = counts[day] / average - 1;
+    const direction =
+      change > USUAL_DEADBAND ? "up" : change < -USUAL_DEADBAND ? "down" : "flat";
+    return { direction, change, count: counts[day], average, max: Math.max(...counts, 1) };
+  }
+
   /** The local time at `date` in `timeZone` for display, e.g. "10:13 PM", or
       "10:13 PM EDT" with `zoneName`; the browser's own clock when the zone is
       unknown. `date` is an instant (UTC underneath); Intl converts it to the
@@ -166,6 +212,9 @@
   }
 
   root.cityHour = cityHour;
+  root.cityDay = cityDay;
+  root.dayName = dayName;
+  root.dayVsUsual = dayVsUsual;
   root.cityTimeLabel = cityTimeLabel;
   root.hourVsUsual = hourVsUsual;
   root.hourOutlook = hourOutlook;

@@ -391,6 +391,15 @@ function periodParams() {
 const hourLabel = (hour) =>
   `${String(hour).padStart(2, "0")}:00–${String(hour + 1).padStart(2, "0")}:00`;
 
+/** "Saturday 20:00–21:00", "Saturday" or "20:00–21:00": the time the h*
+    ratings are for, or null for all hours on all days. */
+function timedLabel() {
+  const parts = [];
+  if (state.day !== null) parts.push(dayName(state.day));
+  if (state.hour !== null) parts.push(hourLabel(state.hour));
+  return parts.length ? parts.join(" ") : null;
+}
+
 const CATEGORY_LABELS = {
   violent: "Violent",
   property: "Property",
@@ -426,6 +435,10 @@ const state = {
   // Picked in the time-of-day control; cleared by syncHourAvailability where
   // the window or cell size has no hourly layer.
   hour: null,
+  // The selected weekday 0-6 (0 = Monday) on the city's calendar, or null for
+  // all days. Scales the rating by each cell's day factor (022); available
+  // and cleared where the hour is.
+  day: null,
   selected: null,
   hovered: null,
   meta: null,
@@ -516,7 +529,9 @@ let map;
     rate anywhere stays in the neutral fill. */
 function paintedMeasure() {
   const props = TRACK_PROPS[state.track];
-  const hourly = state.hour !== null;
+  // An hour, a day or both: the h* properties then hold the rating for that
+  // time, ranked by the server (the `timed` layer).
+  const hourly = state.hour !== null || state.day !== null;
 
   const valueProp = state.scale === "safety"
     ? (hourly ? props.hrate : props.rate)
@@ -806,6 +821,7 @@ async function loadLayer({ quiet = false } = {}) {
     category: state.category,
   });
   if (state.hour !== null) params.set("hour", String(state.hour));
+  if (state.day !== null) params.set("day", String(state.day));
 
   try {
     const response = await fetch(`${API}/cells?${params}`, { signal: controller.signal });
@@ -1550,14 +1566,20 @@ function showCellPopup(h3Index, detail) {
     : ratio > 1.05 ? "higher than the city average"
     : ratio < 0.95 ? "lower than the city average"
     : "about the city average";
+  // "Saturday at 10 PM": the time the rating is for, when the map has one.
+  const when = [
+    state.day !== null ? dayName(state.day) : null,
+    state.hour !== null ? `at ${hourName(state.hour)}` : null,
+  ].filter(Boolean).join(" ");
+  const at = when ? `${when} · ` : "";
   const rating = ratio === null
     ? {
         value: "—",
-        label: `no ${track} risk rating for this cell · ${windowLabel}`,
+        label: `no ${track} risk rating for this cell · ${at}${windowLabel}`,
       }
     : {
         value: formatRatio(ratio),
-        label: `relative ${track} risk — ${sense} · ${windowLabel}`,
+        label: `relative ${track} risk — ${sense} · ${at}${windowLabel}`,
       };
 
   const counts = detail.hour_profile?.[state.track];
@@ -1587,10 +1609,36 @@ function showCellPopup(h3Index, detail) {
         The usual pattern here, not a forecast.</div>`
     : html`<div class="cp-foot">No incidents here with a recorded hour.</div>`;
 
+  // The week: this cell's incidents on each weekday, today's bar dark -- the
+  // day the rating above is for when the map is on today.
+  const days = detail.day_profile?.[state.track];
+  const today = cityDay(state.cityRecord?.timezone);
+  const week = days && days.some((n) => n > 0)
+    ? (() => {
+        const most = Math.max(...days, 1);
+        const vs = dayVsUsual(days, today);
+        const sentence = !vs
+          ? "Too few incidents here to compare days of the week."
+          : vs.direction === "flat"
+            ? `${dayName(today)}s here are about an average day.`
+            : `${dayName(today)}s here see ${pctOf(vs.change)} ${vs.direction === "up" ? "more" : "fewer"} ` +
+              `${TRACK_LABELS[state.track]} incidents than an average day.`;
+        return html`<div class="cp-sub">By day of the week</div>
+          <div class="hours days" role="img" aria-label="Reported ${TRACK_LABELS[state.track]} offences by day of the week">${days.map((n, day) => {
+            const height = Math.max((n / most) * 100, n > 0 ? 4 : 0);
+            const on = n > 0 ? html` data-on` : "";
+            const current = day === today ? html` data-selected` : "";
+            return html`<i style="height:${height}%"${on}${current} title="${dayName(day)}: ${nf.format(n)}"></i>`;
+          })}</div>
+          <div class="days-axis">${days.map((_, day) => html`<span>${dayName(day).slice(0, 3)}</span>`)}</div>
+          <div class="cp-outlook">${sentence}</div>`;
+      })()
+    : "";
+
   const box = document.createElement("div");
   box.className = "cp";
   box.innerHTML = html`<div class="cp-value">${rating.value}</div>
-    <div class="cp-label">${rating.label}</div>${chart}`;
+    <div class="cp-label">${rating.label}</div>${chart}${week}`;
 
   const [lat, lng] = h3.cellToLatLng(h3Index);
   // closeOnClick off: the map's own click handler decides, so clicking a
@@ -1618,11 +1666,11 @@ function renderTable() {
   $("table-caption").textContent =
     `Cells by reported incident count — ${state.features.length} cells, ` +
     `showing the top ${rows.length}` +
-    (state.hour === null ? "" : ` · ratings at ${hourLabel(state.hour)}`);
+    (timedLabel() === null ? "" : ` · ratings at ${timedLabel()}`);
 
   const props = TRACK_PROPS[state.track];
   $("th-hour-safety").textContent =
-    state.hour === null ? "At hour" : `At ${hourLabel(state.hour)}`;
+    timedLabel() === null ? "At hour" : `At ${timedLabel()}`;
 
   const pct = (value) =>
     value === null || value === undefined ? "—" : `${(value * 100).toFixed(1)}%`;
@@ -2594,7 +2642,9 @@ function renderDirections() {
   $("dir-track").textContent =
     `Compared on ${track} offences (the map's selected ranking), against ` +
     `${result.window?.label?.toLowerCase() ?? "the city"}` +
-    (result.hourly ? ", at the hour each stretch would be passed." : ", all hours.");
+    (result.daily
+      ? ", at the day and hour each stretch would be passed."
+      : result.hourly ? ", at the hour each stretch would be passed." : ", all hours.");
 
   $("dir-cards").innerHTML = html`${cards.map((card) => {
     const route = result.routes[card.index];
@@ -3017,6 +3067,11 @@ function syncHourAvailability() {
   select.disabled = !ok;
   if (!ok) state.hour = null;
   select.value = state.hour === null ? "all" : String(state.hour);
+  // The day factor is built where the hour layer is, by the same run.
+  const daySelect = $("f-day");
+  daySelect.disabled = !ok;
+  if (!ok) state.day = null;
+  daySelect.value = state.day === null ? "all" : String(state.day);
 
   // Explanations ride on the tooltip so nothing sits under the control.
   if (!ok) {
@@ -3228,6 +3283,11 @@ function wireControls() {
     if (state.selected) selectCell(state.selected);
     loadLayer();
   };
+  $("f-day").onchange = (e) => {
+    state.day = e.target.value === "all" ? null : Number(e.target.value);
+    if (state.selected) selectCell(state.selected);
+    loadLayer();
+  };
   $("f-category").onchange = (e) => {
     state.category = e.target.value;
     loadLayer();
@@ -3365,6 +3425,8 @@ function watchForRefresh() {
   // clock (web/hours.js). syncHourAvailability falls back to all hours where
   // the opening window has no hourly layer.
   state.hour = cityHour(state.cityRecord?.timezone);
+  // And on today's weekday there, likewise.
+  state.day = cityDay(state.cityRecord?.timezone);
   syncHourAvailability();
   syncSafetyAvailability();
   await loadLayer();
