@@ -2291,14 +2291,17 @@ async function showPlace(place) {
   pinPlace(place, cell);
 }
 
-/** Right-click on the map. With the directions panel open it sets the start
-    (pinClickedStart); otherwise it pins that point where it is, with no
+/** Right-click on the map. The first pins that point where it is, with no
     camera move, and fills the search box with the nearest address -- a way
-    to find an address by pointing at it. Directions then work as for a typed
-    one. */
+    to find an address by pointing at it. Once there is a destination, the
+    next sets the start instead (pinClickedStart), opening the directions
+    panel if it is not open; a new destination starts from Clear or a search. */
 async function pinClickedPoint(lngLat) {
   const point = { lat: lngLat.lat, lng: lngLat.lng };
-  if (dir.open) return pinClickedStart(point);
+  if (search.place) {
+    if (!dir.open) openDirections({ focus: false });
+    return pinClickedStart(point);
+  }
   const seq = ++search.seq;
   clearSearchPin();
   const problem = pointProblem(point, "That point");
@@ -2318,9 +2321,9 @@ async function pinClickedPoint(lngLat) {
   pinPlace(place, cell);
 }
 
-/** Right-click with the directions panel open: the same, for the start. Its
-    A pin goes down at once, the start box fills with the nearest address,
-    and the route is asked for. */
+/** Right-click once there is a destination: the same, for the start. Its A
+    pin goes down at once, the start box fills with the nearest address, and
+    the route is asked for. */
 async function pinClickedStart(point) {
   const seq = ++dir.fromSeq;
   const problem = pointProblem(point, "That start");
@@ -2383,7 +2386,9 @@ function resetSearch() {
 
 /* ---- the directions panel */
 
-function openDirections() {
+/** `focus: false` leaves the start box unfocused -- for a right-click, which
+    fills it, so a phone does not raise its keyboard. */
+function openDirections({ focus = true } = {}) {
   if (!search.place) return;
   dir.open = true;
   $("dir-panel").hidden = false;
@@ -2396,7 +2401,7 @@ function openDirections() {
   search.marker?.remove();
   placeMarkers();
   if (dir.result) drawRoutes();
-  $("dir-from").focus();
+  if (focus) $("dir-from").focus();
 }
 
 function closeDirections() {
