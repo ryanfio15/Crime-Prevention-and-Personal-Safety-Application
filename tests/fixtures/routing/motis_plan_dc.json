@@ -1,0 +1,1169 @@
+{
+ "requestParameters": {},
+ "debugOutput": {
+  "algorithm": 1,
+  "direct": 50,
+  "execute_time": 27,
+  "fares": 0,
+  "fastest_direct": 0,
+  "fp_update_prevented_by_lower_bound": 0,
+  "gpu_supported": 1,
+  "gpu_used": 1,
+  "interval_extensions": 0,
+  "lb_time": 0,
+  "n_dest_offsets": 132,
+  "n_earliest_arrival_updated_by_footpath": 0,
+  "n_earliest_arrival_updated_by_route": 0,
+  "n_earliest_trip_calls": 0,
+  "n_events_skipped_by_early_termination": 0,
+  "n_execute_bwd": 5,
+  "n_execute_fwd": 5,
+  "n_footpaths_visited": 0,
+  "n_routes_visited": 0,
+  "n_routing_time": 0,
+  "n_start_offsets": 87,
+  "n_td_dest_offsets": 0,
+  "n_td_start_offsets": 0,
+  "prepare": 38,
+  "prepare_backward_WALK": 17,
+  "prepare_forward_WALK": 20,
+  "route_update_prevented_by_lower_bound": 0,
+  "search_interval_reduction_by_early_termination": 0
+ },
+ "from": {
+  "name": "START",
+  "lat": 38.8973,
+  "lon": -77.0063,
+  "vertexType": "NORMAL"
+ },
+ "to": {
+  "name": "END",
+  "lat": 38.9096,
+  "lon": -77.0434,
+  "vertexType": "NORMAL"
+ },
+ "direct": [],
+ "itineraries": [
+  {
+   "duration": 840,
+   "startTime": "2026-11-02T22:03:00Z",
+   "endTime": "2026-11-02T22:17:00Z",
+   "transfers": 0,
+   "id": "ClMhtFn1udpyQ0Apv30dOGdAU8AyGXVzLWRjLVdNQVRBLXJhaWxfUEZfQjAzX0M5tkYE4+ByQ0BBzgGCOXpAU8BIlJGk1wZQhJOk1wZaBFdBTEtgAQqjAQoBUhIuMjAyNjExMDJfMTY6NDRfdXMtZGMtV01BVEEtcmFpbF8xMTk2OTUzMl8yMDc1NRoZdXMtZGMtV01BVEEtcmFpbF9QRl9CMDNfQyG2RgTj4HJDQCnOAYI5ekBTwDIZdXMtZGMtV01BVEEtcmFpbF9QRl9BMDNfMjk57L5jeHRDQEFGmQ0yyUJTwEiEk6TXBlCgl6TXBloGU1VCV0FZYAEKUxoZdXMtZGMtV01BVEEtcmFpbF9QRl9BMDNfMiE57L5jeHRDQClGmQ0yyUJTwDmGONbFbXRDQEFfKcsQx0JTwEigl6TXBlDcl6TXBloEV0FMS2AB",
+   "legs": [
+    {
+     "mode": "WALK",
+     "from": {
+      "name": "START",
+      "lat": 38.8973,
+      "lon": -77.0063,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T22:03:00Z",
+      "scheduledDeparture": "2026-11-02T22:03:00Z",
+      "vertexType": "NORMAL"
+     },
+     "to": {
+      "name": "Union Station",
+      "stopId": "us-dc-WMATA-rail_PF_B03_C",
+      "parentId": "us-dc-WMATA-rail_STN_B03",
+      "importance": 0.0014457311481237411,
+      "lat": 38.897487999999996,
+      "lon": -77.00746000000001,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:07:00Z",
+      "scheduledArrival": "2026-11-02T22:07:00Z",
+      "description": "Red Line to Glenmont | to Shady Grove",
+      "vertexType": "TRANSIT",
+      "modes": [
+       "SUBWAY",
+       "BUS"
+      ]
+     },
+     "duration": 240,
+     "startTime": "2026-11-02T22:03:00Z",
+     "endTime": "2026-11-02T22:07:00Z",
+     "scheduledStartTime": "2026-11-02T22:03:00Z",
+     "scheduledEndTime": "2026-11-02T22:07:00Z",
+     "realTime": false,
+     "scheduled": false,
+     "distance": 214.0,
+     "legGeometry": {
+      "points": "{gbeiA|za{qClHjB??~Cx@??|A`@??U`Bk@zD??Mv@cA`I{E~]g@vDKn@??vA`@??v@T??Kz@EZQhA]tA_@t@{@n@cA\\s@Fs@O}@i@w@w@W[KI??i@tD??c@Kc@IkEmAoDaA??lBXjCRf@EEY??",
+      "precision": 6,
+      "length": 46
+     },
+     "steps": [
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 17.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "toOsmNode": 3000430330,
+       "polyline": {
+        "points": "{gbeiA|za{qClHjB",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 9.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 911650844,
+       "fromOsmNode": 3000430330,
+       "toOsmNode": 12460932562,
+       "polyline": {
+        "points": "m~aeiAh~a{qC~Cx@",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 5.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 911650844,
+       "fromOsmNode": 12460932562,
+       "toOsmNode": 8464826425,
+       "polyline": {
+        "points": "myaeiAb`b{qC|A`@",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      }
+     ]
+    },
+    {
+     "mode": "SUBWAY",
+     "from": {
+      "name": "Union Station",
+      "stopId": "us-dc-WMATA-rail_PF_B03_C",
+      "parentId": "us-dc-WMATA-rail_STN_B03",
+      "importance": 0.0014457311481237411,
+      "lat": 38.897487999999996,
+      "lon": -77.00746000000001,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T22:07:00Z",
+      "scheduledDeparture": "2026-11-02T22:07:00Z",
+      "description": "Red Line to Glenmont | to Shady Grove",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY",
+       "BUS"
+      ]
+     },
+     "to": {
+      "name": "Dupont Circle",
+      "stopId": "us-dc-WMATA-rail_PF_A03_2",
+      "parentId": "us-dc-WMATA-rail_STN_A03",
+      "importance": 0.0014453381299972534,
+      "lat": 38.909924,
+      "lon": -77.04353,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:16:00Z",
+      "scheduledArrival": "2026-11-02T22:16:00Z",
+      "description": "Red Line to Shady Grove",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY"
+      ]
+     },
+     "duration": 540,
+     "startTime": "2026-11-02T22:07:00Z",
+     "endTime": "2026-11-02T22:16:00Z",
+     "scheduledStartTime": "2026-11-02T22:07:00Z",
+     "scheduledEndTime": "2026-11-02T22:16:00Z",
+     "realTime": false,
+     "scheduled": true,
+     "interlineWithPreviousLeg": false,
+     "headsign": "Shady Grove",
+     "tripFrom": {
+      "name": "Glenmont",
+      "stopId": "us-dc-WMATA-rail_PF_B11_C",
+      "parentId": "us-dc-WMATA-rail_STN_B11",
+      "importance": 0.001459085033275187,
+      "lat": 39.06176,
+      "lon": -77.05354,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T21:44:00Z",
+      "scheduledDeparture": "2026-11-02T21:44:00Z",
+      "description": "Red Line to Shady Grove",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY"
+      ]
+     },
+     "tripTo": {
+      "name": "Shady Grove",
+      "stopId": "us-dc-WMATA-rail_PF_A15_C",
+      "parentId": "us-dc-WMATA-rail_STN_A15",
+      "importance": 0.0014559528790414333,
+      "lat": 39.119915000000006,
+      "lon": -77.16466000000001,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:46:00Z",
+      "scheduledArrival": "2026-11-02T22:46:00Z",
+      "description": "Red Line to Glenmont",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY"
+      ]
+     },
+     "routeId": "us-dc-WMATA-rail_RED",
+     "routeUrl": "",
+     "directionId": "1",
+     "routeColor": "c80f2d",
+     "routeTextColor": "ffffff",
+     "routeType": 1,
+     "agencyName": "WMATA",
+     "agencyUrl": "http://www.wmata.com",
+     "agencyFareUrl": "https://www.wmata.com/fares/",
+     "agencyId": "1",
+     "tripId": "20261102_16:44_us-dc-WMATA-rail_11969532_20755",
+     "routeShortName": "R",
+     "routeLongName": "Red",
+     "tripShortName": "",
+     "displayName": "R",
+     "cancelled": false,
+     "source": "us-dc_WMATA-rail.gtfs.zip/stop_times.txt:182110:182136",
+     "intermediateStops": [
+      {
+       "name": "Judiciary Sq",
+       "stopId": "us-dc-WMATA-rail_PF_B02_2",
+       "parentId": "us-dc-WMATA-rail_STN_B02",
+       "importance": 0.0014453381299972534,
+       "lat": 38.896255000000004,
+       "lon": -77.01676,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:09:00Z",
+       "departure": "2026-11-02T22:09:00Z",
+       "scheduledArrival": "2026-11-02T22:09:00Z",
+       "scheduledDeparture": "2026-11-02T22:09:00Z",
+       "description": "Red Line to Shady Grove",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "SUBWAY"
+       ]
+      },
+      {
+       "name": "Gallery Place",
+       "stopId": "us-dc-WMATA-rail_PF_B01_2",
+       "parentId": "us-dc-WMATA-rail_STN_B01_F01",
+       "importance": 0.003999244421720505,
+       "lat": 38.89842,
+       "lon": -77.02279999999999,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:11:00Z",
+       "departure": "2026-11-02T22:11:00Z",
+       "scheduledArrival": "2026-11-02T22:11:00Z",
+       "scheduledDeparture": "2026-11-02T22:11:00Z",
+       "description": "Red Line to Shady Grove",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "SUBWAY"
+       ]
+      },
+      {
+       "name": "Metro Center",
+       "stopId": "us-dc-WMATA-rail_PF_A01_2",
+       "parentId": "us-dc-WMATA-rail_STN_A01_C01",
+       "importance": 0.0036443774588406086,
+       "lat": 38.898376000000006,
+       "lon": -77.02807999999999,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:12:00Z",
+       "departure": "2026-11-02T22:12:00Z",
+       "scheduledArrival": "2026-11-02T22:12:00Z",
+       "scheduledDeparture": "2026-11-02T22:12:00Z",
+       "description": "Red Line to Shady Grove",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "SUBWAY"
+       ]
+      }
+     ],
+     "legGeometry": {
+      "points": "_tbeiAfed{qCjFlBMp@Lq@vx@hSjNfElLzEtKbGjJjHvGjHjInKxGbLjFtMdE`M`DfOlBzOvAjR^jRIfYoCb{DiBv[gEjWoIfYoM~W_g@zw@sIoKrInKsIoKrInKs~AzfC{OfYcInQkGjRoEhSeD|TqB~[g@zc@?f^gB?fB??naD|An~B?v|Ad@?e@?d@?e@??nyGMv[u@vU{AzUqCnUeExUuI`]w_@~mAcKxZiLtWgOvVqMnPmOrNaOzKkSjLweB~z@f@bBg@cBf@bBg@cBwyOxwHjIt\\jiAwrA",
+      "precision": 6,
+      "length": 70
+     },
+     "bikesAllowed": false,
+     "wheelchairAccessible": "NOT_ACCESSIBLE",
+     "reservation": "NONE",
+     "alternatives": []
+    },
+    {
+     "mode": "WALK",
+     "from": {
+      "name": "Dupont Circle",
+      "stopId": "us-dc-WMATA-rail_PF_A03_2",
+      "parentId": "us-dc-WMATA-rail_STN_A03",
+      "importance": 0.0014453381299972534,
+      "lat": 38.909924,
+      "lon": -77.04353,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:16:00Z",
+      "departure": "2026-11-02T22:16:00Z",
+      "scheduledArrival": "2026-11-02T22:16:00Z",
+      "scheduledDeparture": "2026-11-02T22:16:00Z",
+      "description": "Red Line to Shady Grove",
+      "vertexType": "TRANSIT",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY"
+      ]
+     },
+     "to": {
+      "name": "END",
+      "lat": 38.9096,
+      "lon": -77.0434,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:17:00Z",
+      "scheduledArrival": "2026-11-02T22:17:00Z",
+      "vertexType": "NORMAL"
+     },
+     "duration": 60,
+     "startTime": "2026-11-02T22:16:00Z",
+     "endTime": "2026-11-02T22:17:00Z",
+     "scheduledStartTime": "2026-11-02T22:16:00Z",
+     "scheduledEndTime": "2026-11-02T22:17:00Z",
+     "realTime": false,
+     "scheduled": false,
+     "distance": 37.0,
+     "legGeometry": {
+      "points": "_}zeiAhtj}qCdRcJ",
+      "precision": 6,
+      "length": 2
+     },
+     "steps": [
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 37.0,
+       "fromLevel": -2.0,
+       "toLevel": -2.0,
+       "osmWay": 1556371883,
+       "polyline": {
+        "points": "_}zeiAhtj}qCdRcJ",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "duration": 840,
+   "startTime": "2026-11-02T22:07:00Z",
+   "endTime": "2026-11-02T22:21:00Z",
+   "transfers": 0,
+   "id": "ClMhtFn1udpyQ0Apv30dOGdAU8AyGXVzLWRjLVdNQVRBLXJhaWxfUEZfQjAzX0M5tkYE4+ByQ0BBzgGCOXpAU8BIhJOk1wZQ9JSk1wZaBFdBTEtgAQqjAQoBUhIuMjAyNjExMDJfMTY6NDhfdXMtZGMtV01BVEEtcmFpbF8xMTk2OTUyOV8yMDc1NRoZdXMtZGMtV01BVEEtcmFpbF9QRl9CMDNfQyG2RgTj4HJDQCnOAYI5ekBTwDIZdXMtZGMtV01BVEEtcmFpbF9QRl9BMDNfMjk57L5jeHRDQEFGmQ0yyUJTwEj0lKTXBlCQmaTXBloGU1VCV0FZYAEKUxoZdXMtZGMtV01BVEEtcmFpbF9QRl9BMDNfMiE57L5jeHRDQClGmQ0yyUJTwDmGONbFbXRDQEFfKcsQx0JTwEiQmaTXBlDMmaTXBloEV0FMS2AB",
+   "legs": [
+    {
+     "mode": "WALK",
+     "from": {
+      "name": "START",
+      "lat": 38.8973,
+      "lon": -77.0063,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T22:07:00Z",
+      "scheduledDeparture": "2026-11-02T22:07:00Z",
+      "vertexType": "NORMAL"
+     },
+     "to": {
+      "name": "Union Station",
+      "stopId": "us-dc-WMATA-rail_PF_B03_C",
+      "parentId": "us-dc-WMATA-rail_STN_B03",
+      "importance": 0.0014457311481237411,
+      "lat": 38.897487999999996,
+      "lon": -77.00746000000001,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:11:00Z",
+      "scheduledArrival": "2026-11-02T22:11:00Z",
+      "description": "Red Line to Glenmont | to Shady Grove",
+      "vertexType": "TRANSIT",
+      "modes": [
+       "SUBWAY",
+       "BUS"
+      ]
+     },
+     "duration": 240,
+     "startTime": "2026-11-02T22:07:00Z",
+     "endTime": "2026-11-02T22:11:00Z",
+     "scheduledStartTime": "2026-11-02T22:07:00Z",
+     "scheduledEndTime": "2026-11-02T22:11:00Z",
+     "realTime": false,
+     "scheduled": false,
+     "distance": 214.0,
+     "legGeometry": {
+      "points": "{gbeiA|za{qClHjB??~Cx@??|A`@??U`Bk@zD??Mv@cA`I{E~]g@vDKn@??vA`@??v@T??Kz@EZQhA]tA_@t@{@n@cA\\s@Fs@O}@i@w@w@W[KI??i@tD??c@Kc@IkEmAoDaA??lBXjCRf@EEY??",
+      "precision": 6,
+      "length": 46
+     },
+     "steps": [
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 17.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "toOsmNode": 3000430330,
+       "polyline": {
+        "points": "{gbeiA|za{qClHjB",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 9.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 911650844,
+       "fromOsmNode": 3000430330,
+       "toOsmNode": 12460932562,
+       "polyline": {
+        "points": "m~aeiAh~a{qC~Cx@",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 5.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 911650844,
+       "fromOsmNode": 12460932562,
+       "toOsmNode": 8464826425,
+       "polyline": {
+        "points": "myaeiAb`b{qC|A`@",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      }
+     ]
+    },
+    {
+     "mode": "SUBWAY",
+     "from": {
+      "name": "Union Station",
+      "stopId": "us-dc-WMATA-rail_PF_B03_C",
+      "parentId": "us-dc-WMATA-rail_STN_B03",
+      "importance": 0.0014457311481237411,
+      "lat": 38.897487999999996,
+      "lon": -77.00746000000001,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T22:11:00Z",
+      "scheduledDeparture": "2026-11-02T22:11:00Z",
+      "description": "Red Line to Glenmont | to Shady Grove",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY",
+       "BUS"
+      ]
+     },
+     "to": {
+      "name": "Dupont Circle",
+      "stopId": "us-dc-WMATA-rail_PF_A03_2",
+      "parentId": "us-dc-WMATA-rail_STN_A03",
+      "importance": 0.0014453381299972534,
+      "lat": 38.909924,
+      "lon": -77.04353,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:20:00Z",
+      "scheduledArrival": "2026-11-02T22:20:00Z",
+      "description": "Red Line to Shady Grove",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY"
+      ]
+     },
+     "duration": 540,
+     "startTime": "2026-11-02T22:11:00Z",
+     "endTime": "2026-11-02T22:20:00Z",
+     "scheduledStartTime": "2026-11-02T22:11:00Z",
+     "scheduledEndTime": "2026-11-02T22:20:00Z",
+     "realTime": false,
+     "scheduled": true,
+     "interlineWithPreviousLeg": false,
+     "headsign": "Shady Grove",
+     "tripFrom": {
+      "name": "Glenmont",
+      "stopId": "us-dc-WMATA-rail_PF_B11_C",
+      "parentId": "us-dc-WMATA-rail_STN_B11",
+      "importance": 0.001459085033275187,
+      "lat": 39.06176,
+      "lon": -77.05354,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T21:48:00Z",
+      "scheduledDeparture": "2026-11-02T21:48:00Z",
+      "description": "Red Line to Shady Grove",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY"
+      ]
+     },
+     "tripTo": {
+      "name": "Shady Grove",
+      "stopId": "us-dc-WMATA-rail_PF_A15_C",
+      "parentId": "us-dc-WMATA-rail_STN_A15",
+      "importance": 0.0014559528790414333,
+      "lat": 39.119915000000006,
+      "lon": -77.16466000000001,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:50:00Z",
+      "scheduledArrival": "2026-11-02T22:50:00Z",
+      "description": "Red Line to Glenmont",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY"
+      ]
+     },
+     "routeId": "us-dc-WMATA-rail_RED",
+     "routeUrl": "",
+     "directionId": "1",
+     "routeColor": "c80f2d",
+     "routeTextColor": "ffffff",
+     "routeType": 1,
+     "agencyName": "WMATA",
+     "agencyUrl": "http://www.wmata.com",
+     "agencyFareUrl": "https://www.wmata.com/fares/",
+     "agencyId": "1",
+     "tripId": "20261102_16:48_us-dc-WMATA-rail_11969529_20755",
+     "routeShortName": "R",
+     "routeLongName": "Red",
+     "tripShortName": "",
+     "displayName": "R",
+     "cancelled": false,
+     "source": "us-dc_WMATA-rail.gtfs.zip/stop_times.txt:182029:182055",
+     "intermediateStops": [
+      {
+       "name": "Judiciary Sq",
+       "stopId": "us-dc-WMATA-rail_PF_B02_2",
+       "parentId": "us-dc-WMATA-rail_STN_B02",
+       "importance": 0.0014453381299972534,
+       "lat": 38.896255000000004,
+       "lon": -77.01676,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:13:00Z",
+       "departure": "2026-11-02T22:13:00Z",
+       "scheduledArrival": "2026-11-02T22:13:00Z",
+       "scheduledDeparture": "2026-11-02T22:13:00Z",
+       "description": "Red Line to Shady Grove",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "SUBWAY"
+       ]
+      },
+      {
+       "name": "Gallery Place",
+       "stopId": "us-dc-WMATA-rail_PF_B01_2",
+       "parentId": "us-dc-WMATA-rail_STN_B01_F01",
+       "importance": 0.003999244421720505,
+       "lat": 38.89842,
+       "lon": -77.02279999999999,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:15:00Z",
+       "departure": "2026-11-02T22:15:00Z",
+       "scheduledArrival": "2026-11-02T22:15:00Z",
+       "scheduledDeparture": "2026-11-02T22:15:00Z",
+       "description": "Red Line to Shady Grove",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "SUBWAY"
+       ]
+      },
+      {
+       "name": "Metro Center",
+       "stopId": "us-dc-WMATA-rail_PF_A01_2",
+       "parentId": "us-dc-WMATA-rail_STN_A01_C01",
+       "importance": 0.0036443774588406086,
+       "lat": 38.898376000000006,
+       "lon": -77.02807999999999,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:16:00Z",
+       "departure": "2026-11-02T22:16:00Z",
+       "scheduledArrival": "2026-11-02T22:16:00Z",
+       "scheduledDeparture": "2026-11-02T22:16:00Z",
+       "description": "Red Line to Shady Grove",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "SUBWAY"
+       ]
+      }
+     ],
+     "legGeometry": {
+      "points": "_tbeiAfed{qCjFlBMp@Lq@vx@hSjNfElLzEtKbGjJjHvGjHjInKxGbLjFtMdE`M`DfOlBzOvAjR^jRIfYoCb{DiBv[gEjWoIfYoM~W_g@zw@sIoKrInKsIoKrInKs~AzfC{OfYcInQkGjRoEhSeD|TqB~[g@zc@?f^gB?fB??naD|An~B?v|Ad@?e@?d@?e@??nyGMv[u@vU{AzUqCnUeExUuI`]w_@~mAcKxZiLtWgOvVqMnPmOrNaOzKkSjLweB~z@f@bBg@cBf@bBg@cBwyOxwHjIt\\jiAwrA",
+      "precision": 6,
+      "length": 70
+     },
+     "bikesAllowed": false,
+     "wheelchairAccessible": "NOT_ACCESSIBLE",
+     "reservation": "NONE",
+     "alternatives": []
+    },
+    {
+     "mode": "WALK",
+     "from": {
+      "name": "Dupont Circle",
+      "stopId": "us-dc-WMATA-rail_PF_A03_2",
+      "parentId": "us-dc-WMATA-rail_STN_A03",
+      "importance": 0.0014453381299972534,
+      "lat": 38.909924,
+      "lon": -77.04353,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:20:00Z",
+      "departure": "2026-11-02T22:20:00Z",
+      "scheduledArrival": "2026-11-02T22:20:00Z",
+      "scheduledDeparture": "2026-11-02T22:20:00Z",
+      "description": "Red Line to Shady Grove",
+      "vertexType": "TRANSIT",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY"
+      ]
+     },
+     "to": {
+      "name": "END",
+      "lat": 38.9096,
+      "lon": -77.0434,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:21:00Z",
+      "scheduledArrival": "2026-11-02T22:21:00Z",
+      "vertexType": "NORMAL"
+     },
+     "duration": 60,
+     "startTime": "2026-11-02T22:20:00Z",
+     "endTime": "2026-11-02T22:21:00Z",
+     "scheduledStartTime": "2026-11-02T22:20:00Z",
+     "scheduledEndTime": "2026-11-02T22:21:00Z",
+     "realTime": false,
+     "scheduled": false,
+     "distance": 37.0,
+     "legGeometry": {
+      "points": "_}zeiAhtj}qCdRcJ",
+      "precision": 6,
+      "length": 2
+     },
+     "steps": [
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 37.0,
+       "fromLevel": -2.0,
+       "toLevel": -2.0,
+       "osmWay": 1556371883,
+       "polyline": {
+        "points": "_}zeiAhtj}qCdRcJ",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "duration": 840,
+   "startTime": "2026-11-02T22:11:00Z",
+   "endTime": "2026-11-02T22:25:00Z",
+   "transfers": 0,
+   "id": "ClMhtFn1udpyQ0Apv30dOGdAU8AyGXVzLWRjLVdNQVRBLXJhaWxfUEZfQjAzX0M5tkYE4+ByQ0BBzgGCOXpAU8BI9JSk1wZQ5Jak1wZaBFdBTEtgAQqjAQoBUhIuMjAyNjExMDJfMTY6NTJfdXMtZGMtV01BVEEtcmFpbF8xMTk2OTUzM18yMDc1NRoZdXMtZGMtV01BVEEtcmFpbF9QRl9CMDNfQyG2RgTj4HJDQCnOAYI5ekBTwDIZdXMtZGMtV01BVEEtcmFpbF9QRl9BMDNfMjk57L5jeHRDQEFGmQ0yyUJTwEjklqTXBlCAm6TXBloGU1VCV0FZYAEKUxoZdXMtZGMtV01BVEEtcmFpbF9QRl9BMDNfMiE57L5jeHRDQClGmQ0yyUJTwDmGONbFbXRDQEFfKcsQx0JTwEiAm6TXBlC8m6TXBloEV0FMS2AB",
+   "legs": [
+    {
+     "mode": "WALK",
+     "from": {
+      "name": "START",
+      "lat": 38.8973,
+      "lon": -77.0063,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T22:11:00Z",
+      "scheduledDeparture": "2026-11-02T22:11:00Z",
+      "vertexType": "NORMAL"
+     },
+     "to": {
+      "name": "Union Station",
+      "stopId": "us-dc-WMATA-rail_PF_B03_C",
+      "parentId": "us-dc-WMATA-rail_STN_B03",
+      "importance": 0.0014457311481237411,
+      "lat": 38.897487999999996,
+      "lon": -77.00746000000001,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:15:00Z",
+      "scheduledArrival": "2026-11-02T22:15:00Z",
+      "description": "Red Line to Glenmont | to Shady Grove",
+      "vertexType": "TRANSIT",
+      "modes": [
+       "SUBWAY",
+       "BUS"
+      ]
+     },
+     "duration": 240,
+     "startTime": "2026-11-02T22:11:00Z",
+     "endTime": "2026-11-02T22:15:00Z",
+     "scheduledStartTime": "2026-11-02T22:11:00Z",
+     "scheduledEndTime": "2026-11-02T22:15:00Z",
+     "realTime": false,
+     "scheduled": false,
+     "distance": 214.0,
+     "legGeometry": {
+      "points": "{gbeiA|za{qClHjB??~Cx@??|A`@??U`Bk@zD??Mv@cA`I{E~]g@vDKn@??vA`@??v@T??Kz@EZQhA]tA_@t@{@n@cA\\s@Fs@O}@i@w@w@W[KI??i@tD??c@Kc@IkEmAoDaA??lBXjCRf@EEY??",
+      "precision": 6,
+      "length": 46
+     },
+     "steps": [
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 17.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "toOsmNode": 3000430330,
+       "polyline": {
+        "points": "{gbeiA|za{qClHjB",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 9.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 911650844,
+       "fromOsmNode": 3000430330,
+       "toOsmNode": 12460932562,
+       "polyline": {
+        "points": "m~aeiAh~a{qC~Cx@",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 5.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 911650844,
+       "fromOsmNode": 12460932562,
+       "toOsmNode": 8464826425,
+       "polyline": {
+        "points": "myaeiAb`b{qC|A`@",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      }
+     ]
+    },
+    {
+     "mode": "SUBWAY",
+     "from": {
+      "name": "Union Station",
+      "stopId": "us-dc-WMATA-rail_PF_B03_C",
+      "parentId": "us-dc-WMATA-rail_STN_B03",
+      "importance": 0.0014457311481237411,
+      "lat": 38.897487999999996,
+      "lon": -77.00746000000001,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T22:15:00Z",
+      "scheduledDeparture": "2026-11-02T22:15:00Z",
+      "description": "Red Line to Glenmont | to Shady Grove",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY",
+       "BUS"
+      ]
+     },
+     "to": {
+      "name": "Dupont Circle",
+      "stopId": "us-dc-WMATA-rail_PF_A03_2",
+      "parentId": "us-dc-WMATA-rail_STN_A03",
+      "importance": 0.0014453381299972534,
+      "lat": 38.909924,
+      "lon": -77.04353,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:24:00Z",
+      "scheduledArrival": "2026-11-02T22:24:00Z",
+      "description": "Red Line to Shady Grove",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY"
+      ]
+     },
+     "duration": 540,
+     "startTime": "2026-11-02T22:15:00Z",
+     "endTime": "2026-11-02T22:24:00Z",
+     "scheduledStartTime": "2026-11-02T22:15:00Z",
+     "scheduledEndTime": "2026-11-02T22:24:00Z",
+     "realTime": false,
+     "scheduled": true,
+     "interlineWithPreviousLeg": false,
+     "headsign": "Shady Grove",
+     "tripFrom": {
+      "name": "Glenmont",
+      "stopId": "us-dc-WMATA-rail_PF_B11_C",
+      "parentId": "us-dc-WMATA-rail_STN_B11",
+      "importance": 0.001459085033275187,
+      "lat": 39.06176,
+      "lon": -77.05354,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T21:52:00Z",
+      "scheduledDeparture": "2026-11-02T21:52:00Z",
+      "description": "Red Line to Shady Grove",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY"
+      ]
+     },
+     "tripTo": {
+      "name": "Shady Grove",
+      "stopId": "us-dc-WMATA-rail_PF_A15_C",
+      "parentId": "us-dc-WMATA-rail_STN_A15",
+      "importance": 0.0014559528790414333,
+      "lat": 39.119915000000006,
+      "lon": -77.16466000000001,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:54:00Z",
+      "scheduledArrival": "2026-11-02T22:54:00Z",
+      "description": "Red Line to Glenmont",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY"
+      ]
+     },
+     "routeId": "us-dc-WMATA-rail_RED",
+     "routeUrl": "",
+     "directionId": "1",
+     "routeColor": "c80f2d",
+     "routeTextColor": "ffffff",
+     "routeType": 1,
+     "agencyName": "WMATA",
+     "agencyUrl": "http://www.wmata.com",
+     "agencyFareUrl": "https://www.wmata.com/fares/",
+     "agencyId": "1",
+     "tripId": "20261102_16:52_us-dc-WMATA-rail_11969533_20755",
+     "routeShortName": "R",
+     "routeLongName": "Red",
+     "tripShortName": "",
+     "displayName": "R",
+     "cancelled": false,
+     "source": "us-dc_WMATA-rail.gtfs.zip/stop_times.txt:182137:182163",
+     "intermediateStops": [
+      {
+       "name": "Judiciary Sq",
+       "stopId": "us-dc-WMATA-rail_PF_B02_2",
+       "parentId": "us-dc-WMATA-rail_STN_B02",
+       "importance": 0.0014453381299972534,
+       "lat": 38.896255000000004,
+       "lon": -77.01676,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:17:00Z",
+       "departure": "2026-11-02T22:17:00Z",
+       "scheduledArrival": "2026-11-02T22:17:00Z",
+       "scheduledDeparture": "2026-11-02T22:17:00Z",
+       "description": "Red Line to Shady Grove",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "SUBWAY"
+       ]
+      },
+      {
+       "name": "Gallery Place",
+       "stopId": "us-dc-WMATA-rail_PF_B01_2",
+       "parentId": "us-dc-WMATA-rail_STN_B01_F01",
+       "importance": 0.003999244421720505,
+       "lat": 38.89842,
+       "lon": -77.02279999999999,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:19:00Z",
+       "departure": "2026-11-02T22:19:00Z",
+       "scheduledArrival": "2026-11-02T22:19:00Z",
+       "scheduledDeparture": "2026-11-02T22:19:00Z",
+       "description": "Red Line to Shady Grove",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "SUBWAY"
+       ]
+      },
+      {
+       "name": "Metro Center",
+       "stopId": "us-dc-WMATA-rail_PF_A01_2",
+       "parentId": "us-dc-WMATA-rail_STN_A01_C01",
+       "importance": 0.0036443774588406086,
+       "lat": 38.898376000000006,
+       "lon": -77.02807999999999,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:20:00Z",
+       "departure": "2026-11-02T22:20:00Z",
+       "scheduledArrival": "2026-11-02T22:20:00Z",
+       "scheduledDeparture": "2026-11-02T22:20:00Z",
+       "description": "Red Line to Shady Grove",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "SUBWAY"
+       ]
+      }
+     ],
+     "legGeometry": {
+      "points": "_tbeiAfed{qCjFlBMp@Lq@vx@hSjNfElLzEtKbGjJjHvGjHjInKxGbLjFtMdE`M`DfOlBzOvAjR^jRIfYoCb{DiBv[gEjWoIfYoM~W_g@zw@sIoKrInKsIoKrInKs~AzfC{OfYcInQkGjRoEhSeD|TqB~[g@zc@?f^gB?fB??naD|An~B?v|Ad@?e@?d@?e@??nyGMv[u@vU{AzUqCnUeExUuI`]w_@~mAcKxZiLtWgOvVqMnPmOrNaOzKkSjLweB~z@f@bBg@cBf@bBg@cBwyOxwHjIt\\jiAwrA",
+      "precision": 6,
+      "length": 70
+     },
+     "bikesAllowed": false,
+     "wheelchairAccessible": "NOT_ACCESSIBLE",
+     "reservation": "NONE",
+     "alternatives": []
+    },
+    {
+     "mode": "WALK",
+     "from": {
+      "name": "Dupont Circle",
+      "stopId": "us-dc-WMATA-rail_PF_A03_2",
+      "parentId": "us-dc-WMATA-rail_STN_A03",
+      "importance": 0.0014453381299972534,
+      "lat": 38.909924,
+      "lon": -77.04353,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:24:00Z",
+      "departure": "2026-11-02T22:24:00Z",
+      "scheduledArrival": "2026-11-02T22:24:00Z",
+      "scheduledDeparture": "2026-11-02T22:24:00Z",
+      "description": "Red Line to Shady Grove",
+      "vertexType": "TRANSIT",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY"
+      ]
+     },
+     "to": {
+      "name": "END",
+      "lat": 38.9096,
+      "lon": -77.0434,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:25:00Z",
+      "scheduledArrival": "2026-11-02T22:25:00Z",
+      "vertexType": "NORMAL"
+     },
+     "duration": 60,
+     "startTime": "2026-11-02T22:24:00Z",
+     "endTime": "2026-11-02T22:25:00Z",
+     "scheduledStartTime": "2026-11-02T22:24:00Z",
+     "scheduledEndTime": "2026-11-02T22:25:00Z",
+     "realTime": false,
+     "scheduled": false,
+     "distance": 37.0,
+     "legGeometry": {
+      "points": "_}zeiAhtj}qCdRcJ",
+      "precision": 6,
+      "length": 2
+     },
+     "steps": [
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 37.0,
+       "fromLevel": -2.0,
+       "toLevel": -2.0,
+       "osmWay": 1556371883,
+       "polyline": {
+        "points": "_}zeiAhtj}qCdRcJ",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "previousPageCursor": "EARLIER|1793656800",
+ "nextPageCursor": "LATER|1793658000"
+}

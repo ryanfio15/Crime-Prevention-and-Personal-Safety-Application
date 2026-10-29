@@ -6,7 +6,7 @@ How to observe, maintain and repair the two instances on the home server. In thi
 
 Contents: [Schedules](#schedules) · [Logs](#logs) · [Health and run history](#health-and-run-history) ·
 [Alerts](#alerts) · [Backups](#backups) · [Limits](#resource-limits-and-scaling) · [Runbook](#runbook) ·
-[What normal looks like](#what-normal-looks-like)
+[Valhalla routing tiles](#valhalla-routing-tiles) · [What normal looks like](#what-normal-looks-like)
 
 ---
 
@@ -24,6 +24,8 @@ All schedules are systemd timers. The host clock is UTC. The ETL timers have no 
 | `safety-backup-verify` | 1st of the month, 03:15 UTC | `backup.sh verify` (test restore of prod). **Has not run yet**; first run 2026-11-01 |
 | `certbot.timer` (distro) | twice daily | `certbot -q renew` |
 | `safety-ops@<i>` | started after every successful deploy; also hourly at :20 UTC once `safety-ops@<i>.timer` is enabled by hand | `safety.ops` (loads history in runs of up to 25 min) |
+| `safety-valhalla-fetch` | Sun 06:30 UTC + up to 30 min, once enabled by hand | `valhalla/fetch.sh` as root: installs the newest routing tiles if they are new ([Valhalla routing tiles](#valhalla-routing-tiles)) |
+| GitHub Actions `valhalla-tiles` | 1st Sunday of the month, 03:30 UTC (not on the host) | `deploy/valhalla/build.sh`, published as release `valhalla-tiles-YYYYMMDD` |
 
 ETL, hourly and ops share the lock `I/data/.etl.lock` (`flock -w 21600`), so they queue rather than overlap. A deploy
 is deferred (exit 75) while any of them runs. Missed runs catch up at boot (`Persistent=true`).
@@ -42,6 +44,8 @@ Cadence lives in `reference.source_registry.expected_cadence`: daily for phl, ch
 | One scheduled ETL run | `journalctl -u safety-etl@prod -n 100 --no-pager` (syslog tag is `flock`, so filter by unit, not tag) |
 | Deploys | `journalctl -u safety-autodeploy@prod -f`; failures only: `-p err` |
 | Backups | `journalctl -u safety-backup` / `-u safety-backup-verify` |
+| Routing tiles install | `journalctl -u safety-valhalla-fetch -n 100 --no-pager` (lines are tagged `valhalla-fetch:` and `valhalla-smoke[:port]:`) |
+| Valhalla itself | `sudo docker logs --tail 100 safety_valhalla`; health: `sudo docker inspect -f '{{.State.Health.Status}}' safety_valhalla` |
 | Alerts | `journalctl -t safety-notify -p err`; `sudo cat /var/lib/safety-notify/alerts.log` |
 | nginx | `/var/log/nginx/safety.{access,error}.log`, `/var/log/nginx/safety-dev.{access,error}.log`. 429s are logged at `warn`. Rotated daily, kept 14 days |
 
@@ -97,7 +101,8 @@ If the run may overlap a migrating deploy, pause autodeploy first with
 
 ## Alerts
 
-Every API, ETL, ops, deploy and backup unit has `OnFailure=safety-notify@%N.service`. `deploy/lib/notify.sh` writes
+Every API, ETL, ops, deploy and backup unit, and the routing-tiles fetch (`safety-valhalla-fetch`), has
+`OnFailure=safety-notify@%N.service`. `deploy/lib/notify.sh` writes
 `<unit> failed on <host> at <UTC>; see journalctl -u <unit>` at priority `err` with tag `safety-notify`, and appends the
 same line to `/var/lib/safety-notify/alerts.log`.
 
@@ -171,6 +176,7 @@ to `report` first, or the next incremental deletes the rows again.
 | Rate limits | `/api/v1/cells` 2 r/s burst 10; other `/api/v1/*` 10 r/s burst 20; 20 connections per IP (nginx); app limiter capped at 4,096 clients | `deploy/nginx/safety.conf:46-51`, `safety/api/ratelimit.py:65-81` |
 | nginx | `proxy_read_timeout 60s`, `client_max_body_size 1m` | `safety.conf:76,111` |
 | Postgres | `shared_buffers=256MB`, `work_mem=32MB`, `max_parallel_workers_per_gather=2`; no container memory limit | `docker-compose.yml:45-52` |
+| Valhalla | `mem_limit 1536m`, `cpus 1.5`, 2 worker threads; ~300 MB resident when serving | `docker-compose.yml` (`valhalla`) |
 | ETL HTTP | 120 s timeout, 4 retries | `config.py:92-93` |
 | Unit timeouts | ETL / hourly / ops: **none** (a hung run holds the ETL lock and blocks deploys indefinitely); autodeploy 30 min; backup 3 h; verify 4 h | unit files |
 | Memory / CPU limits | No unit sets `MemoryMax` or `CPUQuota` | unit files |
@@ -202,6 +208,114 @@ Scaling is vertical only. The cache and rate limiter are per process, and prod a
 | Certificates | Automatic. Check with `sudo certbot certificates`. A hostname change means editing both `deploy/nginx/*.conf`, re-running certbot, then committing the live file back |
 
 `run` and `runlocked` are the helpers defined in [Health and run history](#health-and-run-history).
+
+### Valhalla routing tiles
+
+Directions for driving, walking and biking come from the `safety_valhalla` container (`docker-compose.yml`, profile
+`routing`), shared by both instances on `127.0.0.1:58002`. Transit (Transitous) and address search (Photon) are public
+services and have nothing on the host. Valhalla is deliberately **not** part of `/api/v1/health` or a deploy's smoke
+test: with it down, the three street modes report unavailable and everything else carries on.
+
+**Where the tiles come from.** The `valhalla-tiles` GitHub workflow runs `deploy/valhalla/build.sh` on a hosted runner
+on the first Sunday of each month and publishes a release with three files: `valhalla_tiles.tar`, `valhalla.json`
+and `SHA256SUMS`. It keeps the two newest releases. The host never builds: a build needs more RAM and disk than it
+can spare (figures below). Which cities, which Geofabrik extracts and how far around each city the map reaches are in
+`deploy/valhalla/regions.tsv`; a run warns on its page when a live city's bbox has outgrown its row, warns when the
+tar passes 1.8 GB and fails above 2 GiB (GitHub's limit per release asset).
+
+The build job has a read-only token; a separate `publish` job, which runs only `gh`, is the one with
+`contents: write`. `fetch.sh` installs only releases whose author is `github-actions[bot]`, so a release someone makes
+by hand is ignored.
+
+- **GitHub disables scheduled workflows after 60 days without activity in the repo.** If nothing is pushed for two
+  months the monthly build silently stops. `fetch.sh` logs a warning (journal, not an alert) once the newest release is
+  over 45 days old; re-enable the workflow in the repo's Actions tab and run it by hand.
+- **Recommended: turn on immutable releases** (repo Settings → General → Releases). A published release's assets and
+  tag can then not be replaced, so even a stolen token cannot swap the tiles under an existing tag. Pruning still
+  works (deleting a release is allowed); a deleted tag name cannot be reused, which the date-based tags never need.
+
+**How the host installs them.** `safety-valhalla-fetch.timer` runs `fetch.sh` weekly. If the newest release is not
+what `/srv/valhalla/current` points at, it downloads it to `/srv/valhalla/build-<tag>/`, checks `SHA256SUMS`,
+serves it from a candidate container on `127.0.0.1:58003` and routes a downtown trip in every city by car, foot and
+bike. Only then does it swap the `current` symlink, `docker restart safety_valhalla` (a few seconds of "unavailable"
+for the street modes), and run the same check against the live port. A release that fails either check is recorded
+in `/srv/valhalla/rejected`, the run fails (one `safety-notify` alert), and later runs skip that tag until a newer
+release appears. The candidate check is retried once after a restart before a tag is rejected; a build that fails on
+the live port is rolled back *and deleted*. The previous build is kept for rollback (`KEEP_PREVIOUS`, default 1; `0`
+keeps none and leaves nothing to roll back to); older ones are deleted. The candidate runs exactly like the live
+container (user `nobody`, read-only root filesystem, no capabilities, 1536 MB, 1.5 CPUs), and the files are installed
+world-readable for that user. The live port is read from the container (`docker port`), not from configuration.
+
+The service itself (`safety-valhalla-fetch.service`) is sandboxed: `ProtectSystem=strict` with only `/srv/valhalla`
+writable (created by `install-deployer.sh`), no home directories, no devices, IPv4/IPv6/Unix sockets only. `/run` is
+read-only there too, but the docker CLI still works: connecting to `/run/docker.sock` is not a filesystem write. It
+refuses to run if `/srv/valhalla` is not owned by root or is group- or world-writable.
+
+**Disk, and the backup guard.** The tiles live on the same disk as the database and the backups: ~2.4 GB steady and
+~3.6 GB during an install. `backup.sh` refuses to dump unless at least `SAFETY_BACKUP_MIN_FREE_GB` (15 GB) plus twice
+the last dump stays free, so every GB the tiles take is a GB less headroom before backups start failing. Check
+`df -h /` before enabling the fetch timer, and again if the tar grows (a new city, wider boxes). With less than ~20 GB
+free, either raise the disk or set `KEEP_PREVIOUS=0` (via `systemctl edit safety-valhalla-fetch`,
+`Environment=KEEP_PREVIOUS=0`) to save ~1.2 GB at the cost of a quick rollback.
+
+```
+/srv/valhalla/
+  current -> build-valhalla-tiles-20261101     # what the container mounts at /data (read-only)
+  build-valhalla-tiles-20261101/               # valhalla_tiles.tar, valhalla.json, SHA256SUMS
+  build-valhalla-tiles-20261004/               # previous, for rollback
+  rejected                                     # tags that failed a smoke test (may not exist)
+  hold                                         # present only while a rollback is pinned
+```
+
+| Task | Command |
+|---|---|
+| Install the newest tiles now | `sudo systemctl start safety-valhalla-fetch && journalctl -u safety-valhalla-fetch -n 50 --no-pager` |
+| Build new tiles now (e.g. after editing `regions.tsv`) | `gh workflow run valhalla-tiles.yml`, wait for it to finish, then the line above |
+| What is installed? | `readlink /srv/valhalla/current; curl -s http://127.0.0.1:58002/status` (`tileset_last_modified` is the tar's mtime) |
+| Route by hand | `curl -s http://127.0.0.1:58002/route --json '{"locations":[{"lat":39.9524,"lon":-75.1636},{"lat":39.9656,"lon":-75.1810}],"costing":"pedestrian"}' \| jq .trip.summary` |
+| Smoke test the live service | `/usr/local/lib/safety-deploy/valhalla/smoke.sh 58002` (18 routes, ~2 s) |
+| Retry a rejected release | `sudo env FORCE=1 /usr/local/lib/safety-deploy/valhalla/fetch.sh` |
+| Restart / stop | `sudo docker restart safety_valhalla` / `sudo docker stop safety_valhalla` (the fetch never starts a stopped container) |
+| Turn directions off entirely | `DIRECTIONS_ENABLED=false` in `I/.env`, then restart `safety-api@<i>` |
+
+**Rollback.** Point `current` back at the kept build, restart, and pin it with `hold` so next week's fetch does not
+undo it:
+
+```bash
+cd /srv/valhalla && ls -d build-*                           # the kept previous build
+sudo ln -sfn build-valhalla-tiles-<previous> .current.new && sudo mv -Tf .current.new current
+sudo docker restart safety_valhalla
+/usr/local/lib/safety-deploy/valhalla/smoke.sh 58002
+sudo touch /srv/valhalla/hold                                # fetch.sh exits early while this exists
+echo valhalla-tiles-<bad> | sudo tee -a /srv/valhalla/rejected   # optional: never retry the bad tag
+```
+Remove `hold` (`sudo rm /srv/valhalla/hold`) once a fixed release is published.
+
+**Measured (R1, 2026-10-29, all six cities, image 3.9.1).**
+
+| | Value |
+|---|---|
+| Clipped OSM input | 697 MB in all; Los Angeles the largest at 262 MB |
+| Build (runner, not the host) | 15 min for `valhalla_build_tiles -j2`, **3.6 GB** peak RSS; `osmium extract -s smart` ~4 GB RSS per state; ~4.1 GB work directory, ~6.5 GB disk in all |
+| Tar | **1.15 GB** (298 tiles) |
+| Host disk | ~2.4 GB steady (live build + one rollback); ~3.6 GB during an install. `fetch.sh` refuses below 3 GB free. Counts against the backup guard's headroom (above) |
+| Host RAM | ~300 MB anonymous RSS serving; the tar is mmapped, so page cache grows with use and is reclaimable. During an install the candidate briefly adds a second ~300 MB |
+| Latency | p50 under 60 ms per route; 270 of 270 test routes succeeded |
+
+**When it goes wrong.**
+- *`docker compose … up -d valhalla` says the bind source does not exist*: no tiles yet. The compose file sets
+  `create_host_path: false` so Docker cannot create an empty `current` directory in the symlink's place; run the fetch
+  first. (`fetch.sh` removes such an empty directory if an older compose file made one, and refuses a non-empty one.)
+- *Street modes unavailable*: `sudo docker ps --filter name=safety_valhalla` (not running → `sudo docker start
+  safety_valhalla`), then `sudo docker logs --tail 50 safety_valhalla`. `Tile extract successfully loaded with tile
+  count: N` at start means the tiles are fine.
+- *Fetch failed*: `journalctl -u safety-valhalla-fetch -n 100`. "no complete valhalla-tiles-* release" means the
+  workflow has not published (check its runs on GitHub); "only N GB free" means prune or free disk; a smoke failure
+  names the city and mode and prints the candidate's log.
+- *A city routes in its centre but not at its edge*: its live bbox has outgrown `regions.tsv`. Widen the row and run
+  the workflow; the workflow's warnings say which city.
+- *Valhalla error codes* the API maps (every one is HTTP 400 from Valhalla): 171 no road near a point (outside the
+  tiles), 154 over the distance limit, 442 no path between the points, 120/125/130 bad request.
 
 ### Loading a city's full history
 
@@ -285,12 +399,15 @@ A snapshot from 2026-10-06 to 2026-10-08. These are observations, not thresholds
 | Incidents served | ~1.53 M across 6 cities |
 | Alerts | none, apart from the 2026-10-07 drill |
 | Autodeploy journal | `prod: up to date at <sha>` every minute |
+| Valhalla | ~300 MB RSS, health `healthy`; the weekly fetch logs `… is already installed` three Sundays in four |
 
 ### Maintenance calendar
 
 | Item | Cadence | Automated? |
 |---|---|---|
 | ETL, time-of-day rebuild, backups, restore check, cert renewal | see [Schedules](#schedules) | yes |
+| Routing tiles (build monthly in Actions, install weekly) | see [Valhalla routing tiles](#valhalla-routing-tiles) | yes, once the fetch timer is enabled |
+| Valhalla image bump | when wanted | manual: change the pinned digest in `docker-compose.yml`, `deploy/valhalla/build.sh` and `fetch.sh` together and merge; recreate the container on the new image (`docker compose --profile routing up -d valhalla`, see DEPLOYMENT.md) and check it still routes the old tiles; then run the workflow. `fetch.sh` tests a candidate with the *live* container's image, so the container must move first |
 | OS security updates | daily | unattended-upgrades, **no automatic reboot** |
 | Read `journalctl -t safety-notify` | whenever you are on the host | manual |
 | `LODES_YEAR` bump + `census --all` | yearly | manual |

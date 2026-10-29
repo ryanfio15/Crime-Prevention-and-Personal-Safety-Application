@@ -51,5 +51,91 @@ services:
       - -c
       - max_parallel_workers_per_gather=2
 
+  # Street routing for directions (drive / walk / bike; docs/DESIGN.md S13,
+  # docs/OPERATIONS.md "Valhalla routing tiles"). Behind the `routing`
+  # profile, so a plain `docker compose up -d` still starts only the database
+  # and nothing about a deploy depends on routing: it is started once by hand,
+  #   sudo docker compose --profile routing up -d valhalla
+  # after the first deploy/valhalla/fetch.sh has installed tiles.
+  #
+  # The tiles are not built here. The build peaks at ~4 GB RAM and ~6.5 GB disk
+  # (measured, six cities), too much for this host, so it runs in GitHub
+  # Actions (.github/workflows/valhalla-tiles.yml) and the host only downloads
+  # the finished tar (safety-valhalla-fetch.timer). Serving it is cheap: ~300 MB
+  # resident and p50 under 60 ms per route.
+  valhalla:
+    # Pinned by digest as well as tag: a tag can be re-pushed, and the tiles
+    # are built by this same digest (deploy/valhalla/build.sh) -- a tile format
+    # change between builder and server would only show up as failed routes.
+    # Change the two together.
+    image: ghcr.io/valhalla/valhalla:3.9.1@sha256:4fd114eb1d26b8fc2f43bcb3df234c1b63a0bf13c277405e5943d5361dc575de
+    container_name: safety_valhalla
+    profiles: ["routing"]
+    restart: unless-stopped
+    # The image has no entrypoint. The config travels with the tiles (it names
+    # /data/valhalla_tiles.tar); "2" is the worker thread count.
+    command: ["valhalla_service", "/data/valhalla.json", "2"]
+    ports:
+      # Loopback only, for the same reason as the database: Docker's iptables
+      # rules bypass UFW. Only the API calls it (VALHALLA_URL in .env); 58003
+      # is reserved for fetch.sh's candidate container.
+      - "127.0.0.1:${VALHALLA_PORT:-58002}:8002"
+    # Its own bridge, not the database's default network: the API reaches it
+    # through the published loopback port, and nothing in this container has
+    # any business reaching safety_db.
+    networks: [routing]
+    volumes:
+      # /srv/valhalla/current is a symlink that fetch.sh swaps atomically to a
+      # new build-<tag>/ directory. A bind mount resolves the symlink when the
+      # container starts, which is why fetch.sh restarts it after the swap (and
+      # then checks the live service reports the new tileset). Read-only: the
+      # service only mmaps the tar.
+      #
+      # create_host_path false: with the short syntax, `up` before the first
+      # fetch would have Docker create /srv/valhalla/current as an empty
+      # root-owned *directory*, which the symlink swap could then not replace
+      # (fetch.sh also checks for that). Now `up` fails instead, saying the
+      # path does not exist -- run the fetch first.
+      - type: bind
+        source: "${VALHALLA_DATA_DIR:-/srv/valhalla/current}"
+        target: /data
+        read_only: true
+        bind:
+          create_host_path: false
+    # Least privilege. The service needs no capabilities, no root and no
+    # writable filesystem: it reads /data and keeps only its ZeroMQ IPC sockets
+    # (ipc:///tmp/...) in /tmp, a tmpfs here. nobody:nogroup reads the tiles
+    # because fetch.sh installs them 0644 in 0755 directories.
+    user: "65534:65534"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    # Two worker threads plus the proxy and loki/thor/odin workers fit easily;
+    # this only stops a runaway from exhausting the host's PIDs.
+    pids_limit: 256
+    # Measured ~300 MB resident serving six cities; the rest is headroom for a
+    # burst of concurrent long routes. A hard cap so routing can never squeeze
+    # the database or the API on a 7.6 GB host.
+    mem_limit: 1536m
+    cpus: 1.5
+    # valhalla.json sets drain_seconds 28, so in-flight requests finish before
+    # Docker's SIGKILL.
+    stop_grace_period: 30s
+    healthcheck:
+      # curl ships in the image. /status answers without routing anything.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8002/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
 volumes:
   safety_db_data:
+
+networks:
+  # The valhalla service's own bridge (above). Created only when the routing
+  # profile is up.
+  routing: {}

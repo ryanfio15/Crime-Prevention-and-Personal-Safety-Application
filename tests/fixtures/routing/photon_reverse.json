@@ -1,0 +1,33 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "osm_type": "N",
+        "osm_id": 1207480649,
+        "osm_key": "tourism",
+        "osm_value": "attraction",
+        "type": "house",
+        "housenumber": "526",
+        "name": "Liberty Bell",
+        "street": "Market Street",
+        "locality": "Old City",
+        "district": "Center City",
+        "city": "Philadelphia",
+        "county": "Philadelphia",
+        "state": "PA",
+        "country": "United States",
+        "postcode": "19106",
+        "countrycode": "US"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -75.1502823,
+          39.9494654
+        ]
+      }
+    }
+  ]
+}

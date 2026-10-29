@@ -55,6 +55,11 @@ def _reset_api_state() -> None:
     if inflight is not None:
         inflight.clear()
     main.app.dependency_overrides.clear()
+    # The directions endpoints' provider clients, caches, budgets and breakers
+    # (safety/routing/service.py); a test that needs them installs its own.
+    for name in ("routing", "http"):
+        if hasattr(main.app.state, name):
+            delattr(main.app.state, name)
 
 
 @pytest.fixture(autouse=True)

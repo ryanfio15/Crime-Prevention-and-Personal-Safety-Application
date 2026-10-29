@@ -37,6 +37,15 @@ than others nearby, and researchers who want a documented API (see [docs/DESIGN.
 
 It deliberately does not give an address-level "risk score".
 
+**Directions**. Driving, walking, biking and transit directions between two
+addresses, each route annotated with how much reported activity there is *along it* compared with the city average,
+plus a "lower reported activity" alternative when one is clearly lower for a few extra minutes. It is a relative
+description of a route, never a score for an address, and it says nothing about time spent on board transit (see
+[docs/DESIGN.md §13](docs/DESIGN.md)). Driving, walking and biking use a self-hosted Valhalla container whose
+OpenStreetMap tiles are built monthly in GitHub Actions; transit uses the public Transitous service and address search
+uses Photon, both called by the server. Operating it: [docs/OPERATIONS.md → Valhalla routing
+tiles](docs/OPERATIONS.md#valhalla-routing-tiles). The infrastructure is in place; the endpoints and the map UI follow.
+
 **Architecture in one paragraph.**
 - A Python ETL (`safety/etl`) pulls each city's incidents from its open-data portal on a 6-hourly systemd timer.
 - It stores the raw responses on disk ("bronze"), normalizes them into one PostGIS table ("silver"), and rebuilds
@@ -188,12 +197,22 @@ and systemd and python-dotenv parse anything fancier differently.
 | `GOLD_LEGACY_WINDOWS` | `false` | — | `etl/gold.py` | Also write `last_90d`/`last_12m`/`last_24m` for a rollback to the release before 018; off by default, and a refresh with it off deletes the copies |
 | `WITHDRAWN_RECONCILE` | `report` | — | `etl/run.py` | `off` / `report` / `delete` for rows that vanish upstream. Prod stays `report` |
 | `WITHDRAWN_RETENTION_DAYS` | `90` | — | `etl/run.py` | Archive retention for deleted rows |
+| `DIRECTIONS_ENABLED` | `true` | — | `config.py` | Kill switch for directions and address search |
+| `VALHALLA_URL` | `http://127.0.0.1:58002` | — | `config.py` | Self-hosted Valhalla (compose profile `routing`) |
+| `TRANSITOUS_URL` · `TRANSITOUS_PLAN_PATH` | `https://api.transitous.org` · `/api/v6/plan` | — | `config.py` | Public transit planner |
+| `PHOTON_URL` | `https://photon.komoot.io` | — | `config.py` | Public address search |
+| `ROUTING_CONTACT` | the GitHub repo URL | — | `config.py` | Contact in every upstream User-Agent |
+| `ROUTING_TIMEOUT_SECONDS` | `8` | — | `config.py` | Per upstream call |
+| `TRANSIT_DAILY_BUDGET` · `GEOCODE_DAILY_BUDGET` | `500` · `5000` | dev: set `100` for transit | `config.py` | Upstream calls per UTC day; Transitous asks for under 720 a day from us |
+| `ROUTE_MAX_KM` | `100` | — | `config.py` | Longest straight-line trip accepted; above every city's bbox diagonal (LA 84.5 km) |
 
 Other variables:
 - `SAFETY_TEST_DB=1` enables DB tests (CI only).
 - `PORT` and `FORWARDED_ALLOW_IPS` apply to the Docker image only. Its default of `*` lets clients spoof their IP.
 - `SMOKE_TIMEOUT` (60), `SAFETY_BACKUP_DIR` (`/var/backups/safety`) and `SAFETY_BACKUP_MIN_FREE_GB` (15) are read by the
   deploy scripts.
+- `VALHALLA_PORT` (58002) and `VALHALLA_DATA_DIR` (`/srv/valhalla/current`) are read by compose for the `valhalla`
+  service only.
 
 **Secrets.**
 - The only application secret is the DB password, which lives in each `I/.env`.
@@ -471,7 +490,6 @@ The from-zero procedure has never been run end to end.
   - `tests/js/html.test.mjs:2` suggests a command that fails on Node 22.
 - `safety-etl@` and `safety-etl-hourly@` timers lack `UTC` in `OnCalendar`, so they depend on the host clock being UTC.
 - Dead code: `ops.plan_for_city`, `bronze.BronzePull`. `/api/v1/cells/lookup` is unused by the frontend.
-- No LICENSE file in a public repository.
 
 ### Top risks
 

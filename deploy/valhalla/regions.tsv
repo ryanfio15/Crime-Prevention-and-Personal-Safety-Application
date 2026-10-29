@@ -1,0 +1,35 @@
+# What deploy/valhalla/build.sh puts in the routing tiles, one row per served
+# city. Tab-separated; lines starting with # are ignored.
+#
+#   city    source_id in reference.source_registry
+#   states  comma-separated Geofabrik extract paths under
+#           https://download.geofabrik.de/ (without -latest.osm.pbf). Every
+#           state the padded box touches: a route that leaves the city still
+#           needs the roads on the other side of the line.
+#   bbox    west,south,east,north the extracts are clipped to: the city's
+#           bbox from /api/v1/cities padded by ~0.15 degrees (~15 km), so
+#           routes between two in-city points can detour outside it.
+#           build.sh warns when a live city bbox is no longer inside this one.
+#   smoke   from_lat,from_lng;to_lat,to_lng -- a ~2 km downtown trip that
+#           build.sh and fetch.sh route by auto, pedestrian and bicycle before
+#           a build is published or installed.
+#
+# Where the boxes came from (checked against /api/v1/cities on 2026-10-29):
+#   phl, chi, lax  the live bbox padded by exactly 0.15 deg on every side; the
+#                  boxes the R1 test build used.
+#   aus, sea       the R1 test-build boxes, which are slightly tighter than a
+#                  0.15 pad on some sides (aus: 0.128 south, 0.117 east; sea:
+#                  0.126 west, 0.137 south, 0.134 east, 0.149 north). They
+#                  still contain the live bbox with >11 km to spare.
+#   dc             not in the R1 build; the live bbox padded by 0.15.
+# R1 measured 697 MB of clipped PBF for all six, Los Angeles the largest at
+# 262 MB. Adding a city here and re-running the valhalla-tiles workflow is all
+# routing needs.
+#
+# city	states	bbox	smoke
+phl	north-america/us/pennsylvania,north-america/us/new-jersey,north-america/us/delaware	-75.430,39.717,-74.806,40.288	39.9524,-75.1636;39.9656,-75.1810
+chi	north-america/us/illinois,north-america/us/indiana	-88.090,41.494,-87.374,42.173	41.8781,-87.6298;41.8919,-87.6278
+sea	north-america/us/washington	-122.586,47.345,-122.086,47.884	47.6062,-122.3321;47.6205,-122.3493
+aus	north-america/us/texas	-98.088,29.948,-97.411,30.667	30.2672,-97.7431;30.2849,-97.7341
+lax	north-america/us/california	-118.818,33.554,-118.005,34.487	34.0522,-118.2437;34.0430,-118.2673
+dc	north-america/us/district-of-columbia,north-america/us/maryland,north-america/us/virginia	-77.270,38.642,-76.759,39.146	38.8977,-77.0365;38.8899,-77.0091

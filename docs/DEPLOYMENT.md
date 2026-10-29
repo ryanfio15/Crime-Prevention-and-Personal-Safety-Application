@@ -13,7 +13,7 @@ Throughout this document, `I` means an instance root (above) and `APP=/srv/safet
 Contents: [Routine deploys](#routine-deploys) · [Rollback](#rollback) · [Migrations](#migrations-during-a-deploy) ·
 [From-zero setup](#from-zero-setup) · [Load data to match prod](#7-load-data-to-match-prod) ·
 [Branch protection](#branch-protection-and-github-settings) · [Reference](#reference) (how a deploy works, release
-layout, operating the data, database roles, OS users) · [Container image](#container-image-alternative-target)
+layout, operating the data, routing, database roles, OS users) · [Container image](#container-image-alternative-target)
 
 This document replaces the earlier `docs/DEPLOY.md`, which now only points here.
 
@@ -403,6 +403,29 @@ curl -sI http://ryanfioserver.ddns.net/ | head -1                    # 301
 systemctl list-timers 'safety-*' --no-pager
 ```
 
+### 12. Routing for directions (optional)
+
+Directions work without this step, minus driving, walking and biking. See [Routing (Valhalla)](#routing-valhalla)
+below for what each piece is.
+
+```bash
+sudo deploy/install-deployer.sh --units              # if step 3 ran before deploy/valhalla existed
+sudo systemctl start safety-valhalla-fetch           # first install: ~1.2 GB download, ~2 min of smoke tests
+journalctl -u safety-valhalla-fetch -n 30 --no-pager
+#   → "valhalla-fetch: safety_valhalla does not exist yet. Start it once with: …"
+sudo sh -c "cd $APP/prod/current && docker compose --profile routing up -d valhalla"
+sudo docker inspect -f '{{.State.Health.Status}}' safety_valhalla   # repeat until "healthy"
+/usr/local/lib/safety-deploy/valhalla/smoke.sh 58002                 # → "ok: 18 routes"
+sudo systemctl enable --now safety-valhalla-fetch.timer
+```
+The first fetch needs a published release: if it says "no complete valhalla-tiles-* release", run
+`gh workflow run valhalla-tiles.yml` and wait for it (about half an hour). Check `df -h /` first: the tiles take
+~2.4 GB from the headroom the backup guard needs ([OPERATIONS.md → Valhalla routing
+tiles](OPERATIONS.md#valhalla-routing-tiles)).
+
+**Until this reaches `main`**, `prod/current`'s compose file has no `valhalla` service, so the `docker compose` line
+above fails. Use the dev-release command in [Routing (Valhalla)](#routing-valhalla) instead.
+
 ---
 
 ## Branch protection and GitHub settings
@@ -714,6 +737,79 @@ rows again if they are still absent upstream: set the instance to `report` first
 *Known residual.* An incident whose upstream date is revised from inside the
 window to before it drops out of the re-pull and is deleted although it still
 exists upstream; a backfill brings it back.
+
+### Routing (Valhalla)
+
+Driving, walking and biking directions come from one Valhalla container shared by both instances. Transit
+(Transitous) and address search (Photon) are public APIs the API calls directly, so they need nothing on the host but
+the `.env` keys below. The operating side (logs, rollback, measured disk and RAM) is in
+[OPERATIONS.md → Valhalla routing tiles](OPERATIONS.md#valhalla-routing-tiles).
+
+| Piece | What it is |
+|---|---|
+| `docker-compose.yml` service `valhalla` | Container `safety_valhalla`, image pinned by digest, profile `routing` (so a plain `docker compose up -d` never starts it), `127.0.0.1:58002`, `/srv/valhalla/current` mounted read-only at `/data` (`create_host_path: false`), `mem_limit 1536m`, `cpus 1.5`, `pids_limit 256`; runs as `nobody` with a read-only root filesystem, no capabilities and `no-new-privileges`, on its own `routing` network (not the database's) |
+| `.github/workflows/valhalla-tiles.yml` | Builds the tiles on a hosted runner (`deploy/valhalla/build.sh`) on the first Sunday of each month and publishes release `valhalla-tiles-YYYYMMDD`. Separate from `ci`, so it never gates or delays a deploy |
+| `deploy/valhalla/regions.tsv` | Cities, Geofabrik extracts, padded bbox and smoke-test trip. Adding a city to routing is a row here plus a workflow run |
+| `safety-valhalla-fetch.{service,timer}` | Weekly, as root: `/usr/local/lib/safety-deploy/valhalla/fetch.sh` installs the newest release after a candidate smoke test. The timer is not enabled by the installer |
+| `/usr/local/lib/safety-deploy/valhalla/` | `fetch.sh`, `smoke.sh`, `regions.tsv`, copied by `install-deployer.sh` (always, not only with `--units`). Like every root-run script, re-run the installer after changing them |
+
+Instance `.env` keys (all optional; the defaults are prod's values, see `.env.example`):
+
+| Key | Default | Notes |
+|---|---|---|
+| `DIRECTIONS_ENABLED` | `true` | Kill switch for the directions and geocoding endpoints |
+| `VALHALLA_URL` | `http://127.0.0.1:58002` | Both instances use the one container |
+| `TRANSITOUS_URL` / `TRANSITOUS_PLAN_PATH` | `https://api.transitous.org` / `/api/v6/plan` | |
+| `PHOTON_URL` | `https://photon.komoot.io` | |
+| `ROUTING_CONTACT` | the GitHub repo URL | In every upstream User-Agent |
+| `ROUTING_TIMEOUT_SECONDS` | `8` | Per upstream call |
+| `TRANSIT_DAILY_BUDGET` | `500` | **Set `100` in dev's `.env`**: Transitous asks for under 720 plans a day from us in total |
+| `GEOCODE_DAILY_BUDGET` | `5000` | |
+| `ROUTE_MAX_KM` | `100` | Longest straight-line trip accepted; above every city's bbox diagonal (LA 84.5 km) |
+
+`VALHALLA_PORT` and `VALHALLA_DATA_DIR` are read only by compose, to move the container off 58002 or
+`/srv/valhalla/current`.
+
+Compose rules are the database's: run it from `prod/current`, which carries `COMPOSE_PROJECT_NAME`. While the
+`valhalla` service exists only on `testing`, prod's checkout does not know it yet; start it from dev's release under
+prod's project name, so that prod's compose adopts the same container once the change reaches `main`:
+
+```bash
+sudo sh -c "cd $APP/dev/current && docker compose -p crime-prevention-and-personal-safety-application --profile routing up -d valhalla"
+```
+Name the service: a bare `up -d` from there would also reconcile `db` against dev's `.env`.
+
+The API side is `safety/api/directions.py`: `GET /api/v1/directions/status`, `POST /api/v1/directions`,
+`POST /api/v1/geocode` and `POST /api/v1/geocode/reverse`. Geocoding, transit and the status endpoint work without the
+container; drive, walk and bike report unavailable until it answers `/status`. Transit is also held to one plan per
+client every 20 s (`TRANSIT_CLIENT_INTERVAL_S`, `safety/routing/service.py`), on top of the zone below.
+
+**nginx zones for the provider endpoints.** Both layers limit these paths (`safety/api/ratelimit.py`): directions at
+0.5 r/s burst 6, geocode and reverse sharing one zone at 3 r/s burst 10. `deploy/nginx/safety-dev.conf` carries dev's
+copy. Prod's site needs the same lines, with prod's zone names, added to `deploy/nginx/safety.conf` and installed with
+`sudo deploy/install-deployer.sh --nginx` when this reaches `main`:
+
+```nginx
+# next to the existing limit_req_zone lines (nginx rates are whole numbers: 30r/m = 0.5 r/s)
+limit_req_zone  $binary_remote_addr  zone=safety_directions:10m  rate=30r/m;
+limit_req_zone  $binary_remote_addr  zone=safety_geocode:10m     rate=3r/s;
+
+# inside the server block, before `location /api/v1/`
+location = /api/v1/directions {
+    limit_req zone=safety_directions burst=6 nodelay;
+    proxy_pass http://safety_api;
+}
+location = /api/v1/geocode {
+    limit_req zone=safety_geocode burst=10 nodelay;
+    proxy_pass http://safety_api;
+}
+location = /api/v1/geocode/reverse {
+    limit_req zone=safety_geocode burst=10 nodelay;
+    proxy_pass http://safety_api;
+}
+```
+`/api/v1/directions/status` stays in the general `/api/v1/` zone. Without the prod lines the in-process limiter still
+applies the same limits, so the order of the two changes does not matter.
 
 ### Backups
 

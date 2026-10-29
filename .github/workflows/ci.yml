@@ -73,6 +73,8 @@ jobs:
         run: |
           node --check web/app.js
           node --check web/html.js
+          node --check web/hours.js
+          node --check web/directions.js
           node --check web/windows.js
           node --test tests/js/*.test.mjs
       - name: Migrate CLI parses
@@ -80,9 +82,9 @@ jobs:
       # One file per bash -n: given several, it parses the first and treats the
       # rest as that script's arguments.
       - name: Deploy scripts parse
-        run: for f in deploy/*.sh deploy/lib/*.sh deploy/git-hooks/*; do bash -n "$f"; done
+        run: for f in deploy/*.sh deploy/lib/*.sh deploy/valhalla/*.sh deploy/git-hooks/*; do bash -n "$f"; done
       - name: Shellcheck deploy scripts
-        run: shellcheck deploy/*.sh deploy/lib/*.sh deploy/git-hooks/*
+        run: shellcheck deploy/*.sh deploy/lib/*.sh deploy/valhalla/*.sh deploy/git-hooks/*
       # As the superuser, and with main's own code: on the host every object
       # main's migrations created was created by `safety`, and the role switch
       # has to *transfer* them, so CI starts from exactly that shape. This

@@ -623,6 +623,12 @@ const COMPASS_MIN_CELLS = 2;
  */
 function rampColorAt(value) {
   if (!state.rampDomain) return ZERO_FILL;
+  return rampColor(value);
+}
+
+/** The ramp's colour for a multiple of the city average, whatever is on
+    screen -- for a route, whose ratios come from the server. */
+function rampColor(value) {
   const stops = valueRampStops(VALUE_RAMP);
   if (value <= stops[0]) return stops[1];
   for (let i = 2; i < stops.length; i += 2) {
@@ -750,8 +756,8 @@ function renderCompass() {
   if (!best || best.mean >= result.here * (1 - COMPASS_MARGIN)) {
     box.dataset.state = "none";
     readout.innerHTML = result.here === 0
-      ? html`<b>Already quiet</b><br>nothing lower nearby`
-      : html`<b>No clear direction</b><br>nothing nearby is meaningfully lower`;
+      ? html`<b>Already quiet</b><span class="compass-detail">nothing lower nearby</span>`
+      : html`<b>No clear direction</b><span class="compass-detail">nothing nearby is meaningfully lower</span>`;
     box.setAttribute("aria-label", "Lower-crime direction: none nearby");
     return;
   }
@@ -760,7 +766,7 @@ function renderCompass() {
   $("compass-needle").style.transform = `rotate(${best.index * 45}deg)`;
   const drop = result.here > 0 ? 1 - best.mean / result.here : null;
   readout.innerHTML = html`<b>Head ${best.point}</b>${
-    drop === null ? "" : html`<br>about ${Math.round(drop * 100)}% lower than here`
+    drop === null ? "" : html`<span class="compass-detail">about ${Math.round(drop * 100)}% lower than here</span>`
   }`;
   box.setAttribute(
     "aria-label",
@@ -969,6 +975,7 @@ async function selectCity(sourceId) {
   if (sourceId === state.city) return;
   state.city = sourceId;
   closeDetail();
+  resetDirectionsForCity();
   // The stamp is per city now, so carrying the old one across would read as "the
   // pipeline just ran" on the next poll and trigger a pointless reload. Null
   // makes the next tick record rather than compare.
@@ -1567,6 +1574,8 @@ async function openMethodology() {
     <ul>${m.time_of_day.known_limitations.map((line) => html`<li>${line}</li>`)}</ul>
     ` : ""}
 
+    ${dir.status ? directionsMethodology() : ""}
+
     <h3>Offence classification</h3>
     <p>${m.classification.standard}</p>
     <dl>
@@ -1586,6 +1595,45 @@ async function openMethodology() {
     <p>${m.freshness_note ?? ""}</p>
     <p>${m.location_precision_note ?? ""}</p>
     ${terms ? html`<p><a href="${terms}" target="_blank" rel="noopener">Source dataset and terms of use</a></p>` : ""}
+  `;
+}
+
+/** The methodology dialog's Directions section. Static text: the rules it
+    describes are the server's (safety/routing/scoring.py), restated here. */
+function directionsMethodology() {
+  const a = dir.status.attribution;
+  const sources = safeHttpUrl(a.transit_sources_url);
+  return html`
+    <h3>Directions</h3>
+    <p>
+      Each route is described by the reported activity along it: every stretch is
+      compared with the city average the same way the map colours a ~175 m cell, on
+      the selected ranking (violent or non-violent), and the comparisons are averaged
+      by length. Where the 12-month window is selected, each stretch is compared at
+      the hour it would be passed. Transit compares only the walks and the stops;
+      time on board is not scored.
+    </p>
+    <p>
+      A route is offered as "lower reported activity" only when it takes no more
+      than a fifth longer than the fastest (at least 3 minutes, at most 8 to 15
+      depending on the mode) and is both 10% and 0.10 of the city average lower.
+      No comparison is made when under 60% of a route is in rated cells.
+    </p>
+    <div class="callout">
+      <h3 style="margin-top:0">What a route figure is not</h3>
+      <p style="margin-bottom:0">
+        It is not a rating of either address, not a statement that a route is safe,
+        and not a prediction. It describes reported incidents, which are not all
+        crime and not all of it reported.
+      </p>
+    </div>
+    <p>
+      Your start and destination go to this site's server, which asks the routing
+      services on your behalf. They are not logged or written to disk; recent answers
+      are kept in the server's memory for a few hours so a repeat is quick. Routing:
+      ${a.routing} · Map data ${a.map_data} · Address search: ${a.geocoding} ·
+      Transit: ${a.transit}${sources ? html` (<a href="${sources}" target="_blank" rel="noopener">data sources</a>)` : ""}.
+    </p>
   `;
 }
 
@@ -1755,36 +1803,43 @@ async function goToLocation(point) {
   selectCell(cell);
 }
 
-function locateMe() {
+/** One location fix as {lat, lng}; rejects with the browser's error. Shared
+    by "Use my location" on the map and in directions. */
+function getPosition() {
   if (!navigator.geolocation) {
-    showLocateNote("This browser does not expose a location.");
-    return;
+    return Promise.reject(new Error("This browser does not expose a location."));
   }
+  return new Promise((resolve, reject) =>
+    navigator.geolocation.getCurrentPosition(
+      (position) =>
+        resolve({ lat: position.coords.latitude, lng: position.coords.longitude }),
+      reject,
+      { enableHighAccuracy: false, timeout: 10000 }
+    )
+  );
+}
+
+async function locateMe() {
   const button = $("btn-locate");
   button.disabled = true;
   button.textContent = "Locating…";
-
-  navigator.geolocation.getCurrentPosition(
-    (position) => {
-      button.disabled = false;
-      button.textContent = "Use my location";
-      // S10: the cell is computed here, on the client, from GPS coordinates --
-      // no server round trip and no spatial query is involved in "which cell
-      // am I in". Which *city* is the same: every bounding box is already here.
-      state.userLocation = {
-        lat: position.coords.latitude,
-        lng: position.coords.longitude,
-      };
-      followLocation();
-      goToLocation(state.userLocation);
-    },
-    (error) => {
-      button.disabled = false;
-      button.textContent = "Use my location";
-      showLocateNote(`Could not read your location: ${error.message}`);
-    },
-    { enableHighAccuracy: false, timeout: 10000 }
-  );
+  try {
+    // S10: the cell is computed here, on the client, from GPS coordinates --
+    // no server round trip and no spatial query is involved in "which cell
+    // am I in". Which *city* is the same: every bounding box is already here.
+    state.userLocation = await getPosition();
+    followLocation();
+    goToLocation(state.userLocation);
+  } catch (error) {
+    showLocateNote(
+      navigator.geolocation
+        ? `Could not read your location: ${error.message}`
+        : "This browser does not expose a location."
+    );
+  } finally {
+    button.disabled = false;
+    button.textContent = "Use my location";
+  }
 }
 
 /**
@@ -1806,6 +1861,770 @@ function followLocation() {
     () => { /* keep the last fix */ },
     { enableHighAccuracy: true, maximumAge: 15000 }
   );
+}
+
+/* ---------------------------------------------------------------- directions */
+
+/* Directions between two points in the city on screen (design doc S13). The
+   formatting and the map features are pure functions in web/directions.js;
+   this is the page half: the panel, the two address boxes, picking a point on
+   the map, the request and the route layers.
+
+   Addresses and points go to the server in POST bodies, never in a URL, and
+   the server makes every provider call: nothing here talks to a third party,
+   so the content security policy is unchanged. */
+
+const dir = {
+  open: false,
+  status: null,
+  ends: { from: null, to: null },
+  mode: "walk",
+  picking: null,
+  result: null,
+  selected: 0,
+  seq: 0,
+  abort: null,
+  searchAbort: { from: null, to: null },
+  // Bumped on every setEnd, so a point lookup that finishes after a newer
+  // choice for the same end can tell, and drop its answer.
+  endSeq: { from: 0, to: 0 },
+  markers: { from: null, to: null },
+  // Results already shown, so going back to a mode does not ask again --
+  // transit plans come out of a small daily allowance shared by everyone.
+  cache: new Map(),
+};
+
+const DIR_CACHE_MAX = 20;
+// A "leave now" answer is about now; past this it is asked for again.
+const DIR_NOW_TTL_MS = 5 * 60_000;
+const MODE_NAMES = { drive: "Driving", walk: "Walking", bike: "Cycling", transit: "Transit" };
+const UNAVAILABLE = {
+  budget: "has reached today's limit for this site",
+  unavailable: "is unavailable right now",
+};
+
+async function postJson(path, body, signal) {
+  const response = await fetch(`${API}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    /* an empty or non-JSON error body */
+  }
+  return {
+    ok: response.ok,
+    status: response.status,
+    payload,
+    retryAfter: Number(response.headers.get("Retry-After")) || null,
+  };
+}
+
+/** A server error as one sentence for the status line. FastAPI's own 422s
+    carry a list of field errors, not prose; those read as a generic line. */
+function errorText(result) {
+  const detail = result.payload?.detail;
+  if (typeof detail === "string") return detail;
+  if (result.status === 429) return "Too many requests just now; wait a moment and try again.";
+  return "Directions could not be loaded. Try again shortly.";
+}
+
+function setDirStatus(text, isError = false) {
+  const el = $("dir-status");
+  el.textContent = text;
+  el.classList.toggle("is-error", isError);
+}
+
+async function loadDirectionsStatus() {
+  try {
+    const response = await fetch(`${API}/directions/status`);
+    if (!response.ok) return;
+    dir.status = await response.json();
+  } catch {
+    return;
+  }
+  $("btn-directions").hidden = false;
+  syncModeTabs();
+  renderDirAttribution();
+}
+
+/** Disable a mode the server says is down or out of allowance, with why. */
+function syncModeTabs() {
+  const modes = dir.status?.modes ?? {};
+  const tabs = [...$("dir-modes").querySelectorAll("[data-mode]")];
+  const isDown = (mode) => modes[mode] && !modes[mode].available;
+  // A selected mode that is down would still be what gets asked for: move to
+  // the first one that is up (or stay, if none is).
+  if (isDown(dir.mode)) {
+    const up = tabs.find((tab) => !isDown(tab.dataset.mode));
+    if (up) dir.mode = up.dataset.mode;
+  }
+  tabs.forEach((tab) => {
+    const info = modes[tab.dataset.mode];
+    const down = info && !info.available;
+    tab.disabled = Boolean(down);
+    tab.title = down ? `${MODE_NAMES[tab.dataset.mode]} ${UNAVAILABLE[info.reason] ?? UNAVAILABLE.unavailable}` : "";
+    tab.setAttribute("aria-selected", String(tab.dataset.mode === dir.mode));
+  });
+  const geocode = dir.status?.geocode;
+  if (geocode && !geocode.available) {
+    $("dir-hint").textContent =
+      `Address search ${UNAVAILABLE[geocode.reason] ?? UNAVAILABLE.unavailable}. ` +
+      "Use Pick on map, or paste a lat, lng.";
+  }
+}
+
+function renderDirAttribution() {
+  const a = dir.status?.attribution;
+  if (!a) return;
+  const sources = safeHttpUrl(a.transit_sources_url);
+  $("dir-attribution").innerHTML = html`
+    Routing: ${a.routing} · Map data ${a.map_data} · Address search: ${a.geocoding} ·
+    Transit: ${a.transit}${sources ? html` (<a href="${sources}" target="_blank" rel="noopener">data sources</a>)` : ""}
+  `;
+}
+
+function openDirections() {
+  dir.open = true;
+  $("detail").classList.add("dir-open");
+  $("directions").hidden = false;
+  $("btn-directions").setAttribute("aria-pressed", "true");
+  // The selected cell's outline would compete with the route.
+  if (state.selected) {
+    map.setFeatureState({ source: "cells", id: state.selected }, { selected: false });
+  }
+  placeMarkers();
+  if (dir.result) drawRoutes();
+  (dir.ends.from ? $("dir-to") : $("dir-from")).focus();
+}
+
+function closeDirections() {
+  dir.open = false;
+  stopPicking();
+  $("detail").classList.remove("dir-open");
+  $("directions").hidden = true;
+  $("btn-directions").setAttribute("aria-pressed", "false");
+  clearRouteLayers();
+  if (state.selected) {
+    map.setFeatureState({ source: "cells", id: state.selected }, { selected: true });
+  }
+  $("btn-directions").focus();
+}
+
+/** After a city switch: a point that is not in the new city cannot be routed
+    from here, so it goes, and so does any result. */
+function resetDirectionsForCity() {
+  for (const end of ["from", "to"]) {
+    const point = dir.ends[end];
+    if (point && cityAt(point)?.source_id !== state.city) setEnd(end, null);
+  }
+  clearResult();
+}
+
+function clearResult() {
+  dir.seq += 1;
+  dir.abort?.abort();
+  dir.result = null;
+  $("dir-results").hidden = true;
+  clearRouteLayers({ keepMarkers: true });
+}
+
+/* ---- the two ends */
+
+function endMarker(end) {
+  const el = document.createElement("div");
+  // MapLibre positions the marker with its own transform, so the turn that
+  // makes the pin's point goes on an inner element.
+  el.className = "route-pin-marker";
+  const pin = document.createElement("div");
+  pin.className = `route-pin route-pin-${end}`;
+  const letter = document.createElement("span");
+  letter.textContent = end === "from" ? "A" : "B";
+  pin.append(letter);
+  el.append(pin);
+  el.setAttribute("aria-hidden", "true");
+  // The pin is a square turned 45°, its point 18 px (half the 26 px
+  // diagonal) below its centre: lift it so the point, not the middle, sits on
+  // the place.
+  return new maplibregl.Marker({ element: el, anchor: "center", offset: [0, -18] });
+}
+
+/** Set (or clear, with null) one end: the box, the pin, and a fresh result. */
+function setEnd(end, place) {
+  dir.endSeq[end] += 1;
+  dir.ends[end] = place;
+  $(`dir-${end}`).value = place?.label ?? "";
+  dir.markers[end]?.remove();
+  dir.markers[end] = null;
+  if (dir.open) placeMarkers();
+  clearResult();
+  if (dir.ends.from && dir.ends.to) submitDirections();
+}
+
+/** Name a point (reverse geocode) and check it is in a served city. */
+async function placeAt(point) {
+  const result = await postJson("/geocode/reverse", point).catch(() => null);
+  const label = `${point.lat.toFixed(5)}, ${point.lng.toFixed(5)}`;
+  if (!result?.ok) return { place: { ...point, label }, city: cityAt(point)?.source_id ?? null };
+  return {
+    place: { ...point, label: result.payload.result?.label || label },
+    city: result.payload.city,
+  };
+}
+
+/** A picked or located point: kept if it is in the city on screen, else an
+    offer to open the city it is in. */
+async function setEndFromPoint(end, point) {
+  setDirStatus("Looking up that point…");
+  // Claimed now, so a second pick made while this one is looked up wins.
+  const seq = ++dir.endSeq[end];
+  const { place, city } = await placeAt(point);
+  // Something newer was chosen for this end while the lookup ran.
+  if (seq !== dir.endSeq[end]) return;
+  if (!city) {
+    setDirStatus("That point is outside the cities this map covers.", true);
+    return;
+  }
+  if (city !== state.city) {
+    const record = state.cities.find((c) => c.source_id === city);
+    setDirStatus(`That point is in ${record?.city_name ?? "another city"}. Directions stay within one city.`, true);
+    if (record) {
+      showLocateNote(`That point is in ${record.city_name}.`, {
+        label: `View ${record.city_name}`,
+        run: async () => {
+          await switchCity(city);
+          setEnd(end, place);
+        },
+      });
+    }
+    return;
+  }
+  setDirStatus("");
+  setEnd(end, place);
+}
+
+function startPicking(end) {
+  stopPicking();
+  dir.picking = end;
+  map.getCanvas().style.cursor = "crosshair";
+  map.getCanvasContainer().classList.add("is-picking");
+  document.querySelector(`[data-pick="${end}"]`)?.setAttribute("aria-pressed", "true");
+  setDirStatus(`Click the map to set the ${end === "from" ? "start" : "destination"}. Esc cancels.`);
+}
+
+function stopPicking() {
+  if (!dir.picking) return;
+  document.querySelector(`[data-pick="${dir.picking}"]`)?.setAttribute("aria-pressed", "false");
+  dir.picking = null;
+  map.getCanvas().style.cursor = "";
+  map.getCanvasContainer().classList.remove("is-picking");
+}
+
+/* ---- address boxes: an ARIA combobox each */
+
+function renderOptions(end, options) {
+  const list = $(`dir-${end}-list`);
+  const input = $(`dir-${end}`);
+  list.innerHTML = html`${options.map(
+    (o, i) => html`<li role="option" id="dir-${end}-opt-${i}" data-index="${i}" aria-selected="false">
+      <span class="opt-title">${o.title}</span>${o.subtitle ? html`<span class="opt-sub">${o.subtitle}</span>` : ""}
+    </li>`
+  )}`;
+  list.hidden = options.length === 0;
+  input.setAttribute("aria-expanded", String(options.length > 0));
+  input.removeAttribute("aria-activedescendant");
+  list._options = options;
+  list._active = -1;
+}
+
+function closeOptions(end) {
+  renderOptions(end, []);
+}
+
+function moveActive(end, step) {
+  const list = $(`dir-${end}-list`);
+  const options = list._options ?? [];
+  if (!options.length) return;
+  list._active = (list._active + step + options.length) % options.length;
+  list.querySelectorAll("[role=option]").forEach((li, i) => {
+    li.setAttribute("aria-selected", String(i === list._active));
+    if (i === list._active) li.scrollIntoView({ block: "nearest" });
+  });
+  $(`dir-${end}`).setAttribute("aria-activedescendant", `dir-${end}-opt-${list._active}`);
+}
+
+function chooseOption(end, index) {
+  const option = $(`dir-${end}-list`)._options?.[index];
+  if (!option) return;
+  closeOptions(end);
+  if (option.point) {
+    setEndFromPoint(end, option.point);
+    return;
+  }
+  setEnd(end, { lat: option.lat, lng: option.lng, label: option.label });
+}
+
+const searchPlaces = {};
+function makeSearch(end) {
+  return debounce(async (q) => {
+    dir.searchAbort[end]?.abort();
+    const options = [];
+    const point = latLngFromString(q);
+    if (point) {
+      options.push({ title: `${point.lat}, ${point.lng}`, subtitle: "Coordinates", point });
+      renderOptions(end, options);
+      return;
+    }
+    if (q.length < 3 || dir.status?.geocode?.available === false) {
+      renderOptions(end, []);
+      return;
+    }
+    const controller = new AbortController();
+    dir.searchAbort[end] = controller;
+    let result;
+    try {
+      result = await postJson("/geocode", { q, city: state.city, limit: 5 }, controller.signal);
+    } catch (error) {
+      if (error.name !== "AbortError") setDirStatus("Address search could not be reached.", true);
+      return;
+    }
+    if (controller.signal.aborted) return;
+    if (!result.ok) {
+      setDirStatus(errorText(result), true);
+      return;
+    }
+    const found = result.payload.results ?? [];
+    renderOptions(end, found);
+    setDirStatus(found.length ? "" : "No match in this city. Try Pick on map, or paste a lat, lng.");
+  }, 350);
+}
+
+function wireEnd(end) {
+  const input = $(`dir-${end}`);
+  const list = $(`dir-${end}-list`);
+  searchPlaces[end] = makeSearch(end);
+
+  input.addEventListener("input", () => {
+    // Typing over a chosen place un-chooses it.
+    if (dir.ends[end]) {
+      dir.ends[end] = null;
+      dir.markers[end]?.remove();
+      dir.markers[end] = null;
+      clearResult();
+    }
+    searchPlaces[end](input.value.trim());
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveActive(end, 1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveActive(end, -1);
+    } else if (event.key === "Enter") {
+      if (!list.hidden) {
+        event.preventDefault();
+        chooseOption(end, Math.max(0, list._active));
+      }
+    } else if (event.key === "Escape") {
+      if (!list.hidden) {
+        event.stopPropagation();
+        closeOptions(end);
+      }
+    }
+  });
+  input.addEventListener("blur", () => {
+    // After a click on an option has had its mousedown.
+    setTimeout(() => closeOptions(end), 150);
+  });
+  list.addEventListener("mousedown", (event) => {
+    const li = event.target.closest("[role=option]");
+    if (!li) return;
+    event.preventDefault();
+    chooseOption(end, Number(li.dataset.index));
+  });
+}
+
+/* ---- departure, in the city's own clock */
+
+/** "YYYY-MM-DDTHH:MM" for now in the city, for the datetime-local box. */
+function cityNowLocal() {
+  const zone = state.cityRecord?.timezone;
+  try {
+    const parts = Object.fromEntries(
+      new Intl.DateTimeFormat("en-CA", {
+        timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+      }).formatToParts(new Date()).map((p) => [p.type, p.value])
+    );
+    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+  } catch {
+    return localIso(new Date()) + "T" + new Date().toTimeString().slice(0, 5);
+  }
+}
+
+function departAt() {
+  return $("dir-when").value === "at" && $("dir-at").value ? $("dir-at").value : null;
+}
+
+/* ---- the request */
+
+async function submitDirections() {
+  stopPicking();
+  const { from, to } = dir.ends;
+  if (!from || !to) {
+    setDirStatus(`Choose ${from ? "a destination" : "a start"} first.`, true);
+    $(from ? "dir-to" : "dir-from").focus();
+    return;
+  }
+  const request = {
+    from: { lat: from.lat, lng: from.lng },
+    to: { lat: to.lat, lng: to.lng },
+    mode: dir.mode,
+  };
+  const at = departAt();
+  if (at) request.depart_at = at;
+  const preset = currentPreset();
+  if (preset) request.window = preset.id;
+
+  const key = directionsKey(request);
+  const kept = dir.cache.get(key);
+  if (kept && (at || Date.now() - kept.at < DIR_NOW_TTL_MS)) {
+    showResult(kept.result);
+    return;
+  }
+
+  dir.abort?.abort();
+  const controller = new AbortController();
+  dir.abort = controller;
+  const seq = ++dir.seq;
+  setDirStatus(`Finding ${MODE_NAMES[dir.mode].toLowerCase()} routes…`);
+  $("dir-go").disabled = true;
+  let result;
+  try {
+    result = await postJson("/directions", request, controller.signal);
+  } catch (error) {
+    if (error.name !== "AbortError" && seq === dir.seq) {
+      setDirStatus("Directions could not be reached. Check your connection.", true);
+    }
+    return;
+  } finally {
+    if (seq === dir.seq) $("dir-go").disabled = false;
+  }
+  if (seq !== dir.seq) return;
+  if (!result.ok) {
+    $("dir-results").hidden = true;
+    clearRouteLayers({ keepMarkers: true });
+    // Transit is one plan per visitor per 20 s: a new point picked inside
+    // that is asked for again when it is allowed, unless something changes.
+    if (result.payload?.code === "too_soon") {
+      const wait = result.retryAfter ?? 5;
+      setDirStatus(`Transit can be asked for again in ${wait} s; it will be, automatically.`);
+      setTimeout(() => {
+        if (seq === dir.seq) submitDirections();
+      }, wait * 1000);
+      return;
+    }
+    setDirStatus(errorText(result), true);
+    // A mode that just ran out says so on its tab too.
+    if (result.payload?.code === "budget_exhausted" || result.status === 503) loadDirectionsStatus();
+    return;
+  }
+  dir.cache.set(key, { result: result.payload, at: Date.now() });
+  if (dir.cache.size > DIR_CACHE_MAX) dir.cache.delete(dir.cache.keys().next().value);
+  showResult(result.payload);
+}
+
+function showResult(result) {
+  dir.result = result;
+  dir.selected = result.picks?.[state.track]?.fastest ?? 0;
+  renderDirections();
+  const bounds = routesBbox(result.routes);
+  if (bounds) {
+    const narrow = window.matchMedia("(max-width: 900px)").matches;
+    map.fitBounds(bounds, { padding: narrow ? 40 : 70, maxZoom: 16, duration: 700 });
+  }
+  const n = result.routes.length;
+  setDirStatus(
+    `${n} ${MODE_NAMES[result.mode].toLowerCase()} route${n === 1 ? "" : "s"} found · ` +
+      `fastest ${formatDuration(result.routes[result.picks?.[state.track]?.fastest ?? 0].duration_s)}`
+  );
+}
+
+/* ---- the panel */
+
+function renderDirections() {
+  const result = dir.result;
+  if (!result) return;
+  const track = TRACK_LABELS[state.track];
+  const cards = routeCardModel(result, state.track);
+
+  $("dir-results").hidden = false;
+  $("dir-track").textContent =
+    `Compared on ${track} offences (the map's selected ranking), against ` +
+    `${result.window?.label?.toLowerCase() ?? "the city"}` +
+    (result.hourly ? ", at the hour each stretch would be passed." : ", all hours.");
+
+  $("dir-cards").innerHTML = html`${cards.map((card) => {
+    const route = result.routes[card.index];
+    const words = activitySentence(card.activity, track);
+    const swatch = card.activity?.comparable ? rampColor(card.activity.mean_ratio) : ZERO_FILL;
+    const legs = route.mode === "transit" ? route.legs.map(transitLegSummary) : [];
+    return html`<li>
+      <button type="button" class="route-card" data-index="${card.index}"
+              aria-pressed="${String(card.index === dir.selected)}">
+        <span class="route-role">${card.role}${card.extra ? html` <span class="route-extra">${card.extra}</span>` : ""}</span>
+        <span class="route-main"><strong>${card.duration}</strong> · ${card.distance}${
+          route.mode === "transit" && route.start_time
+            ? html` · leaves ${clockIn(route.start_time, result.timezone)}`
+            : ""
+        }</span>
+        ${legs.length ? html`<span class="route-legs">${legs.map((leg) =>
+          leg.kind === "ride"
+            ? html`<span class="leg-chip" style="${leg.color ? `background:${leg.color};color:${leg.textColor}` : ""}">${leg.name}</span>`
+            : html`<span class="leg-walk">${leg.text.split(" ")[0]}</span>`
+        )}</span>` : ""}
+        <span class="route-activity"><span class="swatch" style="background:${swatch}" aria-hidden="true"></span>${words.headline}</span>
+        <span class="route-detail">${words.detail}</span>
+      </button>
+    </li>`;
+  })}`;
+
+  $("dir-why").textContent = pickReason(result.picks?.[state.track], result.mode) ?? "";
+  $("dir-caveats").innerHTML = html`${(result.caveats ?? []).map((c) => html`<li>${c}</li>`)}`;
+  renderSteps();
+  drawRoutes();
+}
+
+function renderSteps() {
+  const result = dir.result;
+  const route = result.routes[dir.selected];
+  if (route.mode === "transit") {
+    $("dir-steps-title").textContent = "Itinerary";
+    $("dir-steps").innerHTML = html`${route.legs.map((leg) => {
+      const s = transitLegSummary(leg);
+      const when = leg.start_time ? clockIn(leg.start_time, result.timezone) : "";
+      if (s.kind === "street") {
+        return html`<li class="step step-walk"><span class="step-time">${when}</span>
+          <span>${s.text}${leg.to?.name ? html` to ${leg.to.name}` : ""}</span></li>`;
+      }
+      return html`<li class="step step-ride"><span class="step-time">${when}</span>
+        <span><span class="leg-chip" style="${s.color ? `background:${s.color};color:${s.textColor}` : ""}">${s.name}</span>
+        ${s.text} <span class="step-sub">from ${leg.from?.name ?? "the stop"} · ${s.detail}${
+          leg.to?.name ? html` · get off at ${leg.to.name}` : ""
+        }</span></span></li>`;
+    })}`;
+    return;
+  }
+  $("dir-steps-title").textContent = "Steps";
+  $("dir-steps").innerHTML = html`${route.steps.map(
+    (step) => html`<li class="step"><span>${step.instruction}</span>${
+      step.distance_m > 0 ? html`<span class="step-sub">${formatDistance(step.distance_m)}</span>` : ""
+    }</li>`
+  )}`;
+}
+
+function selectRoute(index) {
+  if (!dir.result || !dir.result.routes[index]) return;
+  dir.selected = index;
+  $("dir-cards").querySelectorAll(".route-card").forEach((card) => {
+    card.setAttribute("aria-pressed", String(Number(card.dataset.index) === index));
+  });
+  renderSteps();
+  drawRoutes();
+}
+
+/* ---- the map */
+
+const ROUTE_LAYERS = ["route-alt-line", "route-casing", "route-line", "route-walk", "route-activity"];
+
+/** Route sources and layers, above the cells and roads but under the street
+    and place names, so a name stays readable along the route. */
+function initRouteLayers() {
+  const empty = { type: "FeatureCollection", features: [] };
+  for (const id of ["route-alt", "route-line", "route-activity"]) {
+    map.addSource(id, { type: "geojson", data: empty });
+  }
+  // The first label above the last road: the basemap puts some water labels
+  // before its roads, and a route under the roads is hidden by them.
+  const layers = map.getStyle().layers;
+  const lastRoad = layers.findLastIndex((layer) => /^(tunnel|road|bridge|highway)/.test(layer.id));
+  const before = layers.slice(lastRoad + 1).find((layer) => layer.type === "symbol")?.id;
+  map.addLayer({
+    id: "route-alt-line", type: "line", source: "route-alt",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": INK_SECONDARY, "line-width": 4, "line-opacity": 0.6, "line-dasharray": [1.5, 1.5] },
+  }, before);
+  // A dark casing: the route sits on cells painted in the same ramp it may be
+  // coloured with, and only an edge keeps a green route off a green cell.
+  map.addLayer({
+    id: "route-casing", type: "line", source: "route-line",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#1b1b1a", "line-width": 10, "line-opacity": 0.55 },
+  }, before);
+  map.addLayer({
+    id: "route-line", type: "line", source: "route-line",
+    filter: ["!", ["get", "walk"]],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": ["coalesce", ["get", "color"], SERIES_1], "line-width": 6 },
+  }, before);
+  map.addLayer({
+    id: "route-walk", type: "line", source: "route-line",
+    filter: ["get", "walk"],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": SERIES_1, "line-width": 6, "line-dasharray": [0.1, 1.8] },
+  }, before);
+  // The reported activity along the route, on the map's own ramp, drawn over
+  // the plain line. Only scored stretches have segments, so a transit ride
+  // keeps its line colour between the walks.
+  map.addLayer({
+    id: "route-activity", type: "line", source: "route-activity",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: {
+      "line-color": [
+        "case", ["<", ["get", "ratio"], 0], "#9b9a94",
+        ["interpolate", ["linear"], ["get", "ratio"], ...valueRampStops(VALUE_RAMP)],
+      ],
+      "line-width": 6,
+    },
+  }, before);
+
+  map.on("click", (event) => {
+    if (!dir.open) return;
+    if (dir.picking) {
+      const end = dir.picking;
+      stopPicking();
+      setEndFromPoint(end, { lat: event.lngLat.lat, lng: event.lngLat.lng });
+      return;
+    }
+    const alt = map.queryRenderedFeatures(event.point, { layers: ["route-alt-line"] })[0];
+    if (alt) selectRoute(alt.properties.index);
+  });
+  map.on("mouseenter", "route-alt-line", () => {
+    if (!dir.picking) map.getCanvas().style.cursor = "pointer";
+  });
+  map.on("mouseleave", "route-alt-line", () => {
+    if (!dir.picking) map.getCanvas().style.cursor = "";
+  });
+}
+
+function drawRoutes() {
+  const result = dir.result;
+  if (!result || !dir.open) return;
+  const route = result.routes[dir.selected];
+  map.getSource("route-alt").setData(altFeatures(result.routes, dir.selected));
+  map.getSource("route-line").setData(routeLineFeatures(route));
+  map.getSource("route-activity").setData(
+    $("dir-colour").checked ? segmentFeatures(route.activity?.[state.track]) : { type: "FeatureCollection", features: [] }
+  );
+  placeMarkers();
+}
+
+/** A pin for each chosen end that does not have one yet. */
+function placeMarkers() {
+  for (const end of ["from", "to"]) {
+    if (!dir.markers[end] && dir.ends[end]) {
+      dir.markers[end] = endMarker(end).setLngLat([dir.ends[end].lng, dir.ends[end].lat]).addTo(map);
+    }
+  }
+}
+
+function clearRouteLayers({ keepMarkers = false } = {}) {
+  const empty = { type: "FeatureCollection", features: [] };
+  for (const id of ["route-alt", "route-line", "route-activity"]) map.getSource(id)?.setData(empty);
+  if (keepMarkers) return;
+  for (const end of ["from", "to"]) {
+    dir.markers[end]?.remove();
+    dir.markers[end] = null;
+  }
+}
+
+/* ---- wiring */
+
+function wireDirections() {
+  $("btn-directions").onclick = () => (dir.open ? closeDirections() : openDirections());
+  $("dir-close").onclick = closeDirections;
+  wireEnd("from");
+  wireEnd("to");
+
+  document.querySelectorAll("[data-pick]").forEach((button) => {
+    button.setAttribute("aria-pressed", "false");
+    button.onclick = () =>
+      dir.picking === button.dataset.pick ? (stopPicking(), setDirStatus("")) : startPicking(button.dataset.pick);
+  });
+
+  $("dir-from-here").onclick = async () => {
+    setDirStatus("Locating…");
+    try {
+      const point = await getPosition();
+      state.userLocation = point;
+      await setEndFromPoint("from", point);
+    } catch (error) {
+      setDirStatus(`Could not read your location: ${error.message}`, true);
+    }
+  };
+
+  $("dir-swap").onclick = () => {
+    const { from, to } = dir.ends;
+    dir.ends = { from: null, to: null };
+    for (const end of ["from", "to"]) {
+      dir.markers[end]?.remove();
+      dir.markers[end] = null;
+    }
+    // setEnd submits once both are set, so the second call asks.
+    setEnd("from", to);
+    setEnd("to", from);
+  };
+
+  $("dir-modes").querySelectorAll("[data-mode]").forEach((tab) => {
+    tab.onclick = () => {
+      if (tab.disabled || dir.mode === tab.dataset.mode) return;
+      dir.mode = tab.dataset.mode;
+      syncModeTabs();
+      clearResult();
+      if (dir.ends.from && dir.ends.to) submitDirections();
+    };
+  });
+  // Arrow keys move between the mode tabs, as in any tablist.
+  $("dir-modes").addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    const tabs = [...$("dir-modes").querySelectorAll("[data-mode]:not(:disabled)")];
+    const at = tabs.indexOf(document.activeElement);
+    if (at < 0) return;
+    const next = tabs[(at + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+    next.focus();
+    next.click();
+  });
+
+  $("dir-when").onchange = (event) => {
+    const at = event.target.value === "at";
+    $("dir-at").hidden = !at;
+    if (at && !$("dir-at").value) $("dir-at").value = cityNowLocal();
+    clearResult();
+  };
+  $("dir-at").onchange = clearResult;
+
+  $("dir-form").onsubmit = (event) => {
+    event.preventDefault();
+    submitDirections();
+  };
+
+  $("dir-cards").addEventListener("click", (event) => {
+    const card = event.target.closest(".route-card");
+    if (card) selectRoute(Number(card.dataset.index));
+  });
+  $("dir-colour").onchange = drawRoutes;
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && dir.picking) {
+      stopPicking();
+      setDirStatus("");
+    }
+  });
 }
 
 /* ----------------------------------------------------------------------- map */
@@ -1896,9 +2715,14 @@ async function initMap() {
   });
 
   map.on("click", "cells-fill", (event) => {
+    // While directions hold the panel a click belongs to them: it sets a
+    // picked point, or selects a route, and never opens a cell underneath.
+    if (dir.open) return;
     const feature = event.features?.[0];
     if (feature) selectCell(feature.properties.h3);
   });
+
+  initRouteLayers();
 
   // The compass reads from the map centre until a location is shared, and its
   // rose turns with the map either way.
@@ -2214,11 +3038,19 @@ function wireControls() {
         renderHeadlineStat(state.detail);
         renderHours(state.detail);
       }
+      // Both tracks ride on every route too.
+      if (dir.result) renderDirections();
       renderTable();
     };
   });
 
   $("btn-locate").onclick = locateMe;
+  // Only shown on a phone, where the fields are folded away (styles.css).
+  $("btn-filters").onclick = () => {
+    const open = $("filters").classList.toggle("is-open");
+    $("btn-filters").setAttribute("aria-expanded", String(open));
+  };
+  wireDirections();
   $("locate-note-close").onclick = hideLocateNote;
   $("detail-close").onclick = closeDetail;
 
@@ -2310,4 +3142,5 @@ function watchForRefresh() {
   state.refreshStamp = version ? String(version.last_refreshed_at) : null;
   watchForRefresh();
   watchCityClock();
+  loadDirectionsStatus();
 })();

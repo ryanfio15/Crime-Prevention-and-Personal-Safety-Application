@@ -1,6 +1,7 @@
 # Logs a critical journal alert for a failed unit: started by the
 # OnFailure=safety-notify@%N.service line on every safety-etl@, safety-etl-hourly@,
-# safety-ops@, safety-autodeploy@, safety-api@ and safety-backup* unit. %i is the
+# safety-ops@, safety-autodeploy@, safety-api@, safety-backup* and
+# safety-valhalla-fetch unit. %i is the
 # failed unit's name without ".service", e.g. safety-etl@prod. Never give this
 # unit an OnFailure= of its own.
 #

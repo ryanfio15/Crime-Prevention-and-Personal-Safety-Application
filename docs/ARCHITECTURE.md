@@ -37,7 +37,20 @@ flowchart LR
   INS --> DB
   CENSUS[(census.gov TIGER / LODES)] --> ETL
   AD -- "anonymous HTTPS" --> GH[(GitHub)]
+  API -- "drive / walk / bike<br/>HTTP loopback" --> VAL["Valhalla 3.9.1<br/>container safety_valhalla<br/>127.0.0.1:58002 (profile routing)"]
+  API -- "transit plans, HTTPS" --> MOTIS[(Transitous / MOTIS<br/>api.transitous.org)]
+  API -- "address search, HTTPS" --> PHOTON[(Photon<br/>photon.komoot.io)]
+  VF["safety-valhalla-fetch timer, weekly"] -- "release download" --> GH
+  VF -- "verified tiles, symlink swap" --> VAL
+  GHA["GitHub Actions valhalla-tiles<br/>monthly build"] -- "release valhalla-tiles-*" --> GH
 ```
+
+Directions (drive, walk, bike, transit) and address search go **through the API**, never from the browser to a
+provider: the content security policy stays as it is, the client's IP never reaches a third party, and the
+providers' hosts come only from settings. `safety/api/directions.py` holds the endpoints; `safety/routing/` the
+provider clients and route scoring (`scoring.py`), which compares each stretch of a route with the city average the
+same way the map colours a res-9 cell (`cellRatio` in `web/app.js`, kept in step by a shared parity fixture). The page
+half is `web/directions.js` (pure formatting, unit-tested) and the directions section of `web/app.js`.
 
 | Component | Tech | Responsibility | Port | Depends on |
 |---|---|---|---|---|
@@ -52,6 +65,8 @@ flowchart LR
 | **Deployer** | bash + systemd (`deploy/autodeploy.sh`, `deploy/lib/*.sh`) | Root timer: deploys `main`→prod and `testing`→dev once the GitHub `ci` check passes | candidates on 127.0.0.1:18000 / :18001 | GitHub, Docker DB |
 | **Backups** | `deploy/lib/backup.sh` + timers | Nightly `pg_dump` of both DBs; monthly test restore | — | Docker DB |
 | **Alerts** | `deploy/lib/notify.sh` via `OnFailure=` | Writes an `err` line to the journal and to `/var/lib/safety-notify/alerts.log` | — | — |
+| **Street routing** | Valhalla 3.9.1 in Docker (`docker-compose.yml` service `valhalla`, profile `routing`) | Drive / walk / bike routes for directions, one container for both instances. Tiles built in GitHub Actions (`deploy/valhalla/build.sh`), installed by `safety-valhalla-fetch.timer` (`deploy/valhalla/fetch.sh`). Runs as `nobody`, read-only, no capabilities, on its own `routing` network. Not in `/health` or the deploy smoke test | 127.0.0.1:58002 → 8002 (fetch candidate :58003) | `/srv/valhalla/current` (read-only), GitHub releases |
+| **Transit and geocoding providers** | Public Transitous (MOTIS `/api/v6/plan`) and Photon (komoot) | Transit itineraries; address search and reverse lookup. Called only by the API, under daily budgets (`TRANSIT_DAILY_BUDGET`, `GEOCODE_DAILY_BUDGET`) | — | Internet |
 
 ---
 
@@ -302,6 +317,12 @@ flowchart LR
   deployer["autodeploy (root)"] -->|HTTPS| gh["github.com, api.github.com"]
   deployer -->|candidate| cand["127.0.0.1:18000 / :18001"]
   deployer -->|pip| pypi[PyPI]
+  prod -->|"routing"| val["safety_valhalla 127.0.0.1:58002"]
+  dev -->|"routing"| val
+  prod -->|HTTPS| providers["api.transitous.org, photon.komoot.io"]
+  dev -->|HTTPS| providers
+  vfetch["valhalla fetch (root)"] -->|HTTPS| gh
+  vfetch -->|candidate| vcand["127.0.0.1:58003"]
   certbot -->|ACME HTTP-01 on :80| le["Let's Encrypt"]
   user -->|HTTPS| cdn["unpkg.com, basemaps.cartocdn.com"]
 ```
@@ -316,6 +337,8 @@ flowchart LR
 | `127.0.0.1:8001` | uvicorn `safety-api@dev` | Loopback | `install.sh:54`, `safety-dev.conf:18` |
 | `127.0.0.1:18000` / `:18001` | candidate release during a deploy (at most 300 s) | Loopback | `install.sh:53-54,112-139` |
 | `127.0.0.1:55432` → container 5432 | `safety_db` | Loopback only, on purpose: Docker's iptables rules bypass UFW | `docker-compose.yml:29-36` |
+| `127.0.0.1:58002` → container 8002 | `safety_valhalla` (profile `routing`) | Loopback only, same reason | `docker-compose.yml` (`valhalla`), `.env` `VALHALLA_PORT` |
+| `127.0.0.1:58003` | `safety_valhalla_candidate`, during a tiles install (minutes, weekly at most); `build.sh`'s smoke container when run locally | Loopback | `deploy/valhalla/fetch.sh`, `build.sh` |
 | `$PORT` (default 8000) on `0.0.0.0` | Docker image only (not used on the server) | n/a | `Dockerfile:80` |
 
 Other services on the host are out of scope. The firewall rules were not reviewed (⚠️ the owner should confirm them).
@@ -366,6 +389,9 @@ All routes are `GET` with no authentication. nginx limits `/api/v1/cells` to 2 r
 | ETL census | `www2.census.gov` (TIGER TABBLOCK20, PLACE), `lehd.ces.census.gov` (LODES8) |
 | Deployer | `github.com` (anonymous `git ls-remote`/`fetch`), `api.github.com` (anonymous check-runs, 60 requests/h per IP), PyPI |
 | certbot | `acme-v02.api.letsencrypt.org` |
+| API (directions) | `api.transitous.org` (`TRANSITOUS_URL`), `photon.komoot.io` (`PHOTON_URL`); User-Agent carries `ROUTING_CONTACT` |
+| Valhalla tiles fetch (root) | `api.github.com` (anonymous release list), `github.com` / `objects.githubusercontent.com` (release assets, ~1.2 GB) |
+| GitHub Actions `valhalla-tiles` (not the host) | `download.geofabrik.de` (state extracts), the timezone shapefile `valhalla_build_timezones` fetches, `ghcr.io`, the prod `/api/v1/cities` |
 | Browser | `unpkg.com`, `*.basemaps.cartocdn.com` |
 
 The base URL for each city comes from `reference.source_registry.base_url`, seeded by migrations.

@@ -1,0 +1,182 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "osm_type": "W",
+        "osm_id": 424807259,
+        "osm_key": "highway",
+        "osm_value": "primary",
+        "type": "street",
+        "name": "Market Street",
+        "locality": "Rittenhouse Square",
+        "district": "Center City",
+        "city": "Philadelphia",
+        "county": "Philadelphia",
+        "state": "Pennsylvania",
+        "country": "United States",
+        "postcode": "19139",
+        "countrycode": "US",
+        "extent": [
+          -75.1659015,
+          39.9526612,
+          -75.1654931,
+          39.9526101
+        ]
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -75.1656973,
+          39.9526357
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "osm_type": "W",
+        "osm_id": 424807264,
+        "osm_key": "highway",
+        "osm_value": "primary",
+        "type": "street",
+        "name": "Market Street",
+        "locality": "Gayborhood",
+        "district": "Center City",
+        "city": "Philadelphia",
+        "county": "Philadelphia",
+        "state": "Pennsylvania",
+        "country": "United States",
+        "postcode": "19107",
+        "countrycode": "US",
+        "extent": [
+          -75.1598866,
+          39.9519215,
+          -75.1592507,
+          39.9518431
+        ]
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -75.1595686,
+          39.9518828
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "osm_type": "W",
+        "osm_id": 1121988555,
+        "osm_key": "highway",
+        "osm_value": "primary",
+        "type": "street",
+        "name": "Market Street",
+        "locality": "Old City",
+        "district": "Center City",
+        "city": "Philadelphia",
+        "county": "Philadelphia",
+        "state": "Pennsylvania",
+        "country": "United States",
+        "postcode": "19105",
+        "countrycode": "US",
+        "extent": [
+          -75.1525343,
+          39.9510082,
+          -75.151998,
+          39.9509415
+        ]
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -75.1522662,
+          39.9509747
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "osm_type": "N",
+        "osm_id": 9454156306,
+        "osm_key": "shop",
+        "osm_value": "convenience",
+        "type": "house",
+        "name": "24th st Market & Deli",
+        "street": "Oakford Street",
+        "locality": "Point Breeze",
+        "district": "South Philadelphia",
+        "city": "Philadelphia",
+        "county": "Philadelphia",
+        "state": "Pennsylvania",
+        "country": "United States",
+        "postcode": "19146",
+        "countrycode": "US"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -75.1837798,
+          39.937472
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "osm_type": "N",
+        "osm_id": 1590298959,
+        "osm_key": "amenity",
+        "osm_value": "car_sharing",
+        "type": "house",
+        "name": "41st and Market Street",
+        "street": "Market Street",
+        "district": "West Philadelphia",
+        "city": "Philadelphia",
+        "county": "Philadelphia",
+        "state": "Pennsylvania",
+        "country": "United States",
+        "postcode": "19104",
+        "countrycode": "US"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -75.206008,
+          39.957675
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "osm_type": "N",
+        "osm_id": 6887496447,
+        "osm_key": "shop",
+        "osm_value": "convenience",
+        "type": "house",
+        "housenumber": "1930",
+        "name": "65th St. Food Market",
+        "street": "South 65th Street",
+        "locality": "Paschall",
+        "district": "Southwest Philadelphia",
+        "city": "Philadelphia",
+        "county": "Philadelphia",
+        "state": "PA",
+        "country": "United States",
+        "postcode": "19142",
+        "countrycode": "US"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -75.2376495,
+          39.9281825
+        ]
+      }
+    }
+  ]
+}

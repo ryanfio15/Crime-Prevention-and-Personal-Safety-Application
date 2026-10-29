@@ -1,0 +1,140 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "osm_type": "N",
+        "osm_id": 10076153317,
+        "osm_key": "amenity",
+        "osm_value": "cafe",
+        "type": "house",
+        "housenumber": "1400",
+        "name": "Dilworth Park Café",
+        "street": "John F. Kennedy Boulevard",
+        "district": "Center City",
+        "city": "Philadelphia",
+        "county": "Philadelphia",
+        "state": "PA",
+        "country": "United States",
+        "postcode": "19107",
+        "countrycode": "US"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -75.1643762,
+          39.953206
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "osm_type": "W",
+        "osm_id": 409880513,
+        "osm_key": "landuse",
+        "osm_value": "construction",
+        "type": "other",
+        "name": "3079 John F. Kennedy Blvd",
+        "district": "Croxton",
+        "city": "Jersey City",
+        "county": "Hudson",
+        "state": "New Jersey",
+        "country": "United States",
+        "countrycode": "US",
+        "extent": [
+          -74.0633527,
+          40.7389592,
+          -74.0626063,
+          40.7385445
+        ]
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -74.0629766,
+          40.7387511
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "osm_type": "N",
+        "osm_id": 6165057904,
+        "osm_key": "highway",
+        "osm_value": "bus_stop",
+        "type": "house",
+        "name": "Jfk Blvd At 8Th St",
+        "street": "John F. Kennedy Boulevard",
+        "district": "Port Johnson",
+        "city": "Bayonne",
+        "county": "Hudson",
+        "state": "New Jersey",
+        "country": "United States",
+        "postcode": "07305",
+        "countrycode": "US"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -74.1311277,
+          40.6563421
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "osm_type": "N",
+        "osm_id": 6165057906,
+        "osm_key": "highway",
+        "osm_value": "bus_stop",
+        "type": "house",
+        "name": "Jfk Blvd At 10Th St",
+        "street": "John F. Kennedy Boulevard",
+        "district": "Port Johnson",
+        "city": "Bayonne",
+        "county": "Hudson",
+        "state": "New Jersey",
+        "country": "United States",
+        "postcode": "07305",
+        "countrycode": "US"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -74.129991,
+          40.6576613
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "osm_type": "N",
+        "osm_id": 6164997354,
+        "osm_key": "highway",
+        "osm_value": "bus_stop",
+        "type": "house",
+        "name": "Jfk Blvd At 16Th St",
+        "street": "John F. Kennedy Boulevard",
+        "district": "Port Johnson",
+        "city": "Bayonne",
+        "county": "Hudson",
+        "state": "New Jersey",
+        "country": "United States",
+        "postcode": "07305",
+        "countrycode": "US"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -74.1274,
+          40.6611412
+        ]
+      }
+    }
+  ]
+}

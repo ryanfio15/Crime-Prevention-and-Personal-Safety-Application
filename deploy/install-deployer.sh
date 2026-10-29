@@ -8,10 +8,13 @@
 # Copies, from this working copy:
 #   deploy/autodeploy.sh     -> /usr/local/sbin/safety-autodeploy
 #   deploy/lib/*.sh          -> /usr/local/lib/safety-deploy/
+#   deploy/valhalla/{fetch.sh,smoke.sh,regions.tsv}
+#                            -> /usr/local/lib/safety-deploy/valhalla/
 #   deploy/systemd/safety-autodeploy@.*  -> /etc/systemd/system/
 #   with --units, every other deploy/systemd/*.service and *.timer too
 #   with --nginx, deploy/nginx/<name>.conf -> /etc/nginx/sites-available/<name>
-# and creates the state directory /var/lib/safety-deploy.
+# and creates the state directory /var/lib/safety-deploy and /srv/valhalla
+# (empty; safety-valhalla-fetch fills it).
 #
 # Deploys never update these: root runs only what a human installed here, never
 # a file a push could change. So after changing any of the files above, merge
@@ -56,6 +59,16 @@ install -d -o root -g root -m 0700 /var/lib/safety-deploy
 install -o root -g root -m 0755 "$src/autodeploy.sh" /usr/local/sbin/safety-autodeploy
 install -d -o root -g root -m 0755 /usr/local/lib/safety-deploy
 install -o root -g root -m 0755 "$src"/lib/*.sh /usr/local/lib/safety-deploy/
+# The routing tiles installer (safety-valhalla-fetch.service) and the two files
+# it reads beside itself. Not build.sh: tiles are built in GitHub Actions, and
+# root never runs it.
+install -d -o root -g root -m 0755 /usr/local/lib/safety-deploy/valhalla
+install -o root -g root -m 0755 "$src"/valhalla/fetch.sh "$src"/valhalla/smoke.sh \
+    /usr/local/lib/safety-deploy/valhalla/
+install -o root -g root -m 0644 "$src"/valhalla/regions.tsv /usr/local/lib/safety-deploy/valhalla/
+# Its data directory, here and not only in fetch.sh: the unit's
+# ReadWritePaths=/srv/valhalla has to exist before the unit can start.
+install -d -o root -g root -m 0755 /srv/valhalla
 install -o root -g root -m 0644 "$src"/systemd/safety-autodeploy@.* "$units/"
 
 if [ -n "$want_units" ]; then

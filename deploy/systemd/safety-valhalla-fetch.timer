@@ -1,0 +1,21 @@
+# Weekly check for new routing tiles (safety-valhalla-fetch.service). The
+# workflow builds on the first Sunday of the month at 03:30 UTC and takes
+# about half an hour, so a Sunday 06:30 check installs a new build the same
+# morning; on the other Sundays it finds nothing new and exits. Weekly rather
+# than monthly so a missed build or a hand-run workflow is picked up within
+# days.
+#
+# Not enabled by install-deployer.sh. Turn it on once Valhalla is wanted
+# (docs/DEPLOYMENT.md, "Routing (Valhalla)"):
+#   sudo systemctl enable --now safety-valhalla-fetch.timer
+
+[Unit]
+Description=Weekly safety routing tiles fetch
+
+[Timer]
+OnCalendar=Sun *-*-* 06:30:00 UTC
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

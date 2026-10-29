@@ -59,3 +59,39 @@ def test_rate_limited_responses_carry_the_headers(monkeypatch):
     r = TestClient(main.app).get("/api/v1/cities")
     assert r.status_code == 429
     assert r.headers["content-security-policy"] == APP_CSP
+
+
+# ---------------------------------------------------------------- directions
+
+
+def test_csp_connect_src_is_unchanged_by_directions():
+    # Every provider call goes through the API, so the page never needs to
+    # reach Photon, Transitous or Valhalla itself.
+    connect = next(d for d in APP_CSP.split("; ") if d.startswith("connect-src"))
+    assert connect == "connect-src 'self' https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com"
+    for host in ("photon", "komoot", "transitous", "valhalla", "58002"):
+        assert host not in APP_CSP
+
+
+def test_geocode_responses_carry_the_headers():
+    # A validation failure needs no providers and no database.
+    r = TestClient(main.app).post("/api/v1/geocode", json={"q": "ab", "city": "phl"})
+    assert r.status_code == 422
+    for name in ALWAYS:
+        assert name in r.headers, name
+    assert r.headers["content-security-policy"] == APP_CSP
+
+
+def test_directions_status_carries_the_headers():
+    # Without the lifespan there is no routing state: a 503, with headers.
+    r = TestClient(main.app).get("/api/v1/directions/status")
+    assert r.status_code == 503
+    for name in ALWAYS:
+        assert name in r.headers, name
+
+
+def test_rate_limited_geocode_carries_the_headers(monkeypatch):
+    monkeypatch.setattr(ratelimit, "_GEOCODE_BURST", 0)
+    r = TestClient(main.app).post("/api/v1/geocode/reverse", json={"lat": 39.95, "lng": -75.16})
+    assert r.status_code == 429
+    assert r.headers["content-security-policy"] == APP_CSP

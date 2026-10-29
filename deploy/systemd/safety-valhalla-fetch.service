@@ -1,0 +1,52 @@
+# Install the newest Valhalla routing tiles (deploy/valhalla/fetch.sh): asks
+# GitHub for the newest valhalla-tiles-* release, and if it is not what
+# /srv/valhalla/current already points at, downloads and checksums it, smoke
+# tests it in a candidate container on 127.0.0.1:58003, swaps the symlink and
+# restarts safety_valhalla, keeping one previous build for rollback. Most runs
+# are one API call and an exit. The tiles are built in GitHub Actions
+# (.github/workflows/valhalla-tiles.yml), never here.
+# Installed by `sudo deploy/install-deployer.sh --units`; started by
+# safety-valhalla-fetch.timer, or by hand with
+# `sudo systemctl start safety-valhalla-fetch`.
+
+[Unit]
+Description=Safety routing tiles fetch (Valhalla)
+# A failure logs a critical alert to the journal (safety-notify@.service).
+OnFailure=safety-notify@%N.service
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/lib/safety-deploy/valhalla/fetch.sh
+# Background work on a host that also serves the map: the download, the
+# checksum of a ~1.2 GB tar and the candidate's page-ins all yield to the API
+# and the database.
+Nice=15
+IOSchedulingClass=idle
+# Confinement. The script needs only: write access to /srv/valhalla, read
+# access to /usr/local/lib/safety-deploy (read-only under strict, which is
+# all it needs), the network, and the Docker socket. ProtectSystem=strict
+# makes /run read-only too, but that does not stop the docker CLI: connect()
+# on a unix socket is not a write to the filesystem, so a read-only mount
+# does not block it. The containers it starts are created by dockerd, outside
+# this sandbox. Not PrivateNetwork: it downloads from GitHub and talks to
+# 127.0.0.1:58002/58003.
+ProtectSystem=strict
+ReadWritePaths=/srv/valhalla
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Tiles must be world-readable for the container's nobody user.
+UMask=0022
+# A 1.2 GB download on a slow line, plus two smoke tests.
+TimeoutStartSec=1h

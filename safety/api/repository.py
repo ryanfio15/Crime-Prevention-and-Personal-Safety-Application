@@ -271,6 +271,151 @@ def cell_source(conn: psycopg.Connection, h3_index: str) -> str | None:
     return row["source_id"] if row else None
 
 
+def cells_exist(conn: psycopg.Connection, source_id: str, cells: list[str]) -> set[str]:
+    """Which of `cells` are in `source_id`'s served cell universe.
+
+    The geocoder's second filter (safety/api/directions.py): a city's bounding
+    box is a rectangle and takes in ground the city does not cover -- Mercer
+    Island sits inside Seattle's -- while gold.cell_geometry holds exactly the
+    cells the map draws. A primary-key probe per cell; callers pass a handful.
+    """
+    if not cells:
+        return set()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT h3_index FROM gold.cell_geometry WHERE source_id = %s AND h3_index = ANY(%s)",
+            (source_id, list(cells)),
+        )
+        return {row["h3_index"] for row in cur.fetchall()}
+
+
+# The scheme the map's safety layer is joined on (`scheme` in
+# _CELLS_GEOJSON_SQL): route scoring reads the same rows the map paints.
+_SERVED_SCHEME = (
+    "(SELECT severity_scheme_version FROM reference.source_registry WHERE source_id = %(source_id)s)"
+)
+
+
+def route_baseline(
+    conn: psycopg.Connection, source_id: str, h3_res: int, time_window: str, hourly: bool
+) -> list[dict[str, Any]]:
+    """The city averages a route is compared against, per track and hour block.
+
+    valueDomain (web/app.js) run in SQL over the stored layer: the
+    exposure-weighted mean of the smoothed rate across cells with something of
+    the track reported, plus the plain mean and the counts for the fallback
+    when no cell carries a population figure. hour_block is NULL for the
+    all-hours row. The hourly rows take each cell's exposure from its
+    all-hours row, which is where the map reads it from too. Plain types, so
+    the result can ride the stamped JSON cache (safety/api/directions.py).
+    """
+    params = {"source_id": source_id, "h3_res": h3_res, "time_window": time_window}
+    hourly_sql = f"""
+        UNION ALL
+        SELECT h.track, h.hour_block,
+               sum(h.smoothed_per_km2 * s.exposure)
+                   FILTER (WHERE h.safety_tier <> 0 AND s.exposure > 0),
+               sum(s.exposure) FILTER (WHERE h.safety_tier <> 0 AND s.exposure > 0),
+               sum(h.smoothed_per_km2) FILTER (WHERE h.safety_tier <> 0),
+               count(*) FILTER (WHERE h.safety_tier <> 0)
+        FROM gold.cell_hour_safety h
+        LEFT JOIN gold.cell_safety s
+               ON s.source_id = h.source_id AND s.h3_index = h.h3_index
+              AND s.h3_res = h.h3_res AND s.time_window = h.time_window
+              AND s.track = h.track AND s.scheme_version = h.scheme_version
+        WHERE h.source_id = %(source_id)s AND h.h3_res = %(h3_res)s
+          AND h.time_window = %(time_window)s AND h.scheme_version = {_SERVED_SCHEME}
+        GROUP BY h.track, h.hour_block
+    """
+    sql = f"""
+        SELECT track, NULL::smallint AS hour_block,
+               sum(smoothed_per_km2 * exposure)
+                   FILTER (WHERE safety_tier <> 0 AND exposure > 0) AS weighted,
+               sum(exposure) FILTER (WHERE safety_tier <> 0 AND exposure > 0) AS people,
+               sum(smoothed_per_km2) FILTER (WHERE safety_tier <> 0) AS total,
+               count(*) FILTER (WHERE safety_tier <> 0) AS painted
+        FROM gold.cell_safety
+        WHERE source_id = %(source_id)s AND h3_res = %(h3_res)s
+          AND time_window = %(time_window)s AND scheme_version = {_SERVED_SCHEME}
+        GROUP BY track
+        {hourly_sql if hourly else ""}
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        return [
+            {
+                "track": r["track"],
+                "hour_block": r["hour_block"],
+                "weighted": float(r["weighted"] or 0),
+                "people": float(r["people"] or 0),
+                "total": float(r["total"] or 0),
+                "painted": int(r["painted"] or 0),
+            }
+            for r in cur.fetchall()
+        ]
+
+
+def route_cells(
+    conn: psycopg.Connection,
+    source_id: str,
+    h3_res: int,
+    time_window: str,
+    cells: list[str],
+    hour_blocks: list[int],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """The safety rows for the cells a route crosses: {track: {h3: row}}.
+
+    Each row carries `sm` and `tier` (all hours) and, for each hour block in
+    `hour_blocks`, `hsm.<h>` / `htier.<h>` -- the same properties a map
+    feature carries, under the names the endpoint maps onto
+    scoring.cell_ratio. A cell with no row is absent, and is unrated on the
+    route as it is unpainted on the map. Two index probes per cell list; a
+    route crosses tens to a few hundred.
+    """
+    out: dict[str, dict[str, dict[str, Any]]] = {"violent": {}, "non_violent": {}}
+    if not cells:
+        return out
+    params = {
+        "source_id": source_id,
+        "h3_res": h3_res,
+        "time_window": time_window,
+        "cells": list(cells),
+        "hours": list(hour_blocks),
+    }
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT h3_index, track, smoothed_per_km2, safety_tier
+            FROM gold.cell_safety
+            WHERE source_id = %(source_id)s AND h3_res = %(h3_res)s
+              AND time_window = %(time_window)s AND scheme_version = {_SERVED_SCHEME}
+              AND h3_index = ANY(%(cells)s)
+            """,
+            params,
+        )
+        for r in cur.fetchall():
+            out.setdefault(r["track"], {})[r["h3_index"]] = {
+                "sm": float(r["smoothed_per_km2"]),
+                "tier": r["safety_tier"],
+            }
+        if hour_blocks:
+            cur.execute(
+                f"""
+                SELECT h3_index, track, hour_block, smoothed_per_km2, safety_tier
+                FROM gold.cell_hour_safety
+                WHERE source_id = %(source_id)s AND h3_res = %(h3_res)s
+                  AND time_window = %(time_window)s AND scheme_version = {_SERVED_SCHEME}
+                  AND hour_block = ANY(%(hours)s) AND h3_index = ANY(%(cells)s)
+                """,
+                params,
+            )
+            for r in cur.fetchall():
+                row = out.setdefault(r["track"], {}).setdefault(r["h3_index"], {})
+                row[f"hsm.{r['hour_block']}"] = float(r["smoothed_per_km2"])
+                row[f"htier.{r['hour_block']}"] = r["safety_tier"]
+    return out
+
+
 def hour_label(hour: int) -> str:
     """'20:00-21:00'. The last block reads 23:00-24:00, not 23:00-00:00."""
     return f"{hour:02d}:00–{hour + 1:02d}:00"

@@ -1,0 +1,13 @@
+{
+  "_doc": "Shared by tests/test_routing_scoring.py (scoring.cell_ratio) and tests/js/directions.test.mjs (cellRatio in web/app.js): the same cell, measure and city averages must give the same ratio on the page and in the API. `hour` null is the all-hours view. `own` is the average of the measure on screen (hourly when hour is set); `overall` the all-hours average.",
+  "cases": [
+    {"name": "all hours, reported", "cell": {"sm": 0.3, "tier": 2}, "hour": null, "own": 0.15, "overall": 0.15, "expected": 2.0},
+    {"name": "all hours, nothing reported borrows its smoothed rate", "cell": {"sm": 0.05, "tier": 0}, "hour": null, "own": 0.1, "overall": 0.1, "expected": 0.5},
+    {"name": "all hours, no row", "cell": null, "hour": null, "own": 0.1, "overall": 0.1, "expected": null},
+    {"name": "hourly, reported at that hour", "cell": {"sm": 0.3, "tier": 3, "hsm": 0.02, "htier": 1}, "hour": 17, "own": 0.01, "overall": 0.15, "expected": 2.0},
+    {"name": "hourly, nothing at that hour borrows all hours", "cell": {"sm": 0.3, "tier": 3, "hsm": 0.0, "htier": 0}, "hour": 17, "own": 0.01, "overall": 0.15, "expected": 2.0},
+    {"name": "hourly, no hourly row borrows all hours", "cell": {"sm": 0.075, "tier": 1}, "hour": 17, "own": 0.01, "overall": 0.15, "expected": 0.5},
+    {"name": "hourly average missing", "cell": {"sm": 0.3, "tier": 3, "hsm": 0.02, "htier": 1}, "hour": 17, "own": null, "overall": 0.15, "expected": null},
+    {"name": "no averages at all", "cell": {"sm": 0.3, "tier": 3}, "hour": null, "own": null, "overall": null, "expected": null}
+  ]
+}

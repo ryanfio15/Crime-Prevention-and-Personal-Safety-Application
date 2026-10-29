@@ -1,0 +1,456 @@
+{
+ "trip": {
+  "locations": [
+   {
+    "type": "break",
+    "lat": 38.9096,
+    "lon": -77.0434,
+    "original_index": 0
+   },
+   {
+    "type": "break",
+    "lat": 38.8973,
+    "lon": -77.0063,
+    "side_of_street": "right",
+    "original_index": 1
+   }
+  ],
+  "legs": [
+   {
+    "maneuvers": [
+     {
+      "type": 1,
+      "instruction": "Drive northwest on Connecticut Avenue Northwest.",
+      "verbal_succinct_transition_instruction": "Drive northwest.",
+      "verbal_pre_transition_instruction": "Drive northwest on Connecticut Avenue Northwest.",
+      "verbal_post_transition_instruction": "Continue for 600 meters.",
+      "street_names": [
+       "Connecticut Avenue Northwest"
+      ],
+      "bearing_after": 336,
+      "time": 42.24,
+      "length": 0.587,
+      "cost": 85.235,
+      "begin_shape_index": 0,
+      "end_shape_index": 15,
+      "travel_mode": "drive",
+      "travel_type": "car"
+     },
+     {
+      "type": 10,
+      "instruction": "Turn right onto Florida Avenue Northwest.",
+      "verbal_transition_alert_instruction": "Turn right onto Florida Avenue Northwest.",
+      "verbal_succinct_transition_instruction": "Turn right.",
+      "verbal_pre_transition_instruction": "Turn right onto Florida Avenue Northwest.",
+      "verbal_post_transition_instruction": "Continue for 500 meters.",
+      "street_names": [
+       "Florida Avenue Northwest"
+      ],
+      "bearing_before": 343,
+      "bearing_after": 49,
+      "time": 56.446,
+      "length": 0.51,
+      "cost": 108.057,
+      "begin_shape_index": 15,
+      "end_shape_index": 36,
+      "travel_mode": "drive",
+      "travel_type": "car"
+     },
+     {
+      "type": 9,
+      "instruction": "Bear right onto U Street Northwest.",
+      "verbal_transition_alert_instruction": "Bear right onto U Street Northwest.",
+      "verbal_succinct_transition_instruction": "Bear right.",
+      "verbal_pre_transition_instruction": "Bear right onto U Street Northwest.",
+      "verbal_post_transition_instruction": "Continue for 3 kilometers.",
+      "street_names": [
+       "U Street Northwest"
+      ],
+      "bearing_before": 57,
+      "bearing_after": 90,
+      "time": 316.683,
+      "length": 2.96,
+      "cost": 575.62,
+      "begin_shape_index": 36,
+      "end_shape_index": 164,
+      "travel_mode": "drive",
+      "travel_type": "car"
+     },
+     {
+      "type": 10,
+      "instruction": "Turn right onto North Capitol Street Northwest.",
+      "verbal_transition_alert_instruction": "Turn right onto North Capitol Street Northwest.",
+      "verbal_succinct_transition_instruction": "Turn right.",
+      "verbal_pre_transition_instruction": "Turn right onto North Capitol Street Northwest.",
+      "verbal_post_transition_instruction": "Continue for 200 meters.",
+      "street_names": [
+       "North Capitol Street Northwest"
+      ],
+      "bearing_before": 122,
+      "bearing_after": 180,
+      "time": 21.07,
+      "length": 0.175,
+      "cost": 57.543,
+      "begin_shape_index": 164,
+      "end_shape_index": 171,
+      "travel_mode": "drive",
+      "travel_type": "car"
+     },
+     {
+      "type": 5,
+      "instruction": "Your destination is on the right.",
+      "verbal_transition_alert_instruction": "Your destination will be on the right.",
+      "verbal_pre_transition_instruction": "Your destination is on the right.",
+      "bearing_before": 286,
+      "time": 0.0,
+      "length": 0.0,
+      "cost": 0.0,
+      "begin_shape_index": 254,
+      "end_shape_index": 254,
+      "travel_mode": "drive",
+      "travel_type": "car"
+     }
+    ],
+    "summary": {
+     "level_changes": [
+      [
+       216,
+       1.0
+      ]
+     ],
+     "has_time_restrictions": false,
+     "has_toll": false,
+     "has_highway": false,
+     "has_ferry": false,
+     "min_lat": 38.896761,
+     "min_lon": -77.04609,
+     "max_lat": 38.917014,
+     "max_lon": -77.004781,
+     "time": 675.016,
+     "length": 6.106,
+     "cost": 1313.508
+    },
+    "shape": "uizeiArij}qCeo@`[ah@nVcLxFye@dUoN`HkDfBwD`AkNbGaC~@iCnAgsA~o@oCrAyG`DuDlAwEjAmCsEoEoJoC{FgAaCqOc\\mCyF_BkDwA_DcO}\\_EmJaCwF_CsFmLuXaB{DuAeDwM{[_L}XkUck@uBkFkCqGcH_QBqQ@sI@mi@CcfAAoT?oFAyG@oRAiP?ej@?{K@oJ@oI@eH?cF?yR?eX?cY?kC?qU?yB?sD?}F@oEAyQ?q[?wP?{GFm|@CsC@cE?{D@{C?cY?eSC_oA@wG?wG@oT?kR?cK?k[?{D?{DAmX@{Z?aE?qEAcZ@eY?qD?iEBeVGcH@uE?mF@yZ?mN@uE?sM?wGBk@By@HiAJgAL}@He@dKuj@^eBj@iBj@iB~AqEr@wB~EkOrKi\\rBuGxBiGhIyWhCkIdAcDpKk\\~EiOtHcU`AiDbCyHvJoZhIaWfAmDhIiWzAoEpFePl@uBbD{KjFyOxGqShAoDdCyHbBuFdCcI~AoFjKa[vBuGrCmIz@iC`Oge@bC}HhTsp@tBwGbO}d@rCeIzZeaArA_EnAiDbH{T`@sAzFmQrBoGrF}PzEeOzAwEz@kCTq@jImWxEiOTs@lCcItJyYbCkG|F@tQAvVEdPEnDAdC?pTFtC?~U?fqA?fQ?|wA?nE?|C@bRFfH?vY@bC?xN@~]?lB@jC?dD@fW@fg@@xA?lC?`B?nB?xj@IbRL|A?hE@x^@lF?zA?hN@hF?r@_Ev@mFAq]AwSBijA@}ELwKdCp@`@`@bB`B^Nx{An`@dAK|@IR_B|@{GlEa\\tFya@tLy}@Lu@Lo@Xw@\\m@b@m@j@i@h@[t@]d@K`@Af@FxYxHxEdD~Ah@dBh@xBn@xI|Bh@N`AX`@Lf@Td@ZZ`@P`@Np@Jn@Fr@Aj@Gh@_@lCeJrq@}@tGM~@"
+   }
+  ],
+  "summary": {
+   "has_time_restrictions": false,
+   "has_toll": false,
+   "has_highway": false,
+   "has_ferry": false,
+   "min_lat": 38.896761,
+   "min_lon": -77.04609,
+   "max_lat": 38.917014,
+   "max_lon": -77.004781,
+   "time": 675.016,
+   "length": 6.106,
+   "cost": 1313.508
+  },
+  "status_message": "Found route between points",
+  "status": 0,
+  "units": "kilometers",
+  "language": "en-US"
+ },
+ "alternates": [
+  {
+   "trip": {
+    "locations": [
+     {
+      "type": "break",
+      "lat": 38.9096,
+      "lon": -77.0434,
+      "original_index": 0
+     },
+     {
+      "type": "break",
+      "lat": 38.8973,
+      "lon": -77.0063,
+      "side_of_street": "right",
+      "original_index": 1
+     }
+    ],
+    "legs": [
+     {
+      "maneuvers": [
+       {
+        "type": 1,
+        "instruction": "Drive northwest on Connecticut Avenue Northwest.",
+        "verbal_succinct_transition_instruction": "Drive northwest.",
+        "verbal_pre_transition_instruction": "Drive northwest on Connecticut Avenue Northwest.",
+        "verbal_post_transition_instruction": "Continue for 600 meters.",
+        "street_names": [
+         "Connecticut Avenue Northwest"
+        ],
+        "bearing_after": 336,
+        "time": 42.24,
+        "length": 0.587,
+        "cost": 85.235,
+        "begin_shape_index": 0,
+        "end_shape_index": 15,
+        "travel_mode": "drive",
+        "travel_type": "car"
+       },
+       {
+        "type": 10,
+        "instruction": "Turn right onto Florida Avenue Northwest.",
+        "verbal_transition_alert_instruction": "Turn right onto Florida Avenue Northwest.",
+        "verbal_succinct_transition_instruction": "Turn right.",
+        "verbal_pre_transition_instruction": "Turn right onto Florida Avenue Northwest.",
+        "verbal_post_transition_instruction": "Continue for 500 meters.",
+        "street_names": [
+         "Florida Avenue Northwest"
+        ],
+        "bearing_before": 343,
+        "bearing_after": 49,
+        "time": 56.446,
+        "length": 0.51,
+        "cost": 108.057,
+        "begin_shape_index": 15,
+        "end_shape_index": 36,
+        "travel_mode": "drive",
+        "travel_type": "car"
+       },
+       {
+        "type": 9,
+        "instruction": "Bear right onto U Street Northwest.",
+        "verbal_transition_alert_instruction": "Bear right onto U Street Northwest.",
+        "verbal_succinct_transition_instruction": "Bear right.",
+        "verbal_pre_transition_instruction": "Bear right onto U Street Northwest.",
+        "verbal_post_transition_instruction": "Continue for 2 kilometers.",
+        "street_names": [
+         "U Street Northwest"
+        ],
+        "bearing_before": 57,
+        "bearing_after": 90,
+        "time": 201.333,
+        "length": 1.883,
+        "cost": 358.291,
+        "begin_shape_index": 36,
+        "end_shape_index": 120,
+        "travel_mode": "drive",
+        "travel_type": "car"
+       },
+       {
+        "type": 10,
+        "instruction": "Turn right onto US 29/6th Street Northwest. Continue on 6th Street Northwest.",
+        "verbal_transition_alert_instruction": "Turn right onto US 29.",
+        "verbal_succinct_transition_instruction": "Turn right.",
+        "verbal_pre_transition_instruction": "Turn right onto US 29, 6th Street Northwest.",
+        "verbal_post_transition_instruction": "Continue on 6th Street Northwest for 1.5 kilometers.",
+        "street_names": [
+         "6th Street Northwest"
+        ],
+        "begin_street_names": [
+         "US 29",
+         "6th Street Northwest"
+        ],
+        "bearing_before": 117,
+        "bearing_after": 162,
+        "time": 151.036,
+        "length": 1.56,
+        "cost": 243.375,
+        "begin_shape_index": 120,
+        "end_shape_index": 178,
+        "travel_mode": "drive",
+        "travel_type": "car"
+       },
+       {
+        "type": 5,
+        "instruction": "Your destination is on the right.",
+        "verbal_transition_alert_instruction": "Your destination will be on the right.",
+        "verbal_pre_transition_instruction": "Your destination is on the right.",
+        "bearing_before": 286,
+        "time": 0.0,
+        "length": 0.0,
+        "cost": 0.0,
+        "begin_shape_index": 302,
+        "end_shape_index": 302,
+        "travel_mode": "drive",
+        "travel_type": "car"
+       }
+      ],
+      "summary": {
+       "has_time_restrictions": false,
+       "has_toll": false,
+       "has_highway": false,
+       "has_ferry": false,
+       "min_lat": 38.895821,
+       "min_lon": -77.04609,
+       "max_lat": 38.917014,
+       "max_lon": -77.004942,
+       "time": 658.264,
+       "length": 6.301,
+       "cost": 1355.224
+      },
+      "shape": "uizeiArij}qCeo@`[ah@nVcLxFye@dUoN`HkDfBwD`AkNbGaC~@iCnAgsA~o@oCrAyG`DuDlAwEjAmCsEoEoJoC{FgAaCqOc\\mCyF_BkDwA_DcO}\\_EmJaCwF_CsFmLuXaB{DuAeDwM{[_L}XkUck@uBkFkCqGcH_QBqQ@sI@mi@CcfAAoT?oFAyG@oRAiP?ej@?{K@oJ@oI@eH?cF?yR?eX?cY?kC?qU?yB?sD?}F@oEAyQ?q[?wP?{GFm|@CsC@cE?{D@{C?cY?eSC_oA@wG?wG@oT?kR?cK?k[?{D?{DAmX@{Z?aE?qEAcZ@eY?qD?iEBeVGcH@uE?mF@yZ?mN@uE?sM?wGBk@By@HiAJgAL}@He@dKuj@^eBj@iBj@iB~AqEr@wB~EkOrKi\\rBuGxBiGhIyWhCkIdAcDpKk\\~EiOtHcU`AiDj@]`@]p@]j@SzA?rfAIvC?nC?jWE|GFxJArE?hDCtFcAzCe@fM@hCvAfC@nUBbf@J|T?dC?`D?d~@A`S?jD?hB?fO?tY?vL?rE?xDAvfA?|D?zC?lN?z@?|d@?pa@?pC?bC?nqABbD?rD?xT@nE?hF@`DAbJA|a@F~A?bC@fC?dB?zA@rH?tg@EdH@dBgHPo@zEwR`CuJ~BmJrAmFlAeF|Mcj@hOqm@zAeGrBkIz@mDlCsKlFeKv@oB~@aCt@{Ct@uBzAgH~@uDbQys@|@sDxAqGvCyLvFmUjFaTlDwNb@{AbByG~AoGhToz@zA}FdB{GtAgFnOug@nDsSjCwIrEgOjDaL`JgZnDkL`Pai@xDmJxCwGlPci@rAaDnAiCzAcCbBaChB_CrBgBvAeAvH_ExDwArBu@~BgAbBcAhBgAxAiAzBwB|AyBb@s@lB}CzAuCzAiDbAwCn@uBn@qCf@aCf@gCXuBVcCN_DD}D@aEMqFUsDG{@MiBu@cLeB]iBe@mCgA{AeAWWcC{Bm@o@wIqImDeEgA}Aw@qAm@uAu@{BgA}@y@e@_Aa@y@Y_Co@]I}A]oBc@sTkF_Gk@xEdD~Ah@dBh@xBn@xI|Bh@N`AX`@Lf@Td@ZZ`@P`@Np@Jn@Fr@Aj@Gh@_@lCeJrq@}@tGM~@"
+     }
+    ],
+    "summary": {
+     "has_time_restrictions": false,
+     "has_toll": false,
+     "has_highway": false,
+     "has_ferry": false,
+     "min_lat": 38.895821,
+     "min_lon": -77.04609,
+     "max_lat": 38.917014,
+     "max_lon": -77.004942,
+     "time": 658.264,
+     "length": 6.301,
+     "cost": 1355.224
+    },
+    "status_message": "Found route between points",
+    "status": 0,
+    "units": "kilometers",
+    "language": "en-US"
+   }
+  },
+  {
+   "trip": {
+    "locations": [
+     {
+      "type": "break",
+      "lat": 38.9096,
+      "lon": -77.0434,
+      "original_index": 0
+     },
+     {
+      "type": "break",
+      "lat": 38.8973,
+      "lon": -77.0063,
+      "side_of_street": "right",
+      "original_index": 1
+     }
+    ],
+    "legs": [
+     {
+      "maneuvers": [
+       {
+        "type": 1,
+        "instruction": "Drive northwest on Connecticut Avenue Northwest.",
+        "verbal_succinct_transition_instruction": "Drive northwest.",
+        "verbal_pre_transition_instruction": "Drive northwest on Connecticut Avenue Northwest.",
+        "verbal_post_transition_instruction": "Continue for 600 meters.",
+        "street_names": [
+         "Connecticut Avenue Northwest"
+        ],
+        "bearing_after": 336,
+        "time": 42.24,
+        "length": 0.587,
+        "cost": 85.235,
+        "begin_shape_index": 0,
+        "end_shape_index": 15,
+        "travel_mode": "drive",
+        "travel_type": "car"
+       },
+       {
+        "type": 10,
+        "instruction": "Turn right onto Florida Avenue Northwest.",
+        "verbal_transition_alert_instruction": "Turn right onto Florida Avenue Northwest.",
+        "verbal_succinct_transition_instruction": "Turn right.",
+        "verbal_pre_transition_instruction": "Turn right onto Florida Avenue Northwest.",
+        "verbal_post_transition_instruction": "Continue for 500 meters.",
+        "street_names": [
+         "Florida Avenue Northwest"
+        ],
+        "bearing_before": 343,
+        "bearing_after": 49,
+        "time": 56.446,
+        "length": 0.51,
+        "cost": 108.057,
+        "begin_shape_index": 15,
+        "end_shape_index": 36,
+        "travel_mode": "drive",
+        "travel_type": "car"
+       },
+       {
+        "type": 9,
+        "instruction": "Bear right onto U Street Northwest.",
+        "verbal_transition_alert_instruction": "Bear right onto U Street Northwest.",
+        "verbal_succinct_transition_instruction": "Bear right.",
+        "verbal_pre_transition_instruction": "Bear right onto U Street Northwest.",
+        "verbal_post_transition_instruction": "Continue for 400 meters.",
+        "street_names": [
+         "U Street Northwest"
+        ],
+        "bearing_before": 57,
+        "bearing_after": 90,
+        "time": 40.083,
+        "length": 0.41,
+        "cost": 60.951,
+        "begin_shape_index": 36,
+        "end_shape_index": 49,
+        "travel_mode": "drive",
+        "travel_type": "car"
+       },
+       {
+        "type": 10,
+        "instruction": "Turn right onto 16th Street Northwest.",
+        "verbal_transition_alert_instruction": "Turn right onto 16th Street Northwest.",
+        "verbal_succinct_transition_instruction": "Turn right.",
+        "verbal_pre_transition_instruction": "Turn right onto 16th Street Northwest.",
+        "verbal_post_transition_instruction": "Continue for 900 meters.",
+        "street_names": [
+         "16th Street Northwest"
+        ],
+        "bearing_before": 90,
+        "bearing_after": 180,
+        "time": 103.284,
+        "length": 0.925,
+        "cost": 189.231,
+        "begin_shape_index": 49,
+        "end_shape_index": 92,
+        "travel_mode": "drive",
+        "travel_type": "car"
+       },
+       {
+        "type": 5,
+        "instruction": "Your destination is on the right.",
+        "verbal_transition_alert_instruction": "Your destination will be on the right.",
+        "verbal_pre_transition_instruction": "Your destination is on the right.",
+        "bearing_before": 286,
+        "time": 0.0,
+        "length": 0.0,
+        "cost": 0.0,
+        "begin_shape_index": 303,
+        "end_shape_index": 303,
+        "travel_mode": "drive",
+        "travel_type": "car"
+       }
+      ],
+      "summary": {
+       "has_time_restrictions": false,
+       "has_toll": false,
+       "has_highway": false,
+       "has_ferry": false,
+       "min_lat": 38.895821,
+       "min_lon": -77.04609,
+       "max_lat": 38.917014,
+       "max_lon": -77.004942,
+       "time": 637.474,
+       "length": 6.06,
+       "cost": 1423.616
+      },
+      "shape": "uizeiArij}qCeo@`[ah@nVcLxFye@dUoN`HkDfBwD`AkNbGaC~@iCnAgsA~o@oCrAyG`DuDlAwEjAmCsEoEoJoC{FgAaCqOc\\mCyF_BkDwA_DcO}\\_EmJaCwF_CsFmLuXaB{DuAeDwM{[_L}XkUck@uBkFkCqGcH_QBqQ@sI@mi@CcfAAoT?oFAyG@oRAiP?ej@?{K@oJ@oI|EAlA@db@Hhg@?~B@~C?de@FrB?jB?vMEdVBzCAtCA~@@rS@dRBvI@hT?lH@jDA|BAp_@DxD@vACzB?xe@?xB@xC@`OBtD@vEA|H?rB?hB@hP@tS@|C?lC?lT@jI@nB?rMtA|C@vMzCfo@J~@D`ALvAZnAb@hChBfB|A|AbBxC`DfB|B|BwCxB_Cz@}Ap@uAh@wAZoANuAJgA@kJ?qDF}GV_GRgD\\yCl@_EjDqUlEqQvG}X`@eBlAcFhDoHdBuDbGcV|GsZxQeu@d\\grA|X{iArBuClD}MkAyDl@sCjBuIfLkd@~Lgg@pAoFzA_G~EmSfH_ZlBoIxBmInIq\\`AgE`C_KtAqFnAaFb@iBp@kCdEqPp@uCbBiHrCsLpFeTzD_PdB}G^cBRkAJiABcJpAAlDcAr@Sn`@MxHG@c@?cD?uF@_eBDeHR}CT}Cj@qEp@mEz@oElKub@zPer@bBcHdBgHPo@zEwR`CuJ~BmJrAmFlAeF|Mcj@hOqm@zAeGrBkIz@mDlCsKlFeKv@oB~@aCt@{Ct@uBzAgH~@uDbQys@|@sDxAqGvCyLvFmUjFaTlDwNb@{AbByG~AoGhToz@zA}FdB{GtAgFnOug@nDsSjCwIrEgOjDaL`JgZnDkL`Pai@xDmJxCwGlPci@rAaDnAiCzAcCbBaChB_CrBgBvAeAvH_ExDwArBu@~BgAbBcAhBgAxAiAzBwB|AyBb@s@lB}CzAuCzAiDbAwCn@uBn@qCf@aCf@gCXuBVcCN_DD}D@aEMqFUsDG{@MiBu@cLeB]iBe@mCgA{AeAWWcC{Bm@o@wIqImDeEgA}Aw@qAm@uAu@{BgA}@y@e@_Aa@y@Y_Co@]I}A]oBc@sTkF_Gk@xEdD~Ah@dBh@xBn@xI|Bh@N`AX`@Lf@Td@ZZ`@P`@Np@Jn@Fr@Aj@Gh@_@lCeJrq@}@tGM~@"
+     }
+    ],
+    "summary": {
+     "has_time_restrictions": false,
+     "has_toll": false,
+     "has_highway": false,
+     "has_ferry": false,
+     "min_lat": 38.895821,
+     "min_lon": -77.04609,
+     "max_lat": 38.917014,
+     "max_lon": -77.004942,
+     "time": 637.474,
+     "length": 6.06,
+     "cost": 1423.616
+    },
+    "status_message": "Found route between points",
+    "status": 0,
+    "units": "kilometers",
+    "language": "en-US"
+   }
+  }
+ ]
+}

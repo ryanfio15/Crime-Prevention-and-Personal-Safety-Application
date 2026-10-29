@@ -60,6 +60,8 @@ body {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   height: 100vh;
+  /* A phone's browser bar is outside 100dvh, inside 100vh. */
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -128,6 +130,12 @@ body {
 }
 
 .filters-spacer { flex: 1 1 auto; }
+
+/* Its own box only on a phone (below). */
+.filters-fields { display: contents; }
+.filters-toggle { display: none; }
+.filters-toggle::after { content: " ▾"; color: var(--text-muted); }
+.filters.is-open .filters-toggle::after { content: " ▴"; }
 
 .field { display: flex; flex-direction: column; gap: 5px; }
 
@@ -371,6 +379,7 @@ select:disabled { opacity: 0.55; cursor: not-allowed; }
   color: var(--text-primary);
 }
 .compass-readout b { font-size: 14px; }
+.compass-detail { display: block; }
 
 .compass-foot {
   margin-top: 3px;
@@ -640,6 +649,203 @@ select:disabled { opacity: 0.55; cursor: not-allowed; }
 .sheet dt { color: var(--text-muted); }
 .sheet dd { margin: 0; text-align: right; }
 
+/* ------------------------------------------------------------ directions --- */
+
+/* While open, directions take the whole panel; the cell detail is kept as it
+   was underneath and comes back on close. */
+.detail.dir-open > :not(.directions) { display: none !important; }
+
+.directions h2 { margin: 4px 0 12px; font-size: 15px; }
+
+.dir-ends {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "from swap" "to swap";
+  gap: 6px 8px;
+  margin-bottom: 12px;
+}
+.dir-end[data-end="from"] { grid-area: from; }
+.dir-end[data-end="to"]   { grid-area: to; }
+.dir-end { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dir-end-actions { display: flex; gap: 14px; font-size: 12px; }
+.dir-end-actions .linkish { min-height: 28px; }
+.dir-end-actions .linkish[aria-pressed="true"] { color: var(--series-1); }
+
+.dir-swap {
+  grid-area: swap;
+  align-self: center;
+  width: 36px; height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--page);
+  color: var(--text-secondary);
+  font-size: 18px;
+  cursor: pointer;
+}
+.dir-swap:hover { color: var(--text-primary); border-color: rgba(11, 11, 11, 0.28); }
+.dir-swap:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
+
+.combo { position: relative; }
+.dir-input,
+.dir-when input[type="datetime-local"] {
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--page);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+}
+.dir-input:hover { border-color: rgba(11, 11, 11, 0.28); }
+.dir-input:focus-visible,
+.dir-when input:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
+
+.combo-list {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  left: 0; right: 0;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-1);
+  box-shadow: 0 6px 20px rgba(11, 11, 11, 0.12);
+}
+.combo-list [role="option"] {
+  display: flex;
+  flex-direction: column;
+  padding: 7px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  min-height: 44px;
+  justify-content: center;
+}
+.combo-list [role="option"]:hover,
+.combo-list [role="option"][aria-selected="true"] { background: rgba(11, 11, 11, 0.06); }
+.opt-title { font-size: 13px; }
+.opt-sub { font-size: 11.5px; color: var(--text-muted); }
+
+.dir-modes { margin-bottom: 10px; }
+.dir-modes .tab { flex: 1 1 0; }
+.dir-modes .tab:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.dir-when { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.dir-when input[type="datetime-local"] { width: auto; flex: 1 1 170px; }
+.btn-primary {
+  background: var(--series-1);
+  border-color: var(--series-1);
+  color: #ffffff;
+  margin-left: auto;
+}
+.btn-primary:hover { border-color: var(--seq-5); background: var(--seq-5); }
+.btn-primary:disabled { opacity: 0.6; cursor: progress; }
+
+.dir-status { min-height: 1.5em; margin: 0 0 8px; font-size: 12.5px; color: var(--text-secondary); }
+.dir-status.is-error { color: var(--danger); }
+.dir-hint { margin: 0 0 12px; font-size: 12px; color: var(--text-muted); }
+
+.dir-track { margin: 0 0 10px; font-size: 12px; color: var(--text-secondary); }
+
+.route-cards { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 8px; }
+.route-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--page);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.route-card:hover { border-color: rgba(11, 11, 11, 0.28); }
+.route-card:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
+.route-card[aria-pressed="true"] { border-color: var(--series-1); box-shadow: inset 3px 0 0 var(--series-1); }
+.route-role {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.route-extra { text-transform: none; letter-spacing: 0; color: var(--text-secondary); }
+.route-main { font-size: 13.5px; }
+.route-main strong { font-size: 16px; font-weight: 650; }
+.route-legs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.leg-chip {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--text-secondary);
+  color: #ffffff;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.leg-walk { font-size: 11.5px; color: var(--text-muted); }
+.route-activity { display: flex; align-items: center; gap: 7px; font-size: 12.5px; }
+.swatch {
+  flex: none;
+  width: 12px; height: 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(11, 11, 11, 0.15);
+}
+.route-detail { font-size: 11.5px; color: var(--text-muted); }
+
+.dir-why { margin: 0 0 10px; font-size: 12px; color: var(--text-secondary); }
+.dir-why:empty { display: none; }
+.dir-toggle { display: flex; gap: 8px; align-items: center; font-size: 12.5px; margin-bottom: 14px; min-height: 32px; }
+
+.dir-steps { margin: 0; padding: 0 0 0 18px; display: grid; gap: 6px; font-size: 12.5px; }
+.dir-steps .step { padding-left: 2px; }
+.dir-steps .step-sub { display: block; font-size: 11.5px; color: var(--text-muted); }
+.dir-steps .step-time {
+  display: inline-block;
+  min-width: 64px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.dir-steps .step-walk, .dir-steps .step-ride { list-style: none; margin-left: -18px; display: flex; gap: 6px; }
+
+.dir-caveats {
+  margin: 0 0 12px;
+  padding: 10px 12px 10px 28px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--page);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.dir-attribution { margin: 0; font-size: 11px; color: var(--text-muted); }
+.dir-attribution a { color: inherit; }
+
+/* The two ends of a trip on the map. */
+.route-pin-marker { width: 26px; height: 26px; }
+.route-pin {
+  width: 26px; height: 26px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  display: grid;
+  place-items: center;
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 4px rgba(11, 11, 11, 0.35);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+}
+.route-pin-from { background: #1f7a3a; }
+.route-pin-to   { background: var(--danger); }
+/* The letter stays upright inside the turned pin. */
+.route-pin span { display: block; transform: rotate(45deg); }
+.is-picking { cursor: crosshair; }
+
 /* ---------------------------------------------------------------- mobile --- */
 
 @media (max-width: 900px) {
@@ -650,6 +856,67 @@ select:disabled { opacity: 0.55; cursor: not-allowed; }
   .compass-cardinal { transform: rotate(var(--a)) translateY(-30px) rotate(calc(-1 * var(--a))); }
   .compass-needle::before { top: -22px; border-bottom-width: 22px; }
   .topbar { flex-direction: column; align-items: flex-start; gap: 10px; }
+  /* Directions use the same bottom sheet as the cell detail, scrolled, so
+     the route on the map above stays in view. */
+  .dir-modes .tab, .dir-input, .btn, .dir-swap { min-height: 44px; }
+  .dir-swap { width: 44px; }
+  .dir-end-actions .linkish { min-height: 44px; }
+}
+
+/* A phone. The filter fields fold behind a Filters button and open below the
+   button row, so the map is not pushed off the screen; nothing is wider than
+   the screen, the date inputs included. */
+@media (max-width: 600px) {
+  .topbar { padding: 10px 16px; }
+  .freshness { flex-wrap: wrap; row-gap: 0; padding: 5px 10px; white-space: normal; }
+  .filters {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding: 10px 16px;
+  }
+  .filters-spacer { display: none; }
+  .filters-toggle { display: block; }
+  /* Open, it drops down over the top of the map rather than pushing the map
+     off the screen, and scrolls if it is taller than the room it has. */
+  .filters-fields {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 20;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 12px;
+    max-height: 60dvh;
+    overflow-y: auto;
+    padding: 12px 16px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-1);
+    box-shadow: 0 8px 18px rgba(11, 11, 11, 0.12);
+  }
+  .filters.is-open .filters-fields { display: grid; }
+  /* The cell detail and directions sheet: shorter than on a tablet, so a
+     320 x 640 screen still shows a usable map above it. */
+  .detail { max-height: 36dvh; }
+  .filters-fields .field { min-width: 0; }
+  .filters-fields select { width: 100%; }
+  .field-range { grid-column: 1 / -1; }
+  .range-inputs input[type="date"] { flex: 1 1 0; min-width: 0; }
+  #f-track-field { grid-column: 1 / -1; }
+  #f-track-field .tab { flex: 1 1 0; }
+  /* The compass shrinks to the dial and its reading, and is clipped to the
+     map, so it never covers the sheet below it. */
+  .map-pane { overflow: hidden; }
+  .compass { top: 10px; right: 54px; width: 104px; padding: 6px 8px; }
+  /* Just the headline ("Head NE"); the box's aria-label keeps the rest. */
+  .compass-title, .compass-foot, .compass-detail { display: none; }
+  .compass-readout b { font-size: 12.5px; }
+  .compass-dial { width: 60px; height: 60px; }
+  .compass-cardinal { font-size: 10px; transform: rotate(var(--a)) translateY(-22px) rotate(calc(-1 * var(--a))); }
+  .compass-needle::before { left: -4px; top: -16px; border-left-width: 4px; border-right-width: 4px; border-bottom-width: 16px; }
+  .compass-readout { font-size: 11.5px; line-height: 1.3; margin-top: 4px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

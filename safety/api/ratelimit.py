@@ -2,7 +2,7 @@
 
 This is the second of two layers. On the host deployment, nginx's `limit_req`
 zones are the first: the prod and dev sites (`/etc/nginx/sites-available/safety`
-and `deploy/nginx/safety-dev.conf`) apply the same two zones below per remote
+and `deploy/nginx/safety-dev.conf`) apply the same zones below per remote
 address before a request reaches uvicorn. This in-process copy exists because
 the API has no authentication and `GET /api/v1/cells` assembles the whole
 city's hexagon layer as one GeoJSON document (`cells()` in safety/api/main.py),
@@ -15,14 +15,26 @@ by entry count and a byte budget) absorbs repeated *identical* requests, but
 `bbox` and `min_count` are free-form query parameters, so walking them still
 reaches the database. The limit is what bounds that.
 
-Two zones, because the endpoints are not equally expensive:
+Four zones, because the endpoints are not equally expensive:
 
-    GET /api/v1/cells   2 r/s, burst 10   the full-city layer document
-    /api/v1/ (rest)     10 r/s, burst 20  cheap, cached, ~5 per page load
+    GET /api/v1/cells            2 r/s, burst 10    the full-city layer document
+    POST /api/v1/directions      0.5 r/s, burst 6   up to 4 Valhalla calls, or a
+                                                    Transitous plan from a daily budget
+    POST /api/v1/geocode         3 r/s, burst 10    one Photon call per cache miss;
+    POST /api/v1/geocode/reverse   (one shared zone)  the page debounces typing to 350 ms
+    /api/v1/ (rest)              10 r/s, burst 20   cheap, cached, ~5 per page load
 
 The split is by exact path first, then prefix, which mirrors how nginx chooses
 between `location = /api/v1/cells` and `location /api/v1/`: `/cells/ring` and
-`/cells/lookup` land in the loose zone rather than the tight one.
+`/cells/lookup` land in the loose zone rather than the tight one, and so does
+`/directions/status`, a cached poll that never calls a provider it would cost.
+
+The directions and geocode zones protect the providers more than this server:
+Photon and Transitous are public services with fair-use expectations, and a
+single client must not be able to spend the whole day's budget
+(safety/routing/budget.py) in a burst. Burst 10 on geocode covers typing an
+address and picking one; burst 6 on directions covers trying every mode for one
+trip.
 
 The frontend refetches the layer only on a window, category or resolution change
 and never on pan or zoom, so a person working the controls cannot reach the
@@ -63,9 +75,13 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 # Tokens accrue at `rate` per second up to `capacity`. A full bucket is the
 # burst allowance; steady-state throughput is `rate`.
 _CELLS_RATE, _CELLS_BURST = 2.0, 10
+_DIRECTIONS_RATE, _DIRECTIONS_BURST = 0.5, 6
+_GEOCODE_RATE, _GEOCODE_BURST = 3.0, 10
 _API_RATE, _API_BURST = 10.0, 20
 
 _CELLS_PATH = "/api/v1/cells"
+_DIRECTIONS_PATH = "/api/v1/directions"
+_GEOCODE_PATHS = ("/api/v1/geocode", "/api/v1/geocode/reverse")
 _API_PREFIX = "/api/v1/"
 
 # Bucket state keyed by (client, zone), least recently used first. Bounded by
@@ -81,7 +97,7 @@ _buckets: OrderedDict[tuple[str, str], tuple[float, float]] = OrderedDict()
 _MAX_TRACKED_CLIENTS = 4096
 
 
-def _client_key(scope: Scope) -> str:
+def client_key(scope: Scope) -> str:
     """The caller's address as uvicorn resolved it.
 
     nginx appends its view of the peer to X-Forwarded-For, and uvicorn
@@ -96,8 +112,14 @@ def _client_key(scope: Scope) -> str:
 
 def _zone_for(path: str) -> tuple[str, float, int] | None:
     """Return (name, rate, capacity), or None when the path is not limited."""
+    # Read at call time, not bound at import, so tests can monkeypatch a burst.
     if path == _CELLS_PATH:
         return ("cells", _CELLS_RATE, _CELLS_BURST)
+    if path == _DIRECTIONS_PATH:
+        return ("directions", _DIRECTIONS_RATE, _DIRECTIONS_BURST)
+    if path in _GEOCODE_PATHS:
+        # One zone for both: search and reverse spend the same Photon budget.
+        return ("geocode", _GEOCODE_RATE, _GEOCODE_BURST)
     if path.startswith(_API_PREFIX):
         return ("api", _API_RATE, _API_BURST)
     return None
@@ -145,7 +167,7 @@ class RateLimitMiddleware:
 
         name, rate, capacity = zone
 
-        wait = _consume((_client_key(scope), name), rate, capacity)
+        wait = _consume((client_key(scope), name), rate, capacity)
         if wait > 0.0:
             retry_after = max(1, math.ceil(wait))
             response: Any = JSONResponse(

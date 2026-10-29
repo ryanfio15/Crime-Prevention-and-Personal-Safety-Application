@@ -1,0 +1,1283 @@
+{
+ "requestParameters": {},
+ "debugOutput": {
+  "algorithm": 1,
+  "direct": 46,
+  "execute_time": 39,
+  "fares": 0,
+  "fastest_direct": 0,
+  "fp_update_prevented_by_lower_bound": 0,
+  "gpu_supported": 1,
+  "gpu_used": 1,
+  "interval_extensions": 0,
+  "lb_time": 0,
+  "n_dest_offsets": 119,
+  "n_earliest_arrival_updated_by_footpath": 0,
+  "n_earliest_arrival_updated_by_route": 0,
+  "n_earliest_trip_calls": 0,
+  "n_events_skipped_by_early_termination": 0,
+  "n_execute_bwd": 8,
+  "n_execute_fwd": 8,
+  "n_footpaths_visited": 0,
+  "n_routes_visited": 0,
+  "n_routing_time": 0,
+  "n_start_offsets": 217,
+  "n_td_dest_offsets": 0,
+  "n_td_start_offsets": 0,
+  "prepare": 31,
+  "prepare_backward_WALK": 9,
+  "prepare_forward_WALK": 22,
+  "route_update_prevented_by_lower_bound": 0,
+  "search_interval_reduction_by_early_termination": 0
+ },
+ "from": {
+  "name": "START",
+  "lat": 39.9524,
+  "lon": -75.1636,
+  "vertexType": "NORMAL"
+ },
+ "to": {
+  "name": "END",
+  "lat": 39.9512,
+  "lon": -75.203,
+  "vertexType": "NORMAL"
+ },
+ "direct": [],
+ "itineraries": [
+  {
+   "duration": 960,
+   "startTime": "2026-11-02T22:00:00Z",
+   "endTime": "2026-11-02T22:16:00Z",
+   "transfers": 0,
+   "id": "Ck0h7lpCPuj5Q0ApCmgibHjKUsAyE3VzLXBhLVNFUFRBLUJ1c18yODM5/ilVouz5Q0BB0egOYmfKUsBI4I+k1wZQ2JCk1wZaBFdBTEtgAQqNAQoCVDMSJTIwMjYxMTAyXzE3OjAyX3VzLXBhLVNFUFRBLUJ1c185NzA1MjMaE3VzLXBhLVNFUFRBLUJ1c18yODMh/ilVouz5Q0Ap0egOYmfKUsAyE3VzLXBhLVNFUFRBLUJ1c18zMDE5yjSaXIz5Q0BB7BLVWwPNUsBI2JCk1wZQ7JWk1wZaBFRSQU1gAQpNGhN1cy1wYS1TRVBUQS1CdXNfMzAxIco0mlyM+UNAKewS1VsDzVLAOUT67evA+UNAQaJFtvP9zFLASOyVpNcGUKCXpNcGWgRXQUxLYAE=",
+   "legs": [
+    {
+     "mode": "WALK",
+     "from": {
+      "name": "START",
+      "lat": 39.9524,
+      "lon": -75.1636,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T22:00:00Z",
+      "scheduledDeparture": "2026-11-02T22:00:00Z",
+      "vertexType": "NORMAL"
+     },
+     "to": {
+      "name": "13th St",
+      "stopId": "us-pa-SEPTA-Bus_283",
+      "importance": 0.0025186953134834766,
+      "lat": 39.952534,
+      "lon": -75.16256,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:02:00Z",
+      "scheduledArrival": "2026-11-02T22:02:00Z",
+      "stopCode": "283",
+      "vertexType": "TRANSIT",
+      "modes": [
+       "SUBWAY",
+       "TRAM"
+      ]
+     },
+     "duration": 120,
+     "startTime": "2026-11-02T22:00:00Z",
+     "endTime": "2026-11-02T22:02:00Z",
+     "scheduledStartTime": "2026-11-02T22:00:00Z",
+     "scheduledEndTime": "2026-11-02T22:02:00Z",
+     "realTime": false,
+     "scheduled": false,
+     "distance": 110.0,
+     "legGeometry": {
+      "points": "a`oekAh|rjnCPB??dBqX??~A}V??n@}F??cPkB",
+      "precision": 6,
+      "length": 10
+     },
+     "steps": [
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 1.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "toOsmNode": 13507707308,
+       "polyline": {
+        "points": "a`oekAh|rjnCPB",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 35.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 895956292,
+       "fromOsmNode": 13507707308,
+       "toOsmNode": 8328381950,
+       "polyline": {
+        "points": "o_oekAl|rjnCdBqX",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 33.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 895956295,
+       "fromOsmNode": 8328381950,
+       "toOsmNode": 8328381949,
+       "polyline": {
+        "points": "i|nekAzbrjnC~A}V",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      }
+     ]
+    },
+    {
+     "mode": "TRAM",
+     "from": {
+      "name": "13th St",
+      "stopId": "us-pa-SEPTA-Bus_283",
+      "importance": 0.0025186953134834766,
+      "lat": 39.952534,
+      "lon": -75.16256,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T22:02:00Z",
+      "scheduledDeparture": "2026-11-02T22:02:00Z",
+      "stopCode": "283",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY",
+       "TRAM"
+      ]
+     },
+     "to": {
+      "name": "40th St Portal",
+      "stopId": "us-pa-SEPTA-Bus_301",
+      "importance": 0.00010559007932897657,
+      "lat": 39.949596,
+      "lon": -75.20333,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:13:00Z",
+      "scheduledArrival": "2026-11-02T22:13:00Z",
+      "stopCode": "301",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "TRAM"
+      ]
+     },
+     "duration": 660,
+     "startTime": "2026-11-02T22:02:00Z",
+     "endTime": "2026-11-02T22:13:00Z",
+     "scheduledStartTime": "2026-11-02T22:02:00Z",
+     "scheduledEndTime": "2026-11-02T22:13:00Z",
+     "realTime": false,
+     "scheduled": true,
+     "interlineWithPreviousLeg": false,
+     "headsign": "Yeadon",
+     "tripFrom": {
+      "name": "13th St",
+      "stopId": "us-pa-SEPTA-Bus_283",
+      "importance": 0.0025186953134834766,
+      "lat": 39.952534,
+      "lon": -75.16256,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T22:02:00Z",
+      "scheduledDeparture": "2026-11-02T22:02:00Z",
+      "stopCode": "283",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY",
+       "TRAM"
+      ]
+     },
+     "tripTo": {
+      "name": "Yeadon",
+      "stopId": "us-pa-SEPTA-Bus_325",
+      "importance": 7.18666851753369e-05,
+      "lat": 39.924685999999994,
+      "lon": -75.25245,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:35:00Z",
+      "scheduledArrival": "2026-11-02T22:35:00Z",
+      "stopCode": "325",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "TRAM"
+      ]
+     },
+     "routeId": "us-pa-SEPTA-Bus_T3",
+     "routeUrl": "https://www.septa.org/schedules/T3",
+     "directionId": "1",
+     "routeColor": "5a960a",
+     "routeTextColor": "ffffff",
+     "routeType": 0,
+     "agencyName": "SEPTA",
+     "agencyUrl": "https://septa.org/",
+     "agencyFareUrl": "https://www.septa.org/fares/",
+     "agencyId": "1",
+     "tripId": "20261102_17:02_us-pa-SEPTA-Bus_970523",
+     "routeShortName": "T3",
+     "routeLongName": "13th St to Yeadon or Darby TC",
+     "tripShortName": "",
+     "displayName": "T3",
+     "cancelled": false,
+     "source": "us-pa_SEPTA-Bus.gtfs.zip/stop_times.txt:101672:101710",
+     "intermediateStops": [
+      {
+       "name": "15th St/City Hall Station",
+       "stopId": "us-pa-SEPTA-Bus_20659",
+       "parentId": "us-pa-SEPTA-Bus_33034",
+       "importance": 0.005461166147142649,
+       "lat": 39.95267,
+       "lon": -75.16534399999999,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:03:00Z",
+       "departure": "2026-11-02T22:03:00Z",
+       "scheduledArrival": "2026-11-02T22:03:00Z",
+       "scheduledDeparture": "2026-11-02T22:03:00Z",
+       "stopCode": "20659",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "SUBWAY",
+        "TRAM"
+       ]
+      },
+      {
+       "name": "19th St",
+       "stopId": "us-pa-SEPTA-Bus_20660",
+       "importance": 0.00011611776426434517,
+       "lat": 39.95342599999999,
+       "lon": -75.17148599999999,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:04:00Z",
+       "departure": "2026-11-02T22:04:00Z",
+       "scheduledArrival": "2026-11-02T22:04:00Z",
+       "scheduledDeparture": "2026-11-02T22:04:00Z",
+       "stopCode": "20660",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "TRAM"
+       ]
+      },
+      {
+       "name": "22nd St",
+       "stopId": "us-pa-SEPTA-Bus_20661",
+       "importance": 0.00011611776426434517,
+       "lat": 39.954052,
+       "lon": -75.17657499999999,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:05:00Z",
+       "departure": "2026-11-02T22:05:00Z",
+       "scheduledArrival": "2026-11-02T22:05:00Z",
+       "scheduledDeparture": "2026-11-02T22:05:00Z",
+       "stopCode": "20661",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "TRAM"
+       ]
+      }
+     ],
+     "legGeometry": {
+      "points": "khoekA~zpjnCGxAgViD_DS{CSgBJcCbAcBdAs@`Cw@jH{@rIwBvVyCf^aBvVz@fTTrDV~Ct@rDxBrCz@fApCjCjPnKrV~CsCzd@oFf{@cBvVaHvhAaCjb@sFj_AgC~`@cGb~@aCn_@sGbcAeCzb@oA~SyAbVuCjf@wGbcA_Cr]oBj\\o@bLoB~\\kCz^{Erv@oAbQq@jMsAnTcBrYaBvZOxBGdAObBMvBGf@Er@WdEkF|q@kCja@kCfc@SbBS~CInAq@tMwEju@u@xLeAdOMtCMz@KnAq@bLq@rNyDfm@u@rMkAbQu@nL]bGz^jtC{Nr|BwSbgDnHf@bFf@z^zEbo@fJho@nFt_@nFr`@vGbf@zJjM|NjCxPtEx{AdyAl~J{AoA",
+      "precision": 6,
+      "length": 92
+     },
+     "bikesAllowed": false,
+     "wheelchairAccessible": "NOT_ACCESSIBLE",
+     "reservation": "NONE",
+     "alternatives": []
+    },
+    {
+     "mode": "WALK",
+     "from": {
+      "name": "40th St Portal",
+      "stopId": "us-pa-SEPTA-Bus_301",
+      "importance": 0.00010559007932897657,
+      "lat": 39.949596,
+      "lon": -75.20333,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:13:00Z",
+      "departure": "2026-11-02T22:13:00Z",
+      "scheduledArrival": "2026-11-02T22:13:00Z",
+      "scheduledDeparture": "2026-11-02T22:13:00Z",
+      "stopCode": "301",
+      "vertexType": "TRANSIT",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "TRAM"
+      ]
+     },
+     "to": {
+      "name": "END",
+      "lat": 39.9512,
+      "lon": -75.203,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:16:00Z",
+      "scheduledArrival": "2026-11-02T22:16:00Z",
+      "vertexType": "NORMAL"
+     },
+     "duration": 180,
+     "startTime": "2026-11-02T22:13:00Z",
+     "endTime": "2026-11-02T22:16:00Z",
+     "scheduledStartTime": "2026-11-02T22:13:00Z",
+     "scheduledEndTime": "2026-11-02T22:16:00Z",
+     "realTime": false,
+     "scheduled": false,
+     "distance": 198.0,
+     "legGeometry": {
+      "points": "wsiekAto`mnCAYUqAm@y@oAk@gAD??}@l@i@hA]z@??OT??k@`A??u@A??uBI??yBI??i@???o@?}b@{F??i@G??{AS??wAS??a@E??oYmD??mAI??o@E??ZgF",
+      "precision": 6,
+      "length": 41
+     },
+     "steps": [
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 17.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "toOsmNode": 7873053353,
+       "polyline": {
+        "points": "wsiekAto`mnCAYUqAm@y@oAk@gAD",
+        "precision": 6,
+        "length": 6
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 11.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 843998548,
+       "fromOsmNode": 7873053353,
+       "toOsmNode": 7873053356,
+       "polyline": {
+        "points": "uziekAhi`mnC}@l@i@hA]z@",
+        "precision": 6,
+        "length": 4
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "STAIRS",
+       "distance": 1.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 1083301855,
+       "fromOsmNode": 7873053356,
+       "toOsmNode": 9927821932,
+       "polyline": {
+        "points": "{~iekA|n`mnCOT",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "duration": 960,
+   "startTime": "2026-11-02T22:01:00Z",
+   "endTime": "2026-11-02T22:17:00Z",
+   "transfers": 0,
+   "id": "Ck0h7lpCPuj5Q0ApCmgibHjKUsAyE3VzLXBhLVNFUFRBLUJ1c18yODM5/ilVouz5Q0BB0egOYmfKUsBInJCk1wZQlJGk1wZaBFdBTEtgAQqNAQoCVDISJTIwMjYxMTAyXzE3OjAzX3VzLXBhLVNFUFRBLUJ1c185Njk2NzcaE3VzLXBhLVNFUFRBLUJ1c18yODMh/ilVouz5Q0Ap0egOYmfKUsAyE3VzLXBhLVNFUFRBLUJ1c18zMDE5yjSaXIz5Q0BB7BLVWwPNUsBIlJGk1wZQqJak1wZaBFRSQU1gAQpNGhN1cy1wYS1TRVBUQS1CdXNfMzAxIco0mlyM+UNAKewS1VsDzVLAOUT67evA+UNAQaJFtvP9zFLASKiWpNcGUNyXpNcGWgRXQUxLYAE=",
+   "legs": [
+    {
+     "mode": "WALK",
+     "from": {
+      "name": "START",
+      "lat": 39.9524,
+      "lon": -75.1636,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T22:01:00Z",
+      "scheduledDeparture": "2026-11-02T22:01:00Z",
+      "vertexType": "NORMAL"
+     },
+     "to": {
+      "name": "13th St",
+      "stopId": "us-pa-SEPTA-Bus_283",
+      "importance": 0.0025186953134834766,
+      "lat": 39.952534,
+      "lon": -75.16256,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:03:00Z",
+      "scheduledArrival": "2026-11-02T22:03:00Z",
+      "stopCode": "283",
+      "vertexType": "TRANSIT",
+      "modes": [
+       "SUBWAY",
+       "TRAM"
+      ]
+     },
+     "duration": 120,
+     "startTime": "2026-11-02T22:01:00Z",
+     "endTime": "2026-11-02T22:03:00Z",
+     "scheduledStartTime": "2026-11-02T22:01:00Z",
+     "scheduledEndTime": "2026-11-02T22:03:00Z",
+     "realTime": false,
+     "scheduled": false,
+     "distance": 110.0,
+     "legGeometry": {
+      "points": "a`oekAh|rjnCPB??dBqX??~A}V??n@}F??cPkB",
+      "precision": 6,
+      "length": 10
+     },
+     "steps": [
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 1.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "toOsmNode": 13507707308,
+       "polyline": {
+        "points": "a`oekAh|rjnCPB",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 35.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 895956292,
+       "fromOsmNode": 13507707308,
+       "toOsmNode": 8328381950,
+       "polyline": {
+        "points": "o_oekAl|rjnCdBqX",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 33.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 895956295,
+       "fromOsmNode": 8328381950,
+       "toOsmNode": 8328381949,
+       "polyline": {
+        "points": "i|nekAzbrjnC~A}V",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      }
+     ]
+    },
+    {
+     "mode": "TRAM",
+     "from": {
+      "name": "13th St",
+      "stopId": "us-pa-SEPTA-Bus_283",
+      "importance": 0.0025186953134834766,
+      "lat": 39.952534,
+      "lon": -75.16256,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T22:03:00Z",
+      "scheduledDeparture": "2026-11-02T22:03:00Z",
+      "stopCode": "283",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY",
+       "TRAM"
+      ]
+     },
+     "to": {
+      "name": "40th St Portal",
+      "stopId": "us-pa-SEPTA-Bus_301",
+      "importance": 0.00010559007932897657,
+      "lat": 39.949596,
+      "lon": -75.20333,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:14:00Z",
+      "scheduledArrival": "2026-11-02T22:14:00Z",
+      "stopCode": "301",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "TRAM"
+      ]
+     },
+     "duration": 660,
+     "startTime": "2026-11-02T22:03:00Z",
+     "endTime": "2026-11-02T22:14:00Z",
+     "scheduledStartTime": "2026-11-02T22:03:00Z",
+     "scheduledEndTime": "2026-11-02T22:14:00Z",
+     "realTime": false,
+     "scheduled": true,
+     "interlineWithPreviousLeg": false,
+     "headsign": "61st-Baltimore",
+     "tripFrom": {
+      "name": "13th St",
+      "stopId": "us-pa-SEPTA-Bus_283",
+      "importance": 0.0025186953134834766,
+      "lat": 39.952534,
+      "lon": -75.16256,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T22:03:00Z",
+      "scheduledDeparture": "2026-11-02T22:03:00Z",
+      "stopCode": "283",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY",
+       "TRAM"
+      ]
+     },
+     "tripTo": {
+      "name": "61st-Baltimore",
+      "stopId": "us-pa-SEPTA-Bus_599",
+      "importance": 5.348673312255414e-06,
+      "lat": 39.943962,
+      "lon": -75.246346,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:33:00Z",
+      "scheduledArrival": "2026-11-02T22:33:00Z",
+      "stopCode": "599",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "TRAM"
+      ]
+     },
+     "routeId": "us-pa-SEPTA-Bus_T2",
+     "routeUrl": "https://www.septa.org/schedules/T2",
+     "directionId": "1",
+     "routeColor": "5a960a",
+     "routeTextColor": "ffffff",
+     "routeType": 0,
+     "agencyName": "SEPTA",
+     "agencyUrl": "https://septa.org/",
+     "agencyFareUrl": "https://www.septa.org/fares/",
+     "agencyId": "1",
+     "tripId": "20261102_17:03_us-pa-SEPTA-Bus_969677",
+     "routeShortName": "T2",
+     "routeLongName": "13th St to 61st-Baltimore/Angora",
+     "tripShortName": "",
+     "displayName": "T2",
+     "cancelled": false,
+     "source": "us-pa_SEPTA-Bus.gtfs.zip/stop_times.txt:2048:2077",
+     "intermediateStops": [
+      {
+       "name": "15th St/City Hall Station",
+       "stopId": "us-pa-SEPTA-Bus_20659",
+       "parentId": "us-pa-SEPTA-Bus_33034",
+       "importance": 0.005461166147142649,
+       "lat": 39.95267,
+       "lon": -75.16534399999999,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:04:00Z",
+       "departure": "2026-11-02T22:04:00Z",
+       "scheduledArrival": "2026-11-02T22:04:00Z",
+       "scheduledDeparture": "2026-11-02T22:04:00Z",
+       "stopCode": "20659",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "SUBWAY",
+        "TRAM"
+       ]
+      },
+      {
+       "name": "19th St",
+       "stopId": "us-pa-SEPTA-Bus_20660",
+       "importance": 0.00011611776426434517,
+       "lat": 39.95342599999999,
+       "lon": -75.17148599999999,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:05:00Z",
+       "departure": "2026-11-02T22:05:00Z",
+       "scheduledArrival": "2026-11-02T22:05:00Z",
+       "scheduledDeparture": "2026-11-02T22:05:00Z",
+       "stopCode": "20660",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "TRAM"
+       ]
+      },
+      {
+       "name": "22nd St",
+       "stopId": "us-pa-SEPTA-Bus_20661",
+       "importance": 0.00011611776426434517,
+       "lat": 39.954052,
+       "lon": -75.17657499999999,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:06:00Z",
+       "departure": "2026-11-02T22:06:00Z",
+       "scheduledArrival": "2026-11-02T22:06:00Z",
+       "scheduledDeparture": "2026-11-02T22:06:00Z",
+       "stopCode": "20661",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "TRAM"
+       ]
+      }
+     ],
+     "legGeometry": {
+      "points": "khoekA~zpjnCGxAgViD_DS{CSgBJcCbAcBdAs@`Cw@jH{@rIwBvVyCf^aBvVz@fTTrDV~Ct@rDxBrCz@fApCjCjPnKrV~CsCzd@oFf{@cBvVaHvhAaCjb@sFj_AgC~`@cGb~@aCn_@sGbcAeCzb@oA~SyAbVuCjf@wGbcA_Cr]oBj\\o@bLoB~\\kCz^{Erv@oAbQq@jMsAnTcBrYaBvZOxBGdAObBMvBGf@Er@WdEkF|q@kCja@kCfc@SbBS~CInAq@tMwEju@u@xLeAdOMtCMz@KnAq@bLq@rNyDfm@u@rMkAbQu@nL]bGz^jtC{Nr|BwSbgDnHf@bFf@z^zEbo@fJho@nFt_@nFr`@vGbf@zJjM|NjCxPtEx{AdyAl~J{AoA",
+      "precision": 6,
+      "length": 92
+     },
+     "bikesAllowed": false,
+     "wheelchairAccessible": "NOT_ACCESSIBLE",
+     "reservation": "NONE",
+     "alternatives": []
+    },
+    {
+     "mode": "WALK",
+     "from": {
+      "name": "40th St Portal",
+      "stopId": "us-pa-SEPTA-Bus_301",
+      "importance": 0.00010559007932897657,
+      "lat": 39.949596,
+      "lon": -75.20333,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:14:00Z",
+      "departure": "2026-11-02T22:14:00Z",
+      "scheduledArrival": "2026-11-02T22:14:00Z",
+      "scheduledDeparture": "2026-11-02T22:14:00Z",
+      "stopCode": "301",
+      "vertexType": "TRANSIT",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "TRAM"
+      ]
+     },
+     "to": {
+      "name": "END",
+      "lat": 39.9512,
+      "lon": -75.203,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:17:00Z",
+      "scheduledArrival": "2026-11-02T22:17:00Z",
+      "vertexType": "NORMAL"
+     },
+     "duration": 180,
+     "startTime": "2026-11-02T22:14:00Z",
+     "endTime": "2026-11-02T22:17:00Z",
+     "scheduledStartTime": "2026-11-02T22:14:00Z",
+     "scheduledEndTime": "2026-11-02T22:17:00Z",
+     "realTime": false,
+     "scheduled": false,
+     "distance": 198.0,
+     "legGeometry": {
+      "points": "wsiekAto`mnCAYUqAm@y@oAk@gAD??}@l@i@hA]z@??OT??k@`A??u@A??uBI??yBI??i@???o@?}b@{F??i@G??{AS??wAS??a@E??oYmD??mAI??o@E??ZgF",
+      "precision": 6,
+      "length": 41
+     },
+     "steps": [
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 17.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "toOsmNode": 7873053353,
+       "polyline": {
+        "points": "wsiekAto`mnCAYUqAm@y@oAk@gAD",
+        "precision": 6,
+        "length": 6
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 11.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 843998548,
+       "fromOsmNode": 7873053353,
+       "toOsmNode": 7873053356,
+       "polyline": {
+        "points": "uziekAhi`mnC}@l@i@hA]z@",
+        "precision": 6,
+        "length": 4
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "STAIRS",
+       "distance": 1.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 1083301855,
+       "fromOsmNode": 7873053356,
+       "toOsmNode": 9927821932,
+       "polyline": {
+        "points": "{~iekA|n`mnCOT",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "duration": 960,
+   "startTime": "2026-11-02T22:04:00Z",
+   "endTime": "2026-11-02T22:20:00Z",
+   "transfers": 0,
+   "id": "Ck0h7lpCPuj5Q0ApCmgibHjKUsAyE3VzLXBhLVNFUFRBLUJ1c18yODM5/ilVouz5Q0BB0egOYmfKUsBI0JGk1wZQyJKk1wZaBFdBTEtgAQqNAQoCVDQSJTIwMjYxMTAyXzE3OjA2X3VzLXBhLVNFUFRBLUJ1c185NzEzNjYaE3VzLXBhLVNFUFRBLUJ1c18yODMh/ilVouz5Q0Ap0egOYmfKUsAyE3VzLXBhLVNFUFRBLUJ1c18zMDE5yjSaXIz5Q0BB7BLVWwPNUsBIyJKk1wZQ3Jek1wZaBFRSQU1gAQpNGhN1cy1wYS1TRVBUQS1CdXNfMzAxIco0mlyM+UNAKewS1VsDzVLAOUT67evA+UNAQaJFtvP9zFLASNyXpNcGUJCZpNcGWgRXQUxLYAE=",
+   "legs": [
+    {
+     "mode": "WALK",
+     "from": {
+      "name": "START",
+      "lat": 39.9524,
+      "lon": -75.1636,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T22:04:00Z",
+      "scheduledDeparture": "2026-11-02T22:04:00Z",
+      "vertexType": "NORMAL"
+     },
+     "to": {
+      "name": "13th St",
+      "stopId": "us-pa-SEPTA-Bus_283",
+      "importance": 0.0025186953134834766,
+      "lat": 39.952534,
+      "lon": -75.16256,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:06:00Z",
+      "scheduledArrival": "2026-11-02T22:06:00Z",
+      "stopCode": "283",
+      "vertexType": "TRANSIT",
+      "modes": [
+       "SUBWAY",
+       "TRAM"
+      ]
+     },
+     "duration": 120,
+     "startTime": "2026-11-02T22:04:00Z",
+     "endTime": "2026-11-02T22:06:00Z",
+     "scheduledStartTime": "2026-11-02T22:04:00Z",
+     "scheduledEndTime": "2026-11-02T22:06:00Z",
+     "realTime": false,
+     "scheduled": false,
+     "distance": 110.0,
+     "legGeometry": {
+      "points": "a`oekAh|rjnCPB??dBqX??~A}V??n@}F??cPkB",
+      "precision": 6,
+      "length": 10
+     },
+     "steps": [
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 1.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "toOsmNode": 13507707308,
+       "polyline": {
+        "points": "a`oekAh|rjnCPB",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 35.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 895956292,
+       "fromOsmNode": 13507707308,
+       "toOsmNode": 8328381950,
+       "polyline": {
+        "points": "o_oekAl|rjnCdBqX",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 33.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 895956295,
+       "fromOsmNode": 8328381950,
+       "toOsmNode": 8328381949,
+       "polyline": {
+        "points": "i|nekAzbrjnC~A}V",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      }
+     ]
+    },
+    {
+     "mode": "TRAM",
+     "from": {
+      "name": "13th St",
+      "stopId": "us-pa-SEPTA-Bus_283",
+      "importance": 0.0025186953134834766,
+      "lat": 39.952534,
+      "lon": -75.16256,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T22:06:00Z",
+      "scheduledDeparture": "2026-11-02T22:06:00Z",
+      "stopCode": "283",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY",
+       "TRAM"
+      ]
+     },
+     "to": {
+      "name": "40th St Portal",
+      "stopId": "us-pa-SEPTA-Bus_301",
+      "importance": 0.00010559007932897657,
+      "lat": 39.949596,
+      "lon": -75.20333,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:17:00Z",
+      "scheduledArrival": "2026-11-02T22:17:00Z",
+      "stopCode": "301",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "TRAM"
+      ]
+     },
+     "duration": 660,
+     "startTime": "2026-11-02T22:06:00Z",
+     "endTime": "2026-11-02T22:17:00Z",
+     "scheduledStartTime": "2026-11-02T22:06:00Z",
+     "scheduledEndTime": "2026-11-02T22:17:00Z",
+     "realTime": false,
+     "scheduled": true,
+     "interlineWithPreviousLeg": false,
+     "headsign": "Darby Transit Center",
+     "tripFrom": {
+      "name": "13th St",
+      "stopId": "us-pa-SEPTA-Bus_283",
+      "importance": 0.0025186953134834766,
+      "lat": 39.952534,
+      "lon": -75.16256,
+      "tz": "America/New_York",
+      "departure": "2026-11-02T22:06:00Z",
+      "scheduledDeparture": "2026-11-02T22:06:00Z",
+      "stopCode": "283",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "SUBWAY",
+       "TRAM"
+      ]
+     },
+     "tripTo": {
+      "name": "Darby Transit Center",
+      "stopId": "us-pa-SEPTA-Bus_305",
+      "parentId": "us-pa-SEPTA-Bus_31035",
+      "importance": 3.829482011497021e-05,
+      "lat": 39.91908599999999,
+      "lon": -75.26237499999999,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:46:00Z",
+      "scheduledArrival": "2026-11-02T22:46:00Z",
+      "stopCode": "305",
+      "vertexType": "TRANSIT",
+      "pickupType": "NORMAL",
+      "dropoffType": "NORMAL",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "TRAM",
+       "BUS"
+      ]
+     },
+     "routeId": "us-pa-SEPTA-Bus_T4",
+     "routeUrl": "https://www.septa.org/schedules/T4",
+     "directionId": "1",
+     "routeColor": "5a960a",
+     "routeTextColor": "ffffff",
+     "routeType": 0,
+     "agencyName": "SEPTA",
+     "agencyUrl": "https://septa.org/",
+     "agencyFareUrl": "https://www.septa.org/fares/",
+     "agencyId": "1",
+     "tripId": "20261102_17:06_us-pa-SEPTA-Bus_971366",
+     "routeShortName": "T4",
+     "routeLongName": "13th St to Darby Transit Center",
+     "tripShortName": "",
+     "displayName": "T4",
+     "cancelled": false,
+     "source": "us-pa_SEPTA-Bus.gtfs.zip/stop_times.txt:71134:71180",
+     "intermediateStops": [
+      {
+       "name": "15th St/City Hall Station",
+       "stopId": "us-pa-SEPTA-Bus_20659",
+       "parentId": "us-pa-SEPTA-Bus_33034",
+       "importance": 0.005461166147142649,
+       "lat": 39.95267,
+       "lon": -75.16534399999999,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:07:00Z",
+       "departure": "2026-11-02T22:07:00Z",
+       "scheduledArrival": "2026-11-02T22:07:00Z",
+       "scheduledDeparture": "2026-11-02T22:07:00Z",
+       "stopCode": "20659",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "SUBWAY",
+        "TRAM"
+       ]
+      },
+      {
+       "name": "19th St",
+       "stopId": "us-pa-SEPTA-Bus_20660",
+       "importance": 0.00011611776426434517,
+       "lat": 39.95342599999999,
+       "lon": -75.17148599999999,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:08:00Z",
+       "departure": "2026-11-02T22:08:00Z",
+       "scheduledArrival": "2026-11-02T22:08:00Z",
+       "scheduledDeparture": "2026-11-02T22:08:00Z",
+       "stopCode": "20660",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "TRAM"
+       ]
+      },
+      {
+       "name": "22nd St",
+       "stopId": "us-pa-SEPTA-Bus_20661",
+       "importance": 0.00011611776426434517,
+       "lat": 39.954052,
+       "lon": -75.17657499999999,
+       "tz": "America/New_York",
+       "arrival": "2026-11-02T22:09:00Z",
+       "departure": "2026-11-02T22:09:00Z",
+       "scheduledArrival": "2026-11-02T22:09:00Z",
+       "scheduledDeparture": "2026-11-02T22:09:00Z",
+       "stopCode": "20661",
+       "vertexType": "TRANSIT",
+       "pickupType": "NORMAL",
+       "dropoffType": "NORMAL",
+       "cancelled": false,
+       "arrivalTimestampReason": "NO_RT_DATA",
+       "departureTimestampReason": "NO_RT_DATA",
+       "modes": [
+        "TRAM"
+       ]
+      }
+     ],
+     "legGeometry": {
+      "points": "khoekA~zpjnCGxAgViD_DS{CSgBJcCbAcBdAs@`Cw@jH{@rIwBvVyCf^aBvVz@fTTrDV~Ct@rDxBrCz@fApCjCjPnKrV~CsCzd@oFf{@cBvVaHvhAaCjb@sFj_AgC~`@cGb~@aCn_@sGbcAeCzb@oA~SyAbVuCjf@wGbcA_Cr]oBj\\o@bLoB~\\kCz^{Erv@oAbQq@jMsAnTcBrYaBvZOxBGdAObBMvBGf@Er@WdEkF|q@kCja@kCfc@SbBS~CInAq@tMwEju@u@xLeAdOMtCMz@KnAq@bLq@rNyDfm@u@rMkAbQu@nL]bGz^jtC{Nr|BwSbgDnHf@bFf@z^zEbo@fJho@nFt_@nFr`@vGbf@zJjM|NjCxPtEx{AdyAl~J{AoA",
+      "precision": 6,
+      "length": 92
+     },
+     "bikesAllowed": false,
+     "wheelchairAccessible": "NOT_ACCESSIBLE",
+     "reservation": "NONE",
+     "alternatives": []
+    },
+    {
+     "mode": "WALK",
+     "from": {
+      "name": "40th St Portal",
+      "stopId": "us-pa-SEPTA-Bus_301",
+      "importance": 0.00010559007932897657,
+      "lat": 39.949596,
+      "lon": -75.20333,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:17:00Z",
+      "departure": "2026-11-02T22:17:00Z",
+      "scheduledArrival": "2026-11-02T22:17:00Z",
+      "scheduledDeparture": "2026-11-02T22:17:00Z",
+      "stopCode": "301",
+      "vertexType": "TRANSIT",
+      "cancelled": false,
+      "arrivalTimestampReason": "NO_RT_DATA",
+      "departureTimestampReason": "NO_RT_DATA",
+      "modes": [
+       "TRAM"
+      ]
+     },
+     "to": {
+      "name": "END",
+      "lat": 39.9512,
+      "lon": -75.203,
+      "tz": "America/New_York",
+      "arrival": "2026-11-02T22:20:00Z",
+      "scheduledArrival": "2026-11-02T22:20:00Z",
+      "vertexType": "NORMAL"
+     },
+     "duration": 180,
+     "startTime": "2026-11-02T22:17:00Z",
+     "endTime": "2026-11-02T22:20:00Z",
+     "scheduledStartTime": "2026-11-02T22:17:00Z",
+     "scheduledEndTime": "2026-11-02T22:20:00Z",
+     "realTime": false,
+     "scheduled": false,
+     "distance": 198.0,
+     "legGeometry": {
+      "points": "wsiekAto`mnCAYUqAm@y@oAk@gAD??}@l@i@hA]z@??OT??k@`A??u@A??uBI??yBI??i@???o@?}b@{F??i@G??{AS??wAS??a@E??oYmD??mAI??o@E??ZgF",
+      "precision": 6,
+      "length": 41
+     },
+     "steps": [
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 17.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "toOsmNode": 7873053353,
+       "polyline": {
+        "points": "wsiekAto`mnCAYUqAm@y@oAk@gAD",
+        "precision": 6,
+        "length": 6
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "CONTINUE",
+       "distance": 11.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 843998548,
+       "fromOsmNode": 7873053353,
+       "toOsmNode": 7873053356,
+       "polyline": {
+        "points": "uziekAhi`mnC}@l@i@hA]z@",
+        "precision": 6,
+        "length": 4
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      },
+      {
+       "relativeDirection": "STAIRS",
+       "distance": 1.0,
+       "fromLevel": 0.0,
+       "toLevel": 0.0,
+       "osmWay": 1083301855,
+       "fromOsmNode": 7873053356,
+       "toOsmNode": 9927821932,
+       "polyline": {
+        "points": "{~iekA|n`mnCOT",
+        "precision": 6,
+        "length": 2
+       },
+       "streetName": "",
+       "exit": "",
+       "stayOn": false,
+       "area": false,
+       "toll": false,
+       "elevationUp": 0,
+       "elevationDown": 0
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "previousPageCursor": "EARLIER|1793656800",
+ "nextPageCursor": "LATER|1793657700"
+}

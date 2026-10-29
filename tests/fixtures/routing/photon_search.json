@@ -1,0 +1,32 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "osm_type": "N",
+        "osm_id": 10076153317,
+        "osm_key": "amenity",
+        "osm_value": "cafe",
+        "type": "house",
+        "housenumber": "1400",
+        "name": "Dilworth Park Café",
+        "street": "John F. Kennedy Boulevard",
+        "district": "Center City",
+        "city": "Philadelphia",
+        "county": "Philadelphia",
+        "state": "PA",
+        "country": "United States",
+        "postcode": "19107",
+        "countrycode": "US"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -75.1643762,
+          39.953206
+        ]
+      }
+    }
+  ]
+}

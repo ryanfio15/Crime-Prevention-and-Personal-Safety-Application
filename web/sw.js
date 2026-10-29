@@ -53,6 +53,7 @@ const SHELL = [
   "./html.js",
   "./windows.js",
   "./hours.js",
+  "./directions.js",
   "./app.js",
   "./sw-register.js",
 ];

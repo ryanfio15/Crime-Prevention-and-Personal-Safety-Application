@@ -173,6 +173,50 @@ class Settings(BaseSettings):
     # ranking. Unset builds the ranking for every window.
     safety_max_window_years: int | None = None
 
+    # --- directions (safety/routing/, docs/DESIGN.md S13) -----------------
+    #
+    # Kill switch for address search and directions. With it off the endpoints
+    # answer 503 and the page hides the Directions button; nothing else about
+    # the map changes. A setting rather than a deploy because the three
+    # providers below are outside our control.
+    directions_enabled: bool = True
+    # Self-hosted Valhalla (docker-compose.yml, `routing` profile): drive, walk
+    # and bike. Loopback only; the tiles are installed by
+    # deploy/valhalla/fetch.sh. Down or not yet started, those three modes
+    # report unavailable and transit and the map carry on.
+    valhalla_url: str = "http://127.0.0.1:58002"
+    # Transitous (MOTIS), a public, community-run transit planner with a
+    # fair-use limit. Base URL and path are separate so a version bump of its
+    # API (/api/v6/...) is a .env change, not a release.
+    transitous_url: str = "https://api.transitous.org"
+    transitous_plan_path: str = "/api/v6/plan"
+    # Public Photon (komoot) for address search and reverse lookup.
+    photon_url: str = "https://photon.komoot.io"
+    # Sent in the User-Agent of every provider call, as Transitous and Photon
+    # ask, so an operator who sees a problem can reach us. A URL or a mailbox.
+    routing_contact: str = (
+        "https://github.com/ryanfio15/Crime-Prevention-and-Personal-Safety-Application"
+    )
+    # Per provider call. Valhalla answers in well under a second; this bounds
+    # the public services, so a slow one costs the user a clear "unavailable"
+    # within seconds rather than nginx's 60 s gateway timeout.
+    routing_timeout_seconds: float = 8.0
+    # Upstream calls allowed per UTC day, across all clients, before the mode
+    # reports itself unavailable until midnight. Transitous asks for under 720
+    # plans a day from us; 500 leaves room for retries and a second instance
+    # (dev's .env sets 100). Photon has no stated cap; 5000 is a politeness
+    # bound that the 24 h cache keeps far from reach in normal use.
+    transit_daily_budget: int = 500
+    geocode_daily_budget: int = 5000
+    # Longest straight-line trip accepted, in km. Both ends must already be in
+    # the same served city, so this is a ceiling on the cost of one request
+    # (and of the walking/biking detour search), not a limit on the map: it
+    # sits above every city's bbox diagonal -- lax 84.5, aus 62.7, chi 54.3,
+    # phl 40.8, sea 33.3, dc 29.0 km -- so any in-city trip is accepted, while
+    # a malformed or hostile request still cannot ask Valhalla or Transitous
+    # for a route hundreds of km long.
+    route_max_km: float = 100.0
+
     @property
     def dsn(self) -> str:
         if not self.postgres_password:

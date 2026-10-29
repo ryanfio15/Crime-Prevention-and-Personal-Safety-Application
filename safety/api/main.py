@@ -31,11 +31,14 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
 
 from safety import PIPELINE_VERSION
+from safety.api import directions
 from safety.api import repository as repo
 from safety.api.ratelimit import RateLimitMiddleware
 from safety.api.security import SecurityHeadersMiddleware
 from safety.config import EXTRA_WEB_DIRS, REPO_ROOT, WEB_DIR, settings
 from safety.h3grid import RESOLUTIONS, cell_resolution, cells_for_point, grid_disk, is_valid_cell
+from safety.routing.errors import RoutingError
+from safety.routing.service import Routing, new_http_client
 
 log = logging.getLogger(__name__)
 
@@ -70,8 +73,17 @@ async def lifespan(app: FastAPI):
     )
     pool.wait(timeout=30)
     log.info("connection pool ready")
-    yield
-    pool.close()
+    # One outbound HTTP client for every routing provider, so connections to
+    # Photon and Transitous are pooled and kept alive across requests rather
+    # than re-handshaking TLS per geocode keystroke (safety/routing/).
+    http = new_http_client()
+    app.state.http = http
+    app.state.routing = Routing.build(http)
+    try:
+        yield
+    finally:
+        await http.aclose()
+        pool.close()
 
 
 app = FastAPI(
@@ -92,7 +104,7 @@ app = FastAPI(
 API = "/api/v1"
 
 # Only /api/v1/ paths are limited, so the static frontend and /docs are
-# untouched -- see safety/api/ratelimit.py for the two zones and why they differ.
+# untouched -- see safety/api/ratelimit.py for the zones and why they differ.
 if settings.enable_rate_limit:
     app.add_middleware(RateLimitMiddleware)
 
@@ -111,6 +123,11 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 
 _BUSY = {"detail": "The service is busy; retry shortly."}
+
+
+# Provider failures (safety/routing/errors.py) answer with the status and the
+# visitor-facing message the exception carries -- never the provider's body.
+app.add_exception_handler(RoutingError, directions.routing_error_handler)
 
 
 @app.exception_handler(PoolTimeout)
@@ -1361,6 +1378,11 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
             "incidents": record["incident_count"],
         },
     }
+
+
+# Directions and address search (safety/api/directions.py). Included here,
+# before the static mount below, like every other API route.
+app.include_router(directions.router)
 
 
 class RevalidatedStaticFiles(StaticFiles):

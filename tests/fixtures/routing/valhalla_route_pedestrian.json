@@ -1,0 +1,147 @@
+{
+ "trip": {
+  "locations": [
+   {
+    "type": "break",
+    "lat": 38.9096,
+    "lon": -77.0434,
+    "side_of_street": "left",
+    "original_index": 0
+   },
+   {
+    "type": "break",
+    "lat": 38.8973,
+    "lon": -77.0063,
+    "original_index": 1
+   }
+  ],
+  "legs": [
+   {
+    "maneuvers": [
+     {
+      "type": 3,
+      "instruction": "Walk east on the walkway.",
+      "verbal_succinct_transition_instruction": "Walk east. Then Turn right onto the walkway.",
+      "verbal_pre_transition_instruction": "Walk east on the walkway. Then Turn right onto the walkway.",
+      "verbal_post_transition_instruction": "Continue for less than 10 meters.",
+      "bearing_after": 69,
+      "time": 6.444,
+      "length": 0.009,
+      "cost": 6.444,
+      "begin_shape_index": 0,
+      "end_shape_index": 3,
+      "verbal_multi_cue": true,
+      "travel_mode": "pedestrian",
+      "travel_type": "foot"
+     },
+     {
+      "type": 10,
+      "instruction": "Turn right onto the walkway.",
+      "verbal_transition_alert_instruction": "Turn right onto the walkway.",
+      "verbal_succinct_transition_instruction": "Turn right.",
+      "verbal_pre_transition_instruction": "Turn right onto the walkway.",
+      "verbal_post_transition_instruction": "Continue for 60 meters.",
+      "bearing_before": 41,
+      "bearing_after": 117,
+      "time": 47.176,
+      "length": 0.064,
+      "cost": 47.176,
+      "begin_shape_index": 3,
+      "end_shape_index": 10,
+      "travel_mode": "pedestrian",
+      "travel_type": "foot"
+     },
+     {
+      "type": 10,
+      "instruction": "Turn right onto the walkway.",
+      "verbal_transition_alert_instruction": "Turn right onto the walkway.",
+      "verbal_succinct_transition_instruction": "Turn right. Then Turn left onto Massachusetts Avenue Northwest.",
+      "verbal_pre_transition_instruction": "Turn right onto the walkway. Then Turn left onto Massachusetts Avenue Northwest.",
+      "verbal_post_transition_instruction": "Continue for less than 10 meters.",
+      "bearing_before": 115,
+      "bearing_after": 174,
+      "time": 3.529,
+      "length": 0.005,
+      "cost": 3.529,
+      "begin_shape_index": 10,
+      "end_shape_index": 12,
+      "verbal_multi_cue": true,
+      "travel_mode": "pedestrian",
+      "travel_type": "foot"
+     },
+     {
+      "type": 15,
+      "instruction": "Turn left onto Massachusetts Avenue Northwest.",
+      "verbal_transition_alert_instruction": "Turn left onto Massachusetts Avenue Northwest.",
+      "verbal_succinct_transition_instruction": "Turn left.",
+      "verbal_pre_transition_instruction": "Turn left onto Massachusetts Avenue Northwest.",
+      "verbal_post_transition_instruction": "Continue for 500 meters.",
+      "street_names": [
+       "Massachusetts Avenue Northwest"
+      ],
+      "bearing_before": 171,
+      "bearing_after": 100,
+      "time": 383.176,
+      "length": 0.54,
+      "cost": 388.176,
+      "begin_shape_index": 12,
+      "end_shape_index": 50,
+      "travel_mode": "pedestrian",
+      "travel_type": "foot"
+     },
+     {
+      "type": 4,
+      "instruction": "You have arrived at your destination.",
+      "verbal_transition_alert_instruction": "You will arrive at your destination.",
+      "verbal_pre_transition_instruction": "You have arrived at your destination.",
+      "bearing_before": 16,
+      "time": 0.0,
+      "length": 0.0,
+      "cost": 0.0,
+      "begin_shape_index": 234,
+      "end_shape_index": 234,
+      "travel_mode": "pedestrian",
+      "travel_type": "foot"
+     }
+    ],
+    "summary": {
+     "level_changes": [
+      [
+       232,
+       0.0
+      ]
+     ],
+     "has_time_restrictions": false,
+     "has_toll": false,
+     "has_highway": false,
+     "has_ferry": false,
+     "min_lat": 38.897109,
+     "min_lon": -77.043375,
+     "max_lat": 38.909608,
+     "max_lon": -77.00627,
+     "time": 2627.797,
+     "length": 3.657,
+     "cost": 2662.797
+    },
+    "shape": "}ezeiA~ij}qCEUq@oA{@o@Z_ApFyRdAaDx@aEd@mBb@_BRw@NA`AMFiC|@}Iz@mDvFmUpBeIjAuE|@{DtAgFhAsEnBmIbEiP`CuJzAgGz@kDn@mC|AqGnQkt@~CgMhBkHtEmRt@sCl@gCXkAz@oDd@iBp@mCdEsPbB_HXmAdAcEdBiHjCeQj@eD`@mCj@_Eb@}DRaCNoCqBwAa@YQ_ADu@JkCDgA?_NIYYaAe@{AGQn@eB^}A\\B|AmA~AiAz@e@lCiD`AkAdAoAR]N@LAjEaH`DaHjCiHT_BFc@XwA\\_BAk@fLqe@t@V|CA`@eBlAcFx@kHp@mGnFkTbJu\\tQqt@x[}qAvWefAE{ErCwMnFoDl@sCjBuIfLkd@~Lgg@pAoFzA_G~EmSfH_ZlBoIxBmInIq\\`AgE`C_KtAqFnAaFb@iBp@kCdEqPp@uCbBiHrCsLpFeTzD_PdB}G^cBRkAJiABcJA_D?yD`CCl@IYyBAk`@?}C?qI?eI?aEbI?AyLbQ@@uAF}ANqAXqA|@eC`AsBt@kA`AoA~@gASUDs@TsEV{FB]b@w@fB{HH{A~BsJzAeGlDsN|CiM~CkMlDsNrAqFb@qDjBC|C?bBcHdBgHPo@zEwR`CuJ~BmJrAmFlAeF|Mcj@hOqm@zAeGrBkIz@mDlCsK`AeMdAuFp@eEJwBf@uDp@oCpSi{@bAcFfLgc@fLod@b@qA`BiHnBqGhGoUfKe`@jBgGtBeHnCaI|GoUdHaUxI_PjCwIrEgOjDaL`JgZnDkL`Pai@p@}HT{Az@sFvRyo@|@iCbAyCYiC[sAe@aAi@u@RqAL_AFc@Hm@Ly@L{@Jw@L}@?eNy@UCAw@UwAa@EAaAWw@S{Bo@`L}y@mHkB"
+   }
+  ],
+  "summary": {
+   "has_time_restrictions": false,
+   "has_toll": false,
+   "has_highway": false,
+   "has_ferry": false,
+   "min_lat": 38.897109,
+   "min_lon": -77.043375,
+   "max_lat": 38.909608,
+   "max_lon": -77.00627,
+   "time": 2627.797,
+   "length": 3.657,
+   "cost": 2662.797
+  },
+  "status_message": "Found route between points",
+  "status": 0,
+  "units": "kilometers",
+  "language": "en-US"
+ }
+}

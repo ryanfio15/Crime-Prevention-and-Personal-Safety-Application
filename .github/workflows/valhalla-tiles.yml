@@ -1,0 +1,170 @@
+# Builds the Valhalla routing tiles (deploy/valhalla/build.sh) and publishes
+# them as a GitHub release, valhalla-tiles-YYYYMMDD, which the home server's
+# safety-valhalla-fetch.timer downloads (deploy/valhalla/fetch.sh).
+#
+# Here and not on the server: the build peaks at ~4 GB RAM and ~6.5 GB disk
+# (measured for six cities), which a 7.6 GB, 87%-full host cannot spare beside
+# the database; a hosted runner has 16 GB and room to spare, and the repo is
+# public, so the host downloads the result without credentials.
+#
+# A separate workflow on purpose: the check run named `ci` gates every deploy
+# (ci.yml), and a 20-minute map build must never be part of that contract or
+# hold it up. Nothing here deploys anything -- a release only becomes live when
+# the host's weekly fetch smoke-tests and installs it.
+name: valhalla-tiles
+
+on:
+  # GitHub cron cannot say "first Sunday": a day-of-month and a day-of-week in
+  # one expression mean either, not both. So this fires every Sunday and the
+  # `when` job lets only days 1-7 through. 03:30 UTC, quiet for Geofabrik
+  # (which publishes its US extracts overnight) and for us.
+  schedule:
+    - cron: "30 3 * * 0"
+  # Run by hand for a first build or after editing regions.tsv:
+  #   gh workflow run valhalla-tiles.yml
+  workflow_dispatch:
+
+# Nothing by default; each job asks for what it needs. Only `publish`, which
+# never runs repository code, can write -- the build (third-party downloads,
+# a container, a long script) runs with a read-only token it cannot reach.
+permissions: {}
+
+# Two builds at once would race on the release tag and the pruning.
+concurrency:
+  group: valhalla-tiles
+  cancel-in-progress: false
+
+jobs:
+  when:
+    name: first Sunday?
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      go: ${{ steps.day.outputs.go }}
+    steps:
+      - id: day
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != schedule ] || [ "$(date -u +%-d)" -le 7 ]; then
+            echo go=true >> "$GITHUB_OUTPUT"
+          else
+            echo "not the first Sunday of the month; skipping"
+            echo go=false >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: build tiles
+    needs: when
+    if: needs.when.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Measured 15 min for the tiles; downloads, clipping and the smoke test
+    # add perhaps 10. Generous, because a killed run publishes nothing anyway.
+    timeout-minutes: 120
+    # OUT_DIR and WORK_DIR live under the runner's temp directory, but the
+    # `runner` context is not available in job-level env (GitHub rejects the
+    # whole file), so the first step derives them from $RUNNER_TEMP instead.
+    env:
+      # The live cities, so a city whose data has grown past its padded box in
+      # regions.tsv shows up as a warning on this run's page.
+      CITIES_URL: https://ryanfioserver.ddns.net/api/v1/cities
+    steps:
+      - name: Paths
+        run: |
+          echo "OUT_DIR=$RUNNER_TEMP/valhalla-out" >> "$GITHUB_ENV"
+          echo "WORK_DIR=$RUNNER_TEMP/valhalla-work" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v5
+        with:
+          # No token left in .git/config for the build's scripts to find.
+          persist-credentials: false
+      - name: Install osmium-tool
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmium-tool
+          osmium --version | head -1
+      - name: Disk and memory
+        run: df -h "$RUNNER_TEMP" && free -h
+      - name: Build
+        run: deploy/valhalla/build.sh
+      - name: Record the city list
+        run: grep -v '^#' deploy/valhalla/regions.tsv | cut -f1 | paste -sd' ' > "$OUT_DIR/cities.txt"
+      # ~1.2 GB, well inside the artifact limits. Not compressed: the tar is
+      # mostly packed tile data and level 0 saves minutes. Kept a day -- only
+      # the publish job below reads it.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: valhalla-tiles
+          path: ${{ runner.temp }}/valhalla-out/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    # Creating a release and its tag needs write; this job runs only gh.
+    permissions:
+      contents: write
+    timeout-minutes: 30
+    env:
+      # gh without a checkout: name the repository explicitly. (`github` is
+      # available in job-level env; `runner` is not -- see the build job.)
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Paths
+        run: echo "OUT_DIR=$RUNNER_TEMP/valhalla-out" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: valhalla-tiles
+          path: ${{ runner.temp }}/valhalla-out
+      - name: Check the files
+        run: |
+          cd "$OUT_DIR" && sha256sum --quiet -c SHA256SUMS && ls -l
+      # The tag carries the date; a second build the same day (a manual
+      # re-run) gets a -N suffix rather than failing. fetch.sh picks the newest
+      # by publication time, so the suffix never confuses it, and installs only
+      # releases whose author is github-actions[bot] -- this job's token.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          base=valhalla-tiles-$(date -u +%Y%m%d)
+          tag=$base n=1
+          while gh release view "$tag" > /dev/null 2>&1; do
+            n=$((n + 1)); tag=$base-$n
+          done
+          size=$(du -h "$OUT_DIR/valhalla_tiles.tar" | cut -f1)
+          {
+            echo "Valhalla routing tiles for: $(cat "$OUT_DIR/cities.txt")."
+            echo
+            echo "Built by run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "from $GITHUB_SHA with the image pinned in deploy/valhalla/build.sh."
+            echo "Tar: $size. Installed on the server by deploy/valhalla/fetch.sh;"
+            echo "not an application release."
+            echo
+            echo "Map data (c) OpenStreetMap contributors, ODbL 1.0, via Geofabrik."
+          } > "$RUNNER_TEMP/notes.md"
+          # --latest=false: these are data drops, not versions of the app, and
+          # must not become what the repo's "latest release" link points at.
+          gh release create "$tag" \
+            --target "$GITHUB_SHA" \
+            --title "Routing tiles $tag" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --latest=false \
+            "$OUT_DIR/valhalla_tiles.tar" "$OUT_DIR/valhalla.json" "$OUT_DIR/SHA256SUMS"
+          echo "::notice title=Published::$tag ($size)"
+      # Each release is ~1.2 GB. Two cover the host's install and its rollback
+      # (fetch.sh keeps the previous build on disk anyway); older ones are
+      # deleted with their tags.
+      - name: Prune old releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 100 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("valhalla-tiles-"))] | sort_by(.createdAt) | reverse | .[2:] | .[].tagName' |
+          while read -r tag; do
+            echo "deleting $tag"
+            gh release delete "$tag" --yes --cleanup-tag
+          done
