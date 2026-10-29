@@ -37,6 +37,10 @@ from safety.api.security import SecurityHeadersMiddleware
 from safety.config import REPO_ROOT, WEB_DIR, settings
 from safety.h3grid import RESOLUTIONS, cell_resolution, cells_for_point, grid_disk, is_valid_cell
 
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request as URLRequest, urlopen
+
 log = logging.getLogger(__name__)
 
 pool: ConnectionPool | None = None
@@ -831,6 +835,59 @@ def cells_lookup(
             "message": "That location falls outside the covered city boundary.",
         }
     return {"h3": cell, "in_coverage": True, **detail}
+
+
+@app.get(f"{API}/locations/search", tags=["locations"])
+def search_location(
+    q: str = Query(..., min_length=3, max_length=200),
+):
+    params = urlencode({
+        "format": "jsonv2",
+        "limit": 1,
+        "countrycodes": "us",
+        "q": q,
+    })
+
+    request = URLRequest(
+        f"https://nominatim.openstreetmap.org/search?{params}",
+        headers={
+            "User-Agent": "CrimePreventionPersonalSafetyApplication/1.0",
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        with urlopen(request, timeout=8) as response:
+            results = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, OSError):
+        raise HTTPException(
+            status_code=502,
+            detail="The location search service is temporarily unavailable.",
+        )
+
+    if not results:
+        raise HTTPException(
+            status_code=404,
+            detail="No matching location was found. Try a more specific address.",
+        )
+
+    result = results[0]
+
+    try:
+        latitude = float(result["lat"])
+        longitude = float(result["lon"])
+        label = str(result["display_name"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=502,
+            detail="The location search service returned invalid data.",
+        )
+
+    return {
+        "latitude": latitude,
+        "longitude": longitude,
+        "label": label,
+    }
 
 
 @app.get(f"{API}/cells/{{h3_index}}", tags=["cells"])

@@ -15,6 +15,7 @@ Two rules hold throughout this module:
 from __future__ import annotations
 
 import re
+import calendar
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -1165,7 +1166,61 @@ def cell_detail(
             )
             hour_safety = cur.fetchall()
 
-    headline = next((row for row in activity if row["category"] == "all"), None)
+    headline = next((row for row in activity if row["category"] == "all"), None)    
+
+
+    # Limit the monthly trend to the selected Check Risk period.
+    # The stored records are whole-calendar-month totals, not daily totals.
+    if date_range is not None:
+        monthly_start = date_range.start
+        monthly_end = date_range.end
+    elif headline is not None:
+        monthly_start = headline["window_start"]
+        monthly_end = headline["window_end"]
+    else:
+        monthly_start = None
+        monthly_end = None
+
+    monthly_note = "Monthly trend is unavailable for this period."
+
+    if monthly_start is not None and monthly_end is not None:
+        first_month = monthly_start.replace(day=1)
+        last_month = monthly_end.replace(day=1)
+
+        start_is_partial = monthly_start.day != 1
+        end_is_partial = (
+            monthly_end.day
+            != calendar.monthrange(monthly_end.year, monthly_end.month)[1]
+        )
+
+        filtered_monthly = []
+
+        for row in monthly:
+            month = row["month_start"]
+
+            if not first_month <= month <= last_month:
+                continue
+
+            partial_month = (
+                (month == first_month and start_is_partial)
+                or (month == last_month and end_is_partial)
+            )
+
+            filtered_monthly.append({
+                **row,
+                "partial_month": partial_month,
+            })
+
+        monthly = filtered_monthly
+
+        if start_is_partial or end_is_partial:
+            monthly_note = (
+                "Calendar-month totals; the first and/or last month may "
+                "include dates outside the selected period."
+            )
+        else:
+            monthly_note = "Calendar-month totals for the selected period."
+
     return {
         "cell": cell,
         "exposure": _exposure_payload(exposure),
@@ -1191,6 +1246,8 @@ def cell_detail(
         # the same question, so the panel has somewhere to point.
         "by_category_available": category_breakdown_built(cell["h3_res"]),
         "monthly": monthly,
+        "monthly_label": "Monthly incident totals",
+        "monthly_note": monthly_note,
         "top_offenses": offenses,
         "safety": [
             {

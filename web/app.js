@@ -904,7 +904,11 @@ async function selectCell(h3) {
   renderSafety(detail.safety);
   renderHours(detail);
   renderCategoryBars(detail.by_category, detail.by_category_available);
-  renderSparkline(detail.monthly, headline.window_end);
+  renderSparkline(
+    result.monthly,
+    anchorIso,
+    result.monthly_note ?? ""
+  );  
   renderOffenseMix(detail.top_offenses);
 }
 
@@ -1184,23 +1188,32 @@ function isCompleteMonth(monthStartIso, anchorIso) {
   return monthEnd <= anchorIso;
 }
 
-function renderSparkline(monthly, anchorIso) {
+
+function renderSparkline(monthly, anchorIso, monthlyNote = "") {
   const svg = $("d-spark");
-  // The trailing month is nearly always partial -- the source has only
-  // published a few days of it -- and plotting it makes a data boundary look
-  // like a collapse in reported crime. Complete months only.
+
+  // The API filters monthly records to the selected Check Risk period.
+  // Keep boundary months, but identify their full-calendar-month totals.
   const series = (monthly ?? [])
     .filter((row) => row.category === "all")
-    .filter((row) => isCompleteMonth(row.month_start, anchorIso))
     .sort((a, b) => a.month_start.localeCompare(b.month_start));
 
   svg.innerHTML = "";
   $("d-spark-readout").textContent = "";
 
+  const note = $("d-trend-note");
+  if (note) {
+    note.textContent = monthlyNote;
+  }
+
   if (series.length < 2) {
     $("d-spark-from").textContent = "";
     $("d-spark-to").textContent = "";
-    $("d-spark-readout").textContent = "Not enough complete months to plot a trend.";
+    $("d-spark-readout").textContent =
+      series.length === 1
+        ? "Only one month is available for this period."
+        : "No monthly data is available for this period.";
+    $("d-trend-title").textContent = "Monthly incident trend";
     return;
   }
 
@@ -1257,13 +1270,18 @@ function renderSparkline(monthly, anchorIso) {
   // The trend series always spans the full retained history, which is wider
   // than the window driving the map -- say so rather than letting the panel
   // imply both numbers cover the same period.
-  $("d-trend-title").textContent = `Monthly trend · ${series.length} complete months`;
+$("d-trend-title").textContent =
+  `Monthly trend · ${series.length} months`;
 
   // The readout is always visible, so a value is never reachable only by hover.
   const readout = (index) => {
     const row = series[index];
+    const partialNote = row.partial_month
+      ? " · Full calendar-month total; partly outside selected period"
+      : "";
+
     $("d-spark-readout").textContent =
-      `${monthLabel(row.month_start)}: ${nf.format(row.incident_count)} reported`;
+      `${monthLabel(row.month_start)}: ${nf.format(row.incident_count)} reported${partialNote}`;
   };
   readout(series.length - 1);
 
@@ -1823,6 +1841,606 @@ function onRangeChange(range) {
   loadLayer();
 }
 
+
+/* =========================================================
+   Check Risk: location search, preview map and cell lookup
+   ========================================================= */
+
+let riskMap = null;
+let riskMarker = null;
+let riskLocation = null;
+
+// State for the Check Risk result panel.
+// Relative-risk values stay null until a validated model exists.
+const riskResultState = {
+  status: "idle", // idle | loading | available | outside_coverage | error
+
+  location: null,
+
+  selection: {
+    date: null,
+    time: null,
+    category: "all",
+  },
+
+  historical: {
+    available: false,
+    h3: null,
+    message: null,
+    data: null,
+  },
+
+  relativeRisk: {
+    score: null,
+    level: null,
+    cityComparison: null,
+    percentile: null,
+    status: "not_available",
+  },
+
+  error: null,
+};
+
+function renderCheckRiskResult() {
+  const panel = $("risk-result");
+  const title = $("risk-result-title");
+  const level = $("risk-level");
+  const cityComparison = $("risk-city-comparison");
+  const percentile = $("risk-percentile");
+  const locationComparison = $("risk-location-comparison");
+
+  if (!panel) return;
+
+  panel.hidden = false;
+
+  // Clear previous results before rendering the new state.
+  if (title) title.textContent = "";
+  if (level) level.textContent = "";
+  if (cityComparison) cityComparison.textContent = "";
+  if (percentile) percentile.textContent = "";
+  if (locationComparison) locationComparison.replaceChildren();
+
+  if (riskResultState.status === "loading") {
+    if (title) title.textContent = "Checking location…";
+    if (level) {
+      level.textContent =
+        "Looking for historical data for this location.";
+    }
+    return;
+  }
+
+  if (riskResultState.status === "error") {
+    if (title) title.textContent = "Could not check this location";
+    if (level) {
+      level.textContent =
+        riskResultState.error || "Please try again.";
+    }
+    return;
+  }
+
+  if (riskResultState.status === "outside_coverage") {
+    if (title) title.textContent = "Location outside data coverage";
+    if (level) {
+      level.textContent =
+        riskResultState.historical.message ||
+        "No historical data is available for this location.";
+    }
+    if (locationComparison) {
+      locationComparison.textContent =
+        "A relative-risk estimate is not available for this location.";
+    }
+    return;
+  }
+
+  if (riskResultState.status !== "available") {
+    if (title) title.textContent = "Check a location";
+    if (level) {
+      level.textContent =
+        "Search for a location or use your current location to begin.";
+    }
+    return;
+  }
+
+  const result = riskResultState.historical.data;
+  const headline = result?.headline;
+
+  if (!headline) {
+    if (title) title.textContent = "Historical data found";
+    if (level) {
+      level.textContent =
+        "The location has data coverage, but summary statistics are unavailable.";
+    }
+    return;
+  }
+
+  if (title) title.textContent = "Historical activity summary";
+
+  if (level) {
+    const count = headline.incident_count;
+    const period = result.window_label || "Selected period";
+
+    level.textContent =
+      `${count ?? "Unavailable"} reported incidents · ${period}`;
+  }
+
+  if (cityComparison) {
+    const rank = headline.city_rank;
+    const total = headline.city_cell_total;
+    const density = headline.incidents_per_km2;
+
+    const parts = [];
+
+    if (rank != null && total != null) {
+      parts.push(`Citywide cell rank: ${rank} of ${total}`);
+    }
+
+    if (density != null) {
+      parts.push(
+        `Historical incident density: ${Number(density).toFixed(1)} per km²`
+      );
+    }
+
+    cityComparison.textContent = parts.join(" · ");
+  }
+
+  if (percentile) {
+    const activityPercentile = headline.percentile;
+
+    percentile.textContent =
+      activityPercentile == null
+        ? "Historical activity percentile: unavailable"
+        : `Historical activity percentile: ${
+            (activityPercentile * 100).toFixed(1)
+          }th percentile`;
+
+    if (result.tier_label) {
+      percentile.textContent += ` · Activity tier: ${result.tier_label}`;
+    }
+  }
+
+  if (!locationComparison) return;
+
+  // Use textContent for API-supplied strings to avoid inserting HTML.
+  const summary = document.createElement("div");
+  const h3 = document.createElement("p");
+  h3.textContent = `H3 cell: ${result.h3 || "Unavailable"}`;
+  summary.appendChild(h3);
+
+  if (headline.window_start && headline.window_end) {
+    const dates = document.createElement("p");
+    dates.textContent =
+      `Data range: ${headline.window_start} to ${headline.window_end}`;
+    summary.appendChild(dates);
+  }
+
+  // Category breakdown.
+  if (Array.isArray(result.by_category) && result.by_category.length) {
+    const categoryHeading = document.createElement("h4");
+    categoryHeading.textContent = "Incidents by category";
+    summary.appendChild(categoryHeading);
+
+    const categoryList = document.createElement("ul");
+
+    for (const item of result.by_category) {
+      const li = document.createElement("li");
+      li.textContent =
+        `${item.category}: ${item.incident_count} incidents`;
+      categoryList.appendChild(li);
+    }
+
+    summary.appendChild(categoryList);
+  }
+
+  // Most common reported offenses.
+  if (Array.isArray(result.top_offenses) && result.top_offenses.length) {
+    const offenseHeading = document.createElement("h4");
+    offenseHeading.textContent = "Most reported offenses";
+    summary.appendChild(offenseHeading);
+
+    const offenseList = document.createElement("ol");
+
+    for (const item of result.top_offenses.slice(0, 5)) {
+      const li = document.createElement("li");
+      li.textContent =
+        `${item.raw_offense_text}: ${item.incident_count}`;
+      offenseList.appendChild(li);
+    }
+
+    summary.appendChild(offenseList);
+  }
+
+  // Keep the API's separate safety metrics distinct from activity percentile.
+  if (Array.isArray(result.safety) && result.safety.length) {
+    const safetyHeading = document.createElement("h4");
+    safetyHeading.textContent = "Historical safety comparisons";
+    summary.appendChild(safetyHeading);
+
+    const safetyList = document.createElement("ul");
+
+    for (const item of result.safety) {
+      const li = document.createElement("li");
+      const rank =
+        item.safety_rank != null && item.city_cell_total != null
+          ? ` · rank ${item.safety_rank} of ${item.city_cell_total}`
+          : "";
+
+      li.textContent =
+        `${item.track_label || item.track}: ` +
+        `${item.tier_label || "Tier unavailable"}${rank}`;
+
+      safetyList.appendChild(li);
+    }
+
+    summary.appendChild(safetyList);
+  }
+
+  const disclaimer = document.createElement("p");
+  disclaimer.textContent =
+    "These figures describe reported historical incidents. " +
+    "They do not predict whether a crime will occur at a selected future date or time.";
+  summary.appendChild(disclaimer);
+
+  locationComparison.appendChild(summary);
+}
+
+async function initializeRiskMap() {
+  if (riskMap) {
+    riskMap.resize();
+    return riskMap;
+  }
+
+  const container = $("risk-map");
+  if (!container) {
+    throw new Error("The risk map container was not found in index.html.");
+  }
+
+  riskMap = new maplibregl.Map({
+    container: "risk-map",
+    style: await resolveStyle(),
+    center: [-75.1652, 39.9526],
+    zoom: 10,
+    maxZoom: 18,
+    attributionControl: { compact: true },
+  });
+
+  riskMap.addControl(
+    new maplibregl.NavigationControl({ showCompass: false }),
+    "top-right"
+  );
+
+  await new Promise((resolve, reject) => {
+    riskMap.once("load", resolve);
+    riskMap.once("error", (event) => {
+      reject(event.error || new Error("The risk map could not load."));
+    });
+  });
+
+  return riskMap;
+}
+
+function showRiskLocation(latitude, longitude, label) {
+  riskLocation = { latitude, longitude, label };
+
+  if (riskMarker) {
+    riskMarker.setLngLat([longitude, latitude]);
+  } else {
+    riskMarker = new maplibregl.Marker({ color: "#176b60" })
+      .setLngLat([longitude, latitude]);
+  }
+
+  riskMarker.addTo(riskMap);
+
+  riskMap.flyTo({
+    center: [longitude, latitude],
+    zoom: 14,
+    duration: 700,
+  });
+
+  const selected = $("selected-location");
+  if (selected) selected.hidden = false;
+
+  if ($("selected-address")) {
+    $("selected-address").textContent = label;
+  }
+
+  if ($("selected-coordinates")) {
+    $("selected-coordinates").textContent =
+      `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+  }
+
+  if ($("risk-map-caption")) {
+    $("risk-map-caption").textContent =
+      "Location selected successfully.";
+  }
+
+  if ($("risk-location-note")) {
+    $("risk-location-note").textContent = "Location selected.";
+  }
+}
+
+
+
+async function searchRiskLocation(query) {
+  const trimmed = query.trim();
+
+  if (trimmed.length < 3) {
+    throw new Error("Enter at least 3 characters to search.");
+  }
+
+  const cityName =
+    $("f-city")?.selectedOptions?.[0]?.textContent?.trim();
+
+  const searchQuery = cityName
+    ? `${trimmed}, ${cityName}`
+    : trimmed;
+
+  const params = new URLSearchParams({
+    q: searchQuery,
+  });
+
+  const response = await fetch(
+    `/api/v1/locations/search?${params.toString()}`,
+    { headers: { Accept: "application/json" } }
+  );
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(
+      data.detail || "Location search failed. Check your connection and try again."
+    );
+  }
+
+  const latitude = Number(data.latitude);
+  const longitude = Number(data.longitude);
+
+  if (
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    longitude < -180 ||
+    longitude > 180
+  ) {
+    throw new Error("The location service returned invalid coordinates.");
+  }
+
+  await initializeRiskMap();
+  showRiskLocation(latitude, longitude, data.label);
+
+  return riskLocation;
+}
+
+
+
+async function locateRisk() {
+  if (!navigator.geolocation) {
+    throw new Error("This browser does not support location access.");
+  }
+
+  const position = await new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(resolve, reject, {
+      enableHighAccuracy: false,
+      timeout: 12000,
+      maximumAge: 60000,
+    });
+  });
+
+  const { latitude, longitude } = position.coords;
+
+  await initializeRiskMap();
+  showRiskLocation(
+    latitude,
+    longitude,
+    "My current location"
+  );
+
+  if ($("risk-location")) {
+    $("risk-location").value = "My current location";
+  }
+
+  return riskLocation;
+}
+
+async function checkRisk() {
+  if (!riskLocation) {
+    riskResultState.status = "error";
+    riskResultState.error =
+      "Search for a location or select Use My Location first.";
+
+    renderCheckRiskResult();
+    throw new Error(riskResultState.error);
+  }
+
+  // Record the location and selected historical-data period.
+  riskResultState.location = { ...riskLocation };
+  riskResultState.selection.category = state.category || "all";
+  riskResultState.selection.date = state.from || null;
+  riskResultState.selection.time =
+    state.hour == null ? null : state.hour;
+
+  riskResultState.status = "loading";
+  riskResultState.error = null;
+  riskResultState.historical = {
+    available: false,
+    h3: null,
+    message: null,
+    data: null,
+  };
+
+  renderCheckRiskResult();
+
+  try {
+    const params = new URLSearchParams({
+      lat: String(riskLocation.latitude),
+      lng: String(riskLocation.longitude),
+      res: String(state.res),
+      ...periodParams(),
+    });
+
+    const response = await fetch(
+      `${API}/cells/lookup?${params}`
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `The historical data lookup failed (HTTP ${response.status}).`
+      );
+    }
+
+    const result = await response.json();
+
+    if (!result.in_coverage) {
+      riskResultState.status = "outside_coverage";
+      riskResultState.historical = {
+        available: false,
+        h3: result.h3 || null,
+        message:
+          result.message ||
+          "No historical data is available for this location.",
+        data: result,
+      };
+
+      renderCheckRiskResult();
+      return result;
+    }
+
+    riskResultState.status = "available";
+    riskResultState.historical = {
+      available: true,
+      h3: result.h3 || null,
+      message: result.message || null,
+      data: result,
+    };
+
+    // Keep the future model fields empty until they are calculated
+    // by a real, validated backend implementation.
+    riskResultState.relativeRisk = {
+      score: null,
+      level: null,
+      cityComparison: null,
+      percentile: null,
+      status: "not_available",
+    };
+
+    renderCheckRiskResult();
+    return result;
+  } catch (error) {
+    riskResultState.status = "error";
+    riskResultState.error =
+      error.message || "An unexpected error occurred.";
+
+    renderCheckRiskResult();
+    throw error;
+  }
+}
+
+function wireRiskControls() {
+  const searchButton = $("risk-search-button");
+  const locationInput = $("risk-location");
+  const locationButton = $("btn-risk-locate");
+  const checkButton = $("btn-check-risk");
+  const centerButton = $("risk-map-center");
+
+  if (searchButton) {
+    searchButton.addEventListener("click", async () => {
+      searchButton.disabled = true;
+
+      try {
+        await searchRiskLocation(locationInput?.value || "");
+      } catch (error) {
+        if ($("risk-location-note")) {
+          $("risk-location-note").textContent =
+            error.message || "Could not find that location.";
+        }
+      } finally {
+        searchButton.disabled = false;
+      }
+    });
+  }
+
+  if (locationInput) {
+    locationInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        searchButton?.click();
+      }
+    });
+  }
+
+  if (locationButton) {
+    locationButton.addEventListener("click", async () => {
+      locationButton.disabled = true;
+
+      try {
+        await locateRisk();
+      } catch (error) {
+        if ($("risk-location-note")) {
+          const messages = {
+            1: "Location permission was denied. Allow access in your browser settings.",
+            2: "Your current location is unavailable.",
+            3: "Location lookup timed out. Try again.",
+          };
+
+          $("risk-location-note").textContent =
+            messages[error.code] ||
+            error.message ||
+            "Could not get your location.";
+        }
+      } finally {
+        locationButton.disabled = false;
+      }
+    });
+  }
+
+  if (checkButton) {
+    checkButton.addEventListener("click", async () => {
+      checkButton.disabled = true;
+
+      try {
+        await checkRisk();
+      } catch (error) {
+        if ($("risk-result")) $("risk-result").hidden = false;
+        if ($("risk-result-title")) {
+          $("risk-result-title").textContent = "Could not check this location";
+        }
+        if ($("risk-level")) {
+          $("risk-level").textContent =
+            error.message || "Please try again.";
+        }
+      } finally {
+        checkButton.disabled = false;
+      }
+    });
+  }
+
+  if (centerButton) {
+    centerButton.addEventListener("click", () => {
+      if (!riskMap || !riskLocation) return;
+
+      riskMap.flyTo({
+        center: [riskLocation.longitude, riskLocation.latitude],
+        zoom: 14,
+        duration: 500,
+      });
+    });
+  }
+
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+
+  if ($("risk-date") && !$("risk-date").value) {
+    $("risk-date").value =
+      `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  }
+
+  if ($("risk-time") && !$("risk-time").value) {
+    $("risk-time").value =
+      `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  }
+}
+
+
 function wireControls() {
   $("f-city").onchange = (e) => selectCity(e.target.value);
   $("f-preset").onchange = (e) => {
@@ -1886,6 +2504,7 @@ function wireControls() {
       if (state.detail) renderHours(state.detail);
       renderTable();
     };
+    wireRiskControls();
   });
 
   $("btn-locate").onclick = locateMe;
@@ -1979,4 +2598,379 @@ function watchForRefresh() {
   state.refreshStamp = version ? String(version.last_refreshed_at) : null;
   watchForRefresh();
   watchCityClock();
+})();
+
+
+
+/* =========================================================
+   Check Risk view
+   Additive UI behavior; leaves the historical map logic intact.
+   ========================================================= */
+
+(function initCheckRiskUI() {
+  const start = () => {
+    const riskView = document.getElementById("check-risk-view");
+    const historyView = document.getElementById("explore-history-view");
+    const riskTab = document.getElementById("tab-check-risk");
+    const historyTab = document.getElementById("tab-explore-history");
+
+    const checkRiskButton = document.getElementById("btn-check-risk");
+
+    const locationInput = document.getElementById("risk-location");
+    const locationButton = document.getElementById("btn-risk-locate");
+    const locationStatus = document.getElementById("risk-location-note");
+
+    const dateInput = document.getElementById("risk-date");
+    const timeInput = document.getElementById("risk-time");
+    const riskCategory = document.getElementById("risk-category");
+
+    const resultStatus = document.getElementById("risk-result-title");
+    const resultDetails = document.getElementById("risk-result");
+    const mapCaption = document.getElementById("risk-map-caption");
+    const mapPlaceholder = document.getElementById("risk-map");
+        
+    let riskMap = null;
+    let riskMarker = null;
+
+    async function initRiskMap() {
+      const container = document.getElementById("risk-map");
+
+      if (!container || riskMap || !window.maplibregl) {
+        return;
+      }
+
+      try {
+        const style = await resolveStyle();
+
+        riskMap = new maplibregl.Map({
+          container: container,
+          style: style,
+          center: [-75.1652, 39.9526],
+          zoom: 10
+        });
+
+        riskMap.addControl(
+          new maplibregl.NavigationControl(),
+          "top-right"
+        );
+
+        riskMap.on("load", () => {
+          riskMap.resize();
+        });
+
+        riskMap.on("error", (event) => {
+          console.error("Check Risk map error:", event.error);
+        });
+      } catch (error) {
+        console.error("Could not initialize Check Risk map:", error);
+      }
+    }
+
+    
+    if (
+      !riskView ||
+      !historyView ||
+      !riskTab ||
+      !historyTab ||
+      !checkRiskButton
+    ) {
+      console.error("Check Risk UI could not initialize. Check the HTML element IDs.");
+      return;
+    }
+
+    let selectedCoordinates = null;
+
+    /* Set date and time using the user's local browser clock. */
+    const pad = (value) => String(value).padStart(2, "0");
+
+    const setDateTimeDefaults = () => {
+      const now = new Date();
+
+      if (dateInput && !dateInput.value) {
+        dateInput.value = [
+          now.getFullYear(),
+          pad(now.getMonth() + 1),
+          pad(now.getDate()),
+        ].join("-");
+      }
+
+      if (timeInput && !timeInput.value) {
+        timeInput.value = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+      }
+    };
+
+    /* Reuse the existing historical category options where available. */
+    const populateRiskCategories = () => {
+      const historyCategory = document.getElementById("f-category");
+
+      if (!riskCategory || !historyCategory) return;
+
+      const previousValue = riskCategory.value;
+
+      riskCategory.replaceChildren();
+
+      Array.from(historyCategory.options).forEach((option, index) => {
+        const copy = document.createElement("option");
+        copy.value = option.value;
+        copy.textContent =
+          index === 0 ? "All reported categories" : option.textContent;
+        riskCategory.appendChild(copy);
+      });
+
+      if (
+        Array.from(riskCategory.options).some(
+          (option) => option.value === previousValue
+        )
+      ) {
+        riskCategory.value = previousValue;
+      }
+    };
+
+    const setActiveView = (view) => {
+      const showRisk = view === "risk";
+
+      riskView.hidden = !showRisk;
+      historyView.hidden = showRisk;
+
+      riskTab.classList.toggle("is-active", showRisk);
+      historyTab.classList.toggle("is-active", !showRisk);
+
+      riskTab.setAttribute("aria-selected", String(showRisk));
+      historyTab.setAttribute("aria-selected", String(!showRisk));
+
+      riskTab.tabIndex = showRisk ? 0 : -1;
+      historyTab.tabIndex = showRisk ? -1 : 0;
+
+      if (!showRisk) {
+        /*
+         * The historical map was initialized while its view may have
+         * been hidden. Resize it once its container is visible.
+         */
+        window.setTimeout(() => {
+          const historicalMap = window.__safetyMap;
+
+          if (historicalMap && typeof historicalMap.resize === "function") {
+            historicalMap.resize();
+          }
+        }, 0);
+      }
+
+      window.dispatchEvent(
+        new CustomEvent("safety:viewchange", {
+          detail: { view },
+        })
+      );
+    };
+
+    riskTab.addEventListener("click", () => setActiveView("risk"));
+    historyTab.addEventListener("click", () => setActiveView("history"));
+
+    /* Allow keyboard users to move between the two tabs. */
+    [riskTab, historyTab].forEach((tab) => {
+      tab.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+          return;
+        }
+
+        event.preventDefault();
+
+        const nextView =
+          tab === riskTab
+            ? (event.key === "ArrowRight" ? historyTab : historyTab)
+            : (event.key === "ArrowRight" ? riskTab : riskTab);
+
+        nextView.focus();
+        nextView.click();
+      });
+    });
+
+    /* Browser geolocation: obtain coordinates, not a fake street address. */
+    if (locationButton) {
+      locationButton.addEventListener("click", () => {
+        if (!navigator.geolocation) {
+          if (locationStatus) {
+            locationStatus.textContent =
+              "This browser does not support location access. Enter a destination instead.";
+          }
+          return;
+        }
+
+        locationButton.disabled = true;
+        locationButton.textContent = "Finding location…";
+
+        if (locationStatus) {
+          locationStatus.textContent =
+            "Waiting for browser location permission…";
+        }
+
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            const latitude = position.coords.latitude;
+            const longitude = position.coords.longitude;
+
+            selectedCoordinates = { latitude, longitude };
+
+            if (riskMap) {
+              riskMap.flyTo({
+                center: [longitude, latitude],
+                zoom: 14
+              });
+
+              if (riskMarker) {
+                riskMarker.setLngLat([longitude, latitude]);
+              } else {
+                riskMarker = new maplibregl.Marker()
+                  .setLngLat([longitude, latitude])
+                  .addTo(riskMap);
+              }
+            }            
+
+            if (locationInput) {
+              locationInput.value =
+                `Current location (${latitude.toFixed(5)}, ${longitude.toFixed(5)})`;
+              locationInput.dataset.latitude = String(latitude);
+              locationInput.dataset.longitude = String(longitude);
+            }
+
+            if (locationStatus) {
+              locationStatus.textContent =
+                "Coordinates received. A street address and risk estimate have not been determined.";
+            }
+
+            if (mapCaption) {
+              mapCaption.textContent =
+                `Selected coordinates: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}.`;
+            }
+
+            if (mapPlaceholder) {
+              mapPlaceholder.textContent =
+                `Location coordinates received: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}. A map preview is not connected yet.`;
+            }
+
+            locationButton.disabled = false;
+            locationButton.innerHTML =
+              '<span aria-hidden="true">◎</span> Use My Location';
+          },
+          (error) => {
+            let message =
+              "Could not determine your location. Enter a destination manually.";
+
+            if (error.code === error.PERMISSION_DENIED) {
+              message =
+                "Location permission was denied. Allow location access in your browser settings or enter a destination manually.";
+            } else if (error.code === error.POSITION_UNAVAILABLE) {
+              message =
+                "Your current location is unavailable. Check your device location settings or enter a destination manually.";
+            } else if (error.code === error.TIMEOUT) {
+              message =
+                "Location lookup timed out. Try again or enter a destination manually.";
+            }
+
+            if (locationStatus) {
+              locationStatus.textContent = message;
+            }
+
+            locationButton.disabled = false;
+            locationButton.innerHTML =
+              '<span aria-hidden="true">◎</span> Use My Location';
+          },
+          {
+            enableHighAccuracy: false,
+            timeout: 12000,
+            maximumAge: 60000,
+          }
+        );
+      });
+    }
+
+    /*
+     * Editing the location invalidates coordinates previously obtained
+     * from the browser so the form cannot accidentally mix locations.
+     */
+ 
+    if (locationInput) {
+      locationInput.addEventListener("input", () => {
+        selectedCoordinates = null;
+        delete locationInput.dataset.latitude;
+        delete locationInput.dataset.longitude;
+
+        if (locationStatus) {
+          locationStatus.textContent =
+            "Enter an address, then select Search to find it.";
+        }
+
+        if (mapCaption) {
+          mapCaption.textContent =
+            "Search for an address to show its location on the map.";
+        }
+      });
+    }
+
+
+
+    checkRiskButton.addEventListener("click", async (event) => {
+      event.preventDefault();
+
+      if (!locationInput || !locationInput.value.trim()) {
+        if (locationStatus) {
+          locationStatus.textContent =
+            "Enter a destination or select Use My Location first.";
+        }
+        locationInput?.focus();
+        return;
+      }
+
+      if (dateInput && !dateInput.value) {
+        dateInput.focus();
+        return;
+      }
+
+      if (timeInput && !timeInput.value) {
+        timeInput.focus();
+        return;
+      }
+
+      try {
+        if (locationStatus) {
+          locationStatus.textContent = "Checking historical activity…";
+        }
+
+        // Reuse the existing address-search and historical-lookup flow.
+        if (!riskLocation && selectedCoordinates) {
+          showRiskLocation(
+            selectedCoordinates.latitude,
+            selectedCoordinates.longitude,
+            locationInput.value.trim()
+          );
+        } else if (!riskLocation) {
+          await searchRiskLocation(locationInput.value.trim());
+        }
+
+        const result = await checkRisk();
+
+        if (locationStatus) {
+          locationStatus.textContent = result.in_coverage
+            ? "Historical activity retrieved for the selected location."
+            : (result.message || "No historical data is available for this location.");
+        }
+      } catch (error) {
+        if (locationStatus) {
+          locationStatus.textContent =
+            error.message || "Could not check historical activity.";
+        }
+      }
+    });
+
+
+    setDateTimeDefaults();
+    populateRiskCategories();
+    setActiveView("risk");
+    initRiskMap();
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start, { once: true });
+  } else {
+    start();
+  }
 })();
