@@ -2246,38 +2246,73 @@ function flyAndSettle(center, zoom) {
   });
 }
 
+/** The city on screen, if `point` is in it; otherwise says so and gives null.
+    `what` names the point in the message ("That address"). */
+function cityOnScreen(point, what) {
+  const city = cityAt(point);
+  if (city && city.source_id === state.city) return city;
+  closeDirections();
+  setStatus("search-status", `${what} is outside ${state.cityRecord?.city_name ?? "this city"}.`, true);
+  return null;
+}
+
+/** The cell `point` is in, if the city's data covers it; otherwise says so
+    and gives null. */
+function coveredCell(point, city, what) {
+  const cell = h3.latLngToCell(point.lat, point.lng, state.res);
+  if (state.featureIndex.has(cell)) return cell;
+  // Inside the city's box but past the edge of its data: across the city
+  // line, or somewhere the source publishes nothing.
+  closeDirections();
+  setStatus("search-status", `${what} is just outside the area ${city.city_name}'s data covers.`, true);
+  return null;
+}
+
 /** Pin `place`, fly to it and open its cell's popup -- if it is a cell of
     the city on screen. */
 async function showPlace(place) {
   const seq = ++search.seq;
   clearSearchPin();
-  const city = cityAt(place);
-  if (!city || city.source_id !== state.city) {
-    closeDirections();
-    setStatus(
-      "search-status",
-      `That address is outside ${state.cityRecord?.city_name ?? "this city"}.`,
-      true
-    );
-    return;
-  }
+  const city = cityOnScreen(place, "That address");
+  if (!city) return;
   setStatus("search-status", "");
   closeDetail();
   await flyAndSettle([place.lng, place.lat], Math.max(map.getZoom(), SEARCH_ZOOM));
   if (seq !== search.seq) return;
 
-  const cell = h3.latLngToCell(place.lat, place.lng, state.res);
-  if (!state.featureIndex.has(cell)) {
-    // Inside the city's box but past the edge of its data: across the city
-    // line, or somewhere the source publishes nothing.
-    closeDirections();
-    setStatus(
-      "search-status",
-      `That address is just outside the area ${city.city_name}'s data covers.`,
-      true
-    );
-    return;
-  }
+  const cell = coveredCell(place, city, "That address");
+  if (cell) pinPlace(place, cell);
+}
+
+/** Right-click on the map: pin that point where it is, with no camera move,
+    and fill the search box with the nearest address -- a way to find an
+    address by pointing at it. Directions then work as for a typed one. */
+async function pinClickedPoint(lngLat) {
+  const point = { lat: lngLat.lat, lng: lngLat.lng };
+  const seq = ++search.seq;
+  clearSearchPin();
+  const city = cityOnScreen(point, "That point");
+  if (!city) return;
+  const cell = coveredCell(point, city, "That point");
+  if (!cell) return;
+
+  // The pin goes down at once; the address follows it.
+  closeDetail();
+  search.marker = searchPin().setLngLat([point.lng, point.lat]).addTo(map);
+  $("search-input").value = "";
+  setStatus("search-status", "Finding the nearest address…");
+  // The point keeps where it was clicked; the address only names it.
+  const { place } = await placeAt(point);
+  if (seq !== search.seq) return;
+  setStatus("search-status", "");
+  $("search-input").value = place.label;
+  pinPlace(place, cell);
+}
+
+/** Make `place` the searched address: its pin, its cell's popup, and the
+    directions destination when the panel is open. */
+function pinPlace(place, cell) {
+  search.marker?.remove();
   search.place = place;
   search.marker = searchPin().setLngLat([place.lng, place.lat]).addTo(map);
   $("search-actions").hidden = false;
@@ -2841,6 +2876,10 @@ async function initMap() {
   map.on("click", (event) => {
     const onCell = map.queryRenderedFeatures(event.point, { layers: ["cells-fill"] }).length;
     if (!onCell) closeDetail();
+  });
+  // Only while address search is on: the box it fills is hidden otherwise.
+  map.on("contextmenu", (event) => {
+    if (!$("search-field").hidden) pinClickedPoint(event.lngLat);
   });
 
   // The compass reads from the map centre until a location is shared, and its
