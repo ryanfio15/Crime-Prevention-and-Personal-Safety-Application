@@ -11,6 +11,10 @@ MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 CROSSWALK_DIR = REPO_ROOT / "reference" / "crosswalk"
 SEVERITY_DIR = REPO_ROOT / "reference" / "severity"
 WEB_DIR = REPO_ROOT / "web"
+# Dev-only alternative front ends, served under /<name>/ when
+# `extra_frontends` is on: a frozen copy of the original for reference, and a
+# sandbox for redesigns. Both call the same /api/v1 as the main one.
+EXTRA_WEB_DIRS = {"classic": REPO_ROOT / "web-classic", "testing": REPO_ROOT / "web-testing"}
 
 
 class Settings(BaseSettings):
@@ -56,6 +60,11 @@ class Settings(BaseSettings):
     # development and for load testing your own instance; on anything publicly
     # reachable it is the control doing the real work.
     enable_rate_limit: bool = True
+
+    # Serve the alternative front ends in EXTRA_WEB_DIRS at /classic/ and
+    # /testing/. Off by default so prod never grows them by merge; dev turns it
+    # on in its .env.
+    extra_frontends: bool = False
 
     # Serving-layer cache bounds (safety/api/main.py), the Redis stand-in from
     # S9.5. Settings rather than constants because the right size depends on how

@@ -24,7 +24,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.errors import QueryCanceled
 from psycopg.rows import dict_row
@@ -34,7 +34,7 @@ from safety import PIPELINE_VERSION
 from safety.api import repository as repo
 from safety.api.ratelimit import RateLimitMiddleware
 from safety.api.security import SecurityHeadersMiddleware
-from safety.config import REPO_ROOT, WEB_DIR, settings
+from safety.config import EXTRA_WEB_DIRS, REPO_ROOT, WEB_DIR, settings
 from safety.h3grid import RESOLUTIONS, cell_resolution, cells_for_point, grid_disk, is_valid_cell
 
 log = logging.getLogger(__name__)
@@ -1378,6 +1378,22 @@ class RevalidatedStaticFiles(StaticFiles):
         response.headers["Cache-Control"] = "no-cache"
         return response
 
+
+# The dev-only front ends, ahead of "/" so their paths are not swallowed by it.
+if settings.extra_frontends:
+    for name, directory in EXTRA_WEB_DIRS.items():
+        # A mount only matches "/<name>/..."; the bare path would otherwise
+        # fall through to "/" and 404.
+        app.add_api_route(
+            f"/{name}",
+            lambda name=name: RedirectResponse(f"/{name}/", status_code=308),
+            include_in_schema=False,
+        )
+        app.mount(
+            f"/{name}",
+            RevalidatedStaticFiles(directory=str(directory), html=True),
+            name=f"web-{name}",
+        )
 
 # The temporary front end. Mounted last so it never shadows an API route.
 app.mount("/", RevalidatedStaticFiles(directory=str(WEB_DIR), html=True), name="web")
