@@ -90,14 +90,30 @@ function pickReason(pick, mode) {
 }
 
 /**
- * The cards to show, in order: the fastest first, then the lower-activity pick
- * if there is one, then any other alternatives. `role` is what the card is
- * labelled with.
+ * The route with the lowest average reported activity on `track` (its
+ * mean_ratio, the figure its card is coloured by), among the routes rated well
+ * enough to compare; a tie goes to the quicker. Null with fewer than two such
+ * routes: with nothing to compare against, no route is the safest.
+ */
+function safestIndex(result, track) {
+  const rated = result.routes
+    .map((route, index) => ({ index, route, activity: route.activity?.[track] }))
+    .filter(({ activity }) => activity?.comparable && typeof activity.mean_ratio === "number");
+  if (rated.length < 2) return null;
+  rated.sort((a, b) => a.activity.mean_ratio - b.activity.mean_ratio || a.route.duration_s - b.route.duration_s);
+  return rated[0].index;
+}
+
+/**
+ * The cards to show, in order: the safest first, then the fastest, then any
+ * other alternatives -- or the fastest first when no route can be called the
+ * safest. `role` is what the card is labelled with.
  */
 function routeCardModel(result, track) {
-  const pick = result.picks?.[track] ?? { fastest: 0, lower: null };
-  const order = [pick.fastest];
-  if (pick.lower !== null && pick.lower !== pick.fastest) order.push(pick.lower);
+  const pick = result.picks?.[track] ?? { fastest: 0 };
+  const safest = safestIndex(result, track);
+  const order = safest === null ? [pick.fastest] : [safest];
+  if (!order.includes(pick.fastest)) order.push(pick.fastest);
   result.routes.forEach((_, i) => {
     if (!order.includes(i)) order.push(i);
   });
@@ -106,8 +122,9 @@ function routeCardModel(result, track) {
     const route = result.routes[index];
     const extra = route.duration_s - fastest.duration_s;
     let role = "Alternative";
-    if (index === pick.fastest) role = "Fastest";
-    else if (index === pick.lower) role = "Lower reported activity";
+    if (index === safest && index === pick.fastest) role = "Fastest and safest";
+    else if (index === safest) role = "Safest";
+    else if (index === pick.fastest) role = "Fastest";
     return {
       index,
       role,

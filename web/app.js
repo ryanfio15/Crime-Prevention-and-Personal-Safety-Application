@@ -2563,7 +2563,8 @@ async function submitDirections() {
 
 function showResult(result) {
   dir.result = result;
-  dir.selected = result.picks?.[state.track]?.fastest ?? 0;
+  // The top card: the safest route where there is one.
+  dir.selected = routeCardModel(result, state.track)[0].index;
   renderDirections();
   const bounds = routesBbox(result.routes);
   if (bounds) map.fitBounds(bounds, { padding: clearOfControls(), maxZoom: 16, duration: 700 });
@@ -2612,7 +2613,10 @@ function renderDirections() {
     </li>`;
   })}`;
 
-  $("dir-why").textContent = pickReason(result.picks?.[state.track], result.mode) ?? "";
+  // Why no slower route is the lower-activity pick -- only true, and only
+  // shown, when the fastest is on top.
+  const fastestOnTop = cards[0].index === (result.picks?.[state.track]?.fastest ?? 0);
+  $("dir-why").textContent = fastestOnTop ? pickReason(result.picks?.[state.track], result.mode) ?? "" : "";
   $("dir-caveats").innerHTML = html`${(result.caveats ?? []).map((c) => html`<li>${c}</li>`)}`;
   renderSteps();
   drawRoutes();

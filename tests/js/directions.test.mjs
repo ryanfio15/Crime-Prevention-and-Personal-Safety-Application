@@ -64,17 +64,40 @@ test("pickReason", () => {
   assert.match(pickReason({ lower: null, why: "single_route" }, "transit"), /transit option/);
 });
 
-test("routeCardModel puts the fastest, then the pick, then the rest", () => {
-  const route = (d) => ({ duration_s: d, distance_m: 1000, activity: { violent: comparable(1) } });
+const route = (d, activity) => ({ duration_s: d, distance_m: 1000, activity: { violent: activity } });
+
+test("routeCardModel puts the safest, then the fastest, then the rest", () => {
   const result = {
-    routes: [route(600), route(660), route(700)],
-    picks: { violent: { fastest: 0, lower: 2 } },
+    routes: [route(600, comparable(1.2)), route(660, comparable(1.1)), route(700, comparable(0.8))],
+    picks: { violent: { fastest: 0, lower: null } },
   };
   const cards = plain(routeCardModel(result, "violent"));
-  assert.deepEqual(cards.map((c) => c.index), [0, 2, 1]);
-  assert.deepEqual(cards.map((c) => c.role), ["Fastest", "Lower reported activity", "Alternative"]);
-  assert.equal(cards[0].extra, null);
-  assert.equal(cards[1].extra, "+2 min");
+  assert.deepEqual(cards.map((c) => c.index), [2, 0, 1]);
+  assert.deepEqual(cards.map((c) => c.role), ["Safest", "Fastest", "Alternative"]);
+  assert.equal(cards[0].extra, "+2 min");
+  assert.equal(cards[1].extra, null);
+});
+
+test("routeCardModel calls a fastest route that is also the safest both", () => {
+  const result = {
+    routes: [route(600, comparable(0.9)), route(660, comparable(1.1)), route(700, comparable(0.9))],
+    picks: { violent: { fastest: 0, lower: null } },
+  };
+  const cards = plain(routeCardModel(result, "violent"));
+  // A tie on activity goes to the quicker route.
+  assert.deepEqual(cards.map((c) => c.index), [0, 1, 2]);
+  assert.deepEqual(cards.map((c) => c.role), ["Fastest and safest", "Alternative", "Alternative"]);
+});
+
+test("routeCardModel names no safest route without two comparable ones", () => {
+  const unrated = { comparable: false, rated_share: 0.3 };
+  const result = {
+    routes: [route(600, unrated), route(660, comparable(0.5)), route(700, unrated)],
+    picks: { violent: { fastest: 0, lower: null } },
+  };
+  const cards = plain(routeCardModel(result, "violent"));
+  assert.deepEqual(cards.map((c) => c.index), [0, 1, 2]);
+  assert.deepEqual(cards.map((c) => c.role), ["Fastest", "Alternative", "Alternative"]);
 });
 
 test("safeHex accepts GTFS colours and rejects anything else", () => {
