@@ -185,19 +185,15 @@
         <div class="stat-label" id="d-count-label">reported incidents</div>
       </div>
 
-      <dl class="kv kv-lead">
-        <div><dt id="d-hourshare-label">At this hour</dt><dd id="d-hourshare">&mdash;</dd></div>
-      </dl>
-
       <section class="chart-block" id="d-hour-block" hidden>
         <h3 id="d-hour-title">Time of Day</h3>
         <dl class="kv">
           <div><dt>Safety at this hour</dt><dd id="d-hour-safety">&mdash;</dd></div>
-          <div><dt>Change from usual</dt><dd id="d-hour-delta">&mdash;</dd></div>
+          <div><dt>Chart shows</dt><dd id="d-hour-track">&mdash;</dd></div>
         </dl>
-        <!-- The whole day, so the selected block is read against the rest of it
-             rather than as a bare number. -->
-        <div class="hours" id="d-hours" role="img" aria-label="Reported incidents by hour of the day"></div>
+        <!-- The selected track's whole day, so the selected block is read
+             against the rest of it rather than as a bare number. -->
+        <div class="hours" id="d-hours" role="img" aria-label="Reported offences on the selected track by hour of the day"></div>
         <div class="hours-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
         <div class="hour-outlook" id="d-hour-note"></div>
       </section>
@@ -273,10 +269,9 @@
                value is always readable without relying on colour. -->
           <th scope="col" class="num">Safety (violent)</th>
           <th scope="col" class="num">Safety (non-violent)</th>
-          <!-- Both time-of-day ratings in text, for the same reason the two
+          <!-- The time-of-day rating in text, for the same reason the two
                columns above exist: the ramp must never be the only channel. -->
           <th scope="col" class="num" id="th-hour-safety">At hour</th>
-          <th scope="col" class="num" id="th-hour-delta">Change</th>
         </tr>
       </thead>
       <tbody></tbody>

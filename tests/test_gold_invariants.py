@@ -417,6 +417,112 @@ def test_hourly_per_capita_scheme_skipped_without_exposure(built):
     assert n == 0
 
 
+@pytest.fixture(scope="module")
+def hour_built(built):
+    # The per-capita scheme builds no hourly layer here (above), so build the
+    # area scheme's explicitly: refresh_cell_hour_safety reads its all-hours
+    # rows, which `built` has already written.
+    conn = built["conn"]
+    gold.refresh_cell_hour_safety(conn, SOURCE, built["windows"], gold.get_scheme(conn, AREA_SCHEME))
+    conn.commit()
+    assert _scalar(
+        conn,
+        "SELECT count(*) FROM gold.cell_hour_safety WHERE source_id = %s AND scheme_version = %s",
+        (SOURCE, AREA_SCHEME),
+    ) > 0
+    return built
+
+
+_HOURLY_ROWS = """
+SELECT h.h3_index, h.h3_res, h.track, h.hour_block, h.incident_count, h.weighted_total,
+       h.smoothed_per_km2, h.hour_index, h.safety_percentile, h.safety_tier,
+       h.baseline_percentile, h.percentile_delta,
+       b.smoothed_per_km2 AS base_rate, b.safety_tier AS base_tier
+FROM gold.cell_hour_safety h
+JOIN gold.cell_safety b
+  ON b.source_id = h.source_id AND b.h3_index = h.h3_index AND b.h3_res = h.h3_res
+ AND b.time_window = h.time_window AND b.track = h.track
+ AND b.scheme_version = h.scheme_version
+WHERE h.source_id = %s AND h.scheme_version = %s
+"""
+
+
+def test_hour_factors_average_one(hour_built):
+    # gold.py _HOUR_SAFETY_SQL `factored`: a blend of two shares of the day, each
+    # summing to 1 over the 24 blocks, times 24.
+    sums = _rows(
+        hour_built["conn"],
+        """
+        SELECT h3_index, h3_res, track, count(*) AS blocks, avg(hour_index) AS mean
+        FROM gold.cell_hour_safety
+        WHERE source_id = %s AND scheme_version = %s
+        GROUP BY 1, 2, 3
+        """,
+        (SOURCE, AREA_SCHEME),
+    )
+    assert sums
+    for r in sums:
+        assert r["blocks"] == gold.HOUR_BLOCKS
+        assert r["mean"] == pytest.approx(1.0, abs=1e-9), r
+
+
+def test_hour_factor_blends_toward_the_city_curve(hour_built):
+    # f = 24 * (lam * w/W + (1 - lam) * S_h), lam = N / (N + HOUR_SHAPE_PRIOR),
+    # recomputed here from the stored hourly totals.
+    rows = _rows(hour_built["conn"], _HOURLY_ROWS, (SOURCE, AREA_SCHEME))
+    by_cell: dict = {}
+    city_w: Counter = Counter()
+    for r in rows:
+        by_cell.setdefault((r["h3_index"], r["h3_res"], r["track"]), []).append(r)
+        city_w[(r["h3_res"], r["track"], r["hour_block"])] += r["weighted_total"]
+    city_day = Counter()
+    for (res, track, _), w in city_w.items():
+        city_day[(res, track)] += w
+
+    empty_seen = False
+    for (_, res, track), cell in by_cell.items():
+        n = sum(r["incident_count"] for r in cell)
+        w_day = sum(r["weighted_total"] for r in cell)
+        lam = n / (n + gold.HOUR_SHAPE_PRIOR)
+        empty_seen |= n == 0
+        for r in cell:
+            share = city_w[(res, track, r["hour_block"])] / city_day[(res, track)]
+            own = r["weighted_total"] / w_day if w_day else 0.0
+            expected = gold.HOUR_BLOCKS * (lam * own + (1 - lam) * share)
+            assert r["hour_index"] == pytest.approx(expected, rel=1e-9, abs=1e-12), r
+    # The case the blend exists for: a cell with nothing on a track follows the
+    # city's curve outright.
+    assert empty_seen
+
+
+def test_hour_rate_is_the_all_hours_rate_times_the_factor(hour_built):
+    rows = _rows(hour_built["conn"], _HOURLY_ROWS, (SOURCE, AREA_SCHEME))
+    for r in rows:
+        assert r["smoothed_per_km2"] == pytest.approx(
+            r["base_rate"] * r["hour_index"], rel=1e-9, abs=1e-12
+        ), r
+        # Retired columns, written NULL until a migration drops them.
+        assert r["baseline_percentile"] is None and r["percentile_delta"] is None
+
+
+def test_hour_ranking_orders_by_the_adjusted_rate(hour_built):
+    rows = _rows(hour_built["conn"], _HOURLY_ROWS, (SOURCE, AREA_SCHEME))
+    groups: dict = {}
+    for r in rows:
+        groups.setdefault((r["h3_res"], r["track"], r["hour_block"]), []).append(r)
+    for group in groups.values():
+        # Lower rate ranks safer (higher percentile); ties share a percentile.
+        ordered = sorted(group, key=lambda r: r["smoothed_per_km2"])
+        for lower, higher in zip(ordered, ordered[1:]):
+            if higher["smoothed_per_km2"] > lower["smoothed_per_km2"]:
+                assert lower["safety_percentile"] > higher["safety_percentile"]
+            else:
+                assert lower["safety_percentile"] == higher["safety_percentile"]
+        for r in group:
+            # Tier 0 is the all-hours tier 0: nothing of this track at any hour.
+            assert (r["safety_tier"] == 0) == (r["base_tier"] == 0), r
+
+
 # ---------------------------------------------------------------- windows (018)
 
 
@@ -796,7 +902,32 @@ def test_range_cell_detail_matches_the_stored_window(built):
     assert ranged["headline"] == stored["headline"]
     assert ranged["by_category"] == stored["by_category"]
     assert [dict(r) for r in ranged["top_offenses"]] == [dict(r) for r in stored["top_offenses"]]
-    assert ranged["by_hour"] == [] and ranged["range"]["from"] == window.start.isoformat()
+    assert ranged["hour_profile"] is None and ranged["range"]["from"] == window.start.isoformat()
+
+
+def test_cell_hour_profile_splits_by_track(built):
+    # repository.hour_profile: violent from category `violent`, non-violent as
+    # `all` less `violent`, against the fixture's own rows with a known hour.
+    from safety.api import repository as repo
+
+    conn = built["conn"]
+    window = next(w for w in built["windows"] if w.name == "last_1y")
+    cell = Counter(r["r9"] for r in built["rows"]).most_common(1)[0][0]
+    try:
+        detail = repo.cell_detail(conn, h3_index=cell, time_window=window.name)
+    finally:
+        conn.rollback()
+
+    in_window = [
+        r for r in built["rows"]
+        if r["r9"] == cell and r["hour"] is not None and window.start <= r["date"] <= window.end
+    ]
+    expected = {"violent": [0] * 24, "non_violent": [0] * 24}
+    for r in in_window:
+        track = "violent" if r["xw"]["product_category"] == "violent" else "non_violent"
+        expected[track][r["hour"]] += 1
+    assert detail["hour_profile"] == expected
+    assert sum(expected["violent"]) + sum(expected["non_violent"]) == len(in_window) > 0
 
 
 # --- Incremental refresh (safety.etl.pending, gold.refresh_all incremental=True).

@@ -169,7 +169,9 @@ function valueDomain(prop, isPainted, perPerson) {
 }
 
 /**
- * Citywide reported incidents per ambient person, for the layer on screen.
+ * Citywide severity-weighted offence per ambient person on one safety track,
+ * for the layer on screen. Per track, like the ranking: a violent and a
+ * non-violent offence are never added together.
  *
  * Summed here rather than served for the same reason `valueDomain` is: the
  * features are already in the browser, and the alternative is another
@@ -182,31 +184,31 @@ function valueDomain(prop, isPainted, perPerson) {
  * unknown would add to the top of the fraction without adding to the bottom, and
  * make the city look worse than it is.
  */
-function cityExposureRate() {
-  let incidents = 0;
+function cityExposureRate(weightedProp) {
+  let weighted = 0;
   let people = 0;
   for (const feature of state.features) {
     const p = feature.properties;
     if (typeof p.exposure !== "number" || p.exposure <= 0) continue;
-    incidents += p.count ?? 0;
+    weighted += p[weightedProp] ?? 0;
     people += p.exposure;
   }
-  return people > 0 ? { incidents, people, rate: incidents / people } : null;
+  return people > 0 ? { weighted, people, rate: weighted / people } : null;
 }
 
 /* Below this many ambient people, a rate per person is two small numbers
-   divided: a cell with nine people and three incidents comes out at twenty-four
+   divided: a cell with nine people and three offences comes out at twenty-four
    times the city average, which is arithmetic rather than a finding. */
 const RELATIVE_MIN_EXPOSURE = 100;
 
 /**
- * One cell's incident rate per person, against the city's own.
+ * One cell's severity-weighted offence per person on the selected track,
+ * against the city's own on that track.
  *
  * Read out of `state.features` rather than out of the detail payload, because
- * the feature is what is on screen: it carries the selected offence category,
- * where the panel's headline count is always category `all`. Both sides of the
- * ratio then come from one layer and share a denominator definition -- the same
- * ambient residents-and-jobs figure the safety ranking itself divides by.
+ * the feature is what is on screen. Both sides of the ratio then come from one
+ * layer and share a denominator definition -- the same ambient
+ * residents-and-jobs figure the safety ranking itself divides by.
  *
  * Returns a `reason` instead of a ratio wherever the division would mislead;
  * `relativeStat` turns each of those into its own sentence.
@@ -220,20 +222,21 @@ function relativeRate(h3) {
   // NULL by construction, or the exposure layer was never built. There is
   // nothing to be relative to, so the headline falls back to the count -- the
   // same fallback syncSafetyAvailability makes for the ramp.
-  const city = cityExposureRate();
-  if (!city) return { reason: "no_city_exposure" };
+  const { weighted: weightedProp } = TRACK_PROPS[state.track];
+  const city = cityExposureRate(weightedProp);
+  if (!city || city.rate <= 0) return { reason: "no_city_exposure" };
 
   const p = feature.properties;
-  const count = p.count ?? 0;
+  const weighted = p[weightedProp] ?? 0;
   const exposure = typeof p.exposure === "number" ? p.exposure : null;
 
-  if (exposure === null || exposure <= 0) return { reason: "no_exposure", count };
-  if (count === 0) return { reason: "no_incidents", count, exposure, city };
+  if (exposure === null || exposure <= 0) return { reason: "no_exposure", weighted };
+  if (weighted === 0) return { reason: "no_incidents", weighted, exposure, city };
   if (exposure < RELATIVE_MIN_EXPOSURE) {
-    return { reason: "thin_exposure", count, exposure, city };
+    return { reason: "thin_exposure", weighted, exposure, city };
   }
-  const rate = count / exposure;
-  return { ratio: rate / city.rate, rate, count, exposure, city };
+  const rate = weighted / exposure;
+  return { ratio: rate / city.rate, rate, weighted, exposure, city };
 }
 
 /** The ratio in whichever form reads as a quantity: 1,400% has to be decoded,
@@ -258,36 +261,37 @@ const per1k = (rate) => (rate * 1000).toFixed(1);
  * A percentage of the city's rate, never a bare one: above 100% is the
  * concerning direction, which is the opposite of what a number under a heading
  * reading "safety" would be assumed to mean, so the sense is always spelled out
- * beside it. The two rates it came from go underneath for the same reason the
- * hour share prints its counts -- a derived figure is only checkable if the
- * numbers behind it are visible.
+ * beside it. The two rates it came from go underneath, because a derived
+ * figure is only checkable if the numbers behind it are visible.
  */
 function relativeStat(rel, windowLabel) {
+  const track = TRACK_LABELS[state.track];
   switch (rel.reason) {
     case "no_incidents":
       return {
         value: "—",
-        label: `nothing reported here · ${windowLabel}`,
+        label: `no ${track} offences reported here · ${windowLabel}`,
         note:
-          `0 incidents among ${nf.format(rel.exposure)} people. An absence of ` +
-          `reports is not evidence of safety.`,
+          `0 ${track} offences among ${nf.format(rel.exposure)} people. An absence ` +
+          `of reports is not evidence of safety.`,
       };
     case "thin_exposure":
       return {
         value: "—",
         label: `too few people here to compare · ${windowLabel}`,
         note:
-          `${nf.format(rel.count)} incidents among ${nf.format(rel.exposure)} ` +
-          `people — a rate per person on a denominator this small would swing on ` +
-          `a single report.`,
+          `${nf.format(Math.round(rel.weighted))} weighted ${track} offence among ` +
+          `${nf.format(rel.exposure)} people — a rate per person on a denominator ` +
+          `this small would swing on a single report.`,
       };
     case "no_exposure":
       return {
         value: "—",
         label: "no population figure for this cell",
         note:
-          `${nf.format(rel.count)} reported incidents. The comparison divides by ` +
-          `ambient population, which this cell has none apportioned to it.`,
+          `${nf.format(Math.round(rel.weighted))} weighted ${track} offence. The ` +
+          `comparison divides by ambient population, which this cell has none ` +
+          `apportioned to it.`,
       };
     case "unavailable":
       return {
@@ -297,8 +301,8 @@ function relativeStat(rel, windowLabel) {
       };
   }
 
-  // Same ±5% deadband as the hour share: inside it, the honest reading is "no
-  // different", not a number to two figures.
+  // A ±5% deadband: inside it, the honest reading is "no different", not a
+  // number to two figures.
   const sense =
     rel.ratio > 1.05 ? "higher than the city average"
     : rel.ratio < 0.95 ? "lower than the city average"
@@ -306,10 +310,10 @@ function relativeStat(rel, windowLabel) {
 
   return {
     value: formatRatio(rel.ratio),
-    label: `of the city-average incident rate per person — ${sense} · ${windowLabel}`,
+    label: `of the city-average ${track} offence rate per person — ${sense} · ${windowLabel}`,
     note:
-      `${nf.format(rel.count)} incidents among ${nf.format(rel.exposure)} people · ` +
-      `${per1k(rel.rate)} vs ${per1k(rel.city.rate)} per 1,000 citywide`,
+      `Severity-weighted · ${per1k(rel.rate)} vs ${per1k(rel.city.rate)} per 1,000 ` +
+      `people citywide`,
   };
 }
 
@@ -344,14 +348,14 @@ const TRACK_PROPS = {
   violent: {
     pct: "safety_violent", tier: "stier_violent",
     hpct: "hsafety_violent", htier: "hstier_violent",
-    delta: "hdelta_violent",
     rate: "sm_violent", hrate: "hsm_violent",
+    weighted: "sw_violent",
   },
   non_violent: {
     pct: "safety_nonviolent", tier: "stier_nonviolent",
     hpct: "hsafety_nonviolent", htier: "hstier_nonviolent",
-    delta: "hdelta_nonviolent",
     rate: "sm_nonviolent", hrate: "hsm_nonviolent",
+    weighted: "sw_nonviolent",
   },
 };
 
@@ -522,12 +526,12 @@ let map;
     can never point along a different measure from the one on screen.
 
     `fallback` is the all-hours measure the safety view falls back to for a
-    cell with nothing of this track reported. At one hour that is the common
-    case -- most of the city in the small hours -- and the map would be mostly
-    grey. Those cells take their all-hours smoothed rate instead, and so does a
-    cell with nothing reported at any hour: its rate is still a ranking, built
-    from its neighbours and the city baseline, so every ranked cell is coloured.
-    Only a cell with no rate at all stays in the neutral fill. */
+    cell with nothing of this track reported. The hourly rate is the all-hours
+    one times an hour factor, so its tier 0 is the all-hours tier 0: a cell with
+    nothing reported at any hour. Its rate is still a ranking, built from its
+    neighbours and the city baseline, so it takes that smoothed rate rather than
+    going grey -- as does a cell with no hourly row at all. Only a cell with no
+    rate anywhere stays in the neutral fill. */
 function paintedMeasure() {
   const props = TRACK_PROPS[state.track];
   const hourly = state.hour !== null;
@@ -1078,7 +1082,8 @@ async function selectCity(sourceId) {
  * population, and a cell with forty incidents among twelve thousand people is
  * the quieter of two cells the count alone would order the other way. So the
  * safety view leads with the comparison the ramp is making -- this cell's
- * incidents per person as a share of the city's.
+ * severity-weighted offence per person on the selected track, as a share of the
+ * city's.
  */
 function renderHeadlineStat(detail) {
   const value = $("d-count");
@@ -1202,61 +1207,6 @@ function renderSafety(rows) {
       "rather than as safe.";
 }
 
-/**
- * The cell's day, and both time-of-day ratings for the selected block.
- *
- * The 24-bar profile is drawn whether or not an hour is selected: the shape
- * across the day is the useful thing, and it also gives the selected block
- * somewhere to sit. Both ratings are printed as text beside it, so neither is
- * reachable only through the colour of a hexagon.
- */
-/**
- * How busy this cell is at the selected hour, against its own average hour.
- *
- * 100% is an ordinary hour here; 250% is two and a half times as many reported
- * incidents as this cell averages across the 24 blocks. A ratio against the
- * cell's own day rather than against other cells, which is the only comparison
- * that answers "is this hour unusual *here*" -- and the reason it can exceed
- * 100% without limit while never going below 0.
- */
-function renderHourShare(detail) {
-  const value = $("d-hourshare");
-  const label = $("d-hourshare-label");
-  label.textContent =
-    state.hour === null ? "At this hour" : `At ${hourLabel(state.hour)}`;
-
-  if (state.hour === null) {
-    value.textContent = $("f-hour").disabled
-      ? "hourly view not built for this range"
-      : "pick an hour under Time of day";
-    return;
-  }
-
-  const rel = detail.hour_relative;
-  if (!rel) {
-    value.textContent = "—";
-    return;
-  }
-  // Withheld rather than printed: one hour against a twenty-fourth of a tiny
-  // total is a ratio of two very small numbers, and it would read as a
-  // confident figure.
-  if (!rel.enough_evidence) {
-    value.textContent = rel.day_total
-      ? `too few to compare (${nf.format(rel.day_total)} all day)`
-      : "no incidents here with a recorded hour";
-    return;
-  }
-
-  const pct = rel.percent_of_average;
-  const sense =
-    pct > 105 ? "busier than its average hour"
-    : pct < 95 ? "quieter than its average hour"
-    : "about its average hour";
-  value.innerHTML = html`<b>${nf.format(pct)}%</b> — ${sense}<span class="kv-note">${nf.format(
-    rel.hour_count
-  )} here vs. ${rel.mean_per_hour} per hour on average</span>`;
-}
-
 /** The chart's title: the city's exact time now, "Time of Day: 10:13 PM EDT". */
 function renderCityClock() {
   if ($("d-hour-block").hidden) return;
@@ -1347,20 +1297,31 @@ function renderHourOutlook(counts) {
   return new Set(win.startsNow || win.quieter ? win.blocks : []);
 }
 
+/**
+ * The cell's day on the selected track, and its rating at the selected hour.
+ *
+ * The 24-bar profile is drawn whether or not an hour is selected: the shape
+ * across the day is the useful thing, and it also gives the selected block
+ * somewhere to sit. The rating is printed as text beside it, so it is never
+ * reachable only through the colour of a hexagon.
+ */
 function renderHours(detail) {
-  renderHourShare(detail);
-
   const block = $("d-hour-block");
-  const rows = (detail.by_hour ?? []).filter((r) => r.category === "all");
+  // The selected track's own day, so the chart and the outlook describe the
+  // same offences the map and the ranking do. Hidden only when neither track
+  // has an incident with a recorded hour: an empty violent day beside a busy
+  // non-violent one is itself the reading.
+  const profile = detail.hour_profile;
+  const counts = profile?.[state.track];
+  const anyHour = profile && Object.values(profile).some((day) => day.some((n) => n > 0));
 
-  if (!rows.length) {
+  if (!counts || !anyHour) {
     block.hidden = true;
     return;
   }
   block.hidden = false;
+  $("d-hour-track").textContent = `${TRACK_LABELS[state.track]} offences`;
 
-  const counts = Array.from({ length: 24 }, () => 0);
-  for (const row of rows) counts[row.hour_block] = row.incident_count;
   const max = Math.max(...counts, 1);
   const quiet = renderHourOutlook(counts);
 
@@ -1378,24 +1339,20 @@ function renderHours(detail) {
   const dash = "—";
 
   if (state.hour === null) {
-    $("d-hour-safety").textContent = dash;
-    $("d-hour-delta").textContent = dash;
+    $("d-hour-safety").textContent = $("f-hour").disabled
+      ? "hourly view not built for this range"
+      : "pick an hour under Time of day";
     return;
   }
 
-  // Tier 0 is nothing of this track reported at this hour; the map colours
-  // that cell by its all-hours ranking, so say so rather than leave the two
-  // looking like they disagree.
+  // The all-hours ranking scaled by this cell's hour factor and re-ranked at
+  // this hour. Tier 0 is the all-hours tier 0: nothing of this track reported
+  // here at any hour.
   $("d-hour-safety").textContent = !safety
     ? dash
     : safety.safety_tier === 0
-      ? `${safety.tier_label ?? "No reported incidents"} · map shows the all-hours ranking`
+      ? safety.tier_label ?? "No reported incidents"
       : `${safetyLabel(safety.safety_percentile)} · ${safety.tier_label ?? ""}`;
-
-  $("d-hour-delta").textContent = safety?.percentile_delta == null
-    ? dash
-    : `${safety.delta_label} (${safety.percentile_delta >= 0 ? "+" : ""}` +
-      `${(safety.percentile_delta * 100).toFixed(0)} points)`;
 }
 
 /**
@@ -1599,12 +1556,6 @@ function renderTable() {
 
   const pct = (value) =>
     value === null || value === undefined ? "—" : `${(value * 100).toFixed(1)}%`;
-  // Signed, and in points rather than percent, because it is a difference
-  // between two percentiles and not a percentage of anything.
-  const points = (value) =>
-    value === null || value === undefined
-      ? "—"
-      : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(0)}`;
 
   body.innerHTML = html`${rows.map((feature, index) => {
     const p = feature.properties;
@@ -1619,7 +1570,6 @@ function renderTable() {
         <td class="num">${pct(p.safety_violent)}</td>
         <td class="num">${pct(p.safety_nonviolent)}</td>
         <td class="num">${pct(p[props.hpct])}</td>
-        <td class="num">${points(p[props.delta])}</td>
       </tr>`;
   })}`;
 }
@@ -1682,8 +1632,8 @@ async function openMethodology() {
     ${m.time_of_day ? html`
     <h3>Time of day</h3>
     <p>${m.time_of_day.what_it_is}</p>
-    <ul>${m.time_of_day.two_ratings.map((line) => html`<li>${line}</li>`)}</ul>
-    <p>${m.time_of_day.hour_index_note}</p>
+    <ul>${m.time_of_day.how_it_works.map((line) => html`<li>${line}</li>`)}</ul>
+    <p>${m.time_of_day.hour_factor_note}</p>
 
     <div class="callout">
       <h3 style="margin-top:0">What the timestamps are</h3>
@@ -2347,9 +2297,12 @@ function wireControls() {
         .querySelectorAll("[data-track]")
         .forEach((b) => b.setAttribute("aria-selected", String(b === button)));
       repaint();
-      // The panel's hourly ratings are per track too, and the detail is already
-      // in hand -- re-read it rather than re-request it.
-      if (state.detail) renderHours(state.detail);
+      // The panel's headline, chart and hourly rating are per track too, and
+      // the detail is already in hand -- re-read it rather than re-request it.
+      if (state.detail) {
+        renderHeadlineStat(state.detail);
+        renderHours(state.detail);
+      }
       renderTable();
     };
   });

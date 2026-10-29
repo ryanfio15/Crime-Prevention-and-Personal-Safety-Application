@@ -1193,30 +1193,30 @@ def _time_of_day(
     share = record.get("hour_known_share")
     return {
         "what_it_is": (
-            "The same severity-weighted ranking, recomputed inside each one-hour "
-            "block of the local day, so a cell is compared against other cells at "
-            "that hour rather than against the all-day distribution."
+            "The same two severity-weighted rankings, violent and non-violent, "
+            "adjusted for the selected hour of the local day. Each cell's all-hours "
+            "rate is multiplied by how much of its day's offence on that track falls "
+            "in that hour, and every cell is then ranked against every other at the "
+            "same hour."
         ),
-        "two_ratings": [
-            "Safety at this hour: where the cell sits against every other cell in "
-            "the city during the same hour block. 1.0 is the safest.",
-            "Change from usual: that figure minus the cell's own all-hours "
-            "percentile. It measures relative movement only -- the whole city is "
-            "quieter at 4am, and a cell holding its rank through the night is not "
-            "getting safer, it is keeping pace with everywhere else.",
+        "how_it_works": [
+            "Hour factor: the cell's share of its own day's severity-weighted "
+            "offence at this hour, times 24. 1.0 is an ordinary hour for that cell; "
+            "2.5 is two and a half times its usual load, 0.4 well below it. A "
+            "cell's 24 factors average exactly 1, so the adjustment moves a cell's "
+            "rate around the clock without making its day as a whole better or worse.",
+            "Safety at this hour: the all-hours rate times the hour factor, ranked "
+            "against every other cell in the city at the same hour. 1.0 is the "
+            "safest. Because the rate being scaled is the all-hours one, a cell's "
+            "standing at an hour stays anchored to how it ranks across the whole day.",
         ],
-        "hour_index_note": (
-            "Alongside the two rankings, a selected cell shows how much gets "
-            "reported there at that hour against its own average hour, as a "
-            "percentage where 100% is an ordinary hour for that cell. That is the "
-            "absolute reading a percentile cannot give: 250% is two and a half "
-            "times as many reported incidents as the cell usually sees in an hour, "
-            "40% is well below it. It counts incidents rather than weighting them "
-            "by severity, because it is a statement about how much is reported. It "
-            "is withheld where a cell carries too little across the window for the "
-            "ratio to mean anything -- three incidents in a year with one of them "
-            "at 2pm is 800% of an average hour, which is arithmetic rather than "
-            "evidence."
+        "hour_factor_note": (
+            "A cell with only a few incidents on a track has no reliable hour "
+            "pattern of its own -- three incidents in a year, one of them at 2pm, "
+            "would make 2pm eight times an ordinary hour. So each cell's pattern is "
+            "blended with the whole city's pattern for that track, weighted by how "
+            "much the cell has: at twelve incidents the two count equally, a busy "
+            "cell follows its own pattern, and a cell with none follows the city's."
         ),
         "timestamp_caveat": _timestamp_caveat(record, basis),
         "timestamp_basis": basis,

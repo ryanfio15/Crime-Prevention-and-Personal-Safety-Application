@@ -495,12 +495,10 @@ select:disabled { opacity: 0.55; cursor: not-allowed; }
 .kv > div { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
 .kv dt { font-size: 12px; color: var(--text-muted); margin: 0; }
 .kv dd { margin: 0; font-size: 12.5px; text-align: right; color: var(--text-primary); }
-/* The "At this hour" line, read together with the time-of-day chart under it. */
-.kv-lead { margin-bottom: 12px; }
 
-/* The counts a derived figure was computed from, under the figure itself. A
-   percentage against a cell's own average is only checkable if the two numbers
-   behind it are visible. */
+/* The figures a derived number was computed from, under the number itself. A
+   percentage of the city rate is only checkable if the two rates behind it are
+   visible. */
 .kv-note {
   display: block;
   font-size: 11px;

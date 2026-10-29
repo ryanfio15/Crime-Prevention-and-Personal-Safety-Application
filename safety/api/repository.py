@@ -276,76 +276,25 @@ def hour_label(hour: int) -> str:
     return f"{hour:02d}:00–{hour + 1:02d}:00"
 
 
-# Rating 2 banded into words, in percentile points, so the measure is never
-# carried by colour alone. The bands are wide on purpose: an hourly percentile
-# is a much noisier figure than the all-hours one it is being compared against,
-# and narrow bands would present that noise as movement.
-DELTA_BANDS = (
-    (-0.15, "Much worse here than usual"),
-    (-0.05, "Worse here than usual"),
-    (0.05, "Typical for this cell"),
-    (0.15, "Better here than usual"),
-)
-DELTA_TOP_LABEL = "Much better here than usual"
-
-
-# Mirrors safety.etl.gold.MIN_HOUR_EVIDENCE. Below this many incidents across
-# the whole window, one hour against a twenty-fourth of a tiny total is a ratio
-# of two very small numbers: three incidents all year with one of them at 2pm
-# reads as 800% of an average hour, which is arithmetic, not evidence.
-MIN_HOUR_EVIDENCE = 12
-
 HOUR_BLOCKS = 24
 
 
-def hour_relative(by_hour: list[dict[str, Any]], hour: int | None) -> dict[str, Any] | None:
-    """This cell's incidents at one hour against its own average hour.
+def hour_profile(by_hour: list[dict[str, Any]]) -> dict[str, list[int]]:
+    """Reported incidents per hour block, one 24-long list per safety track.
 
-    A percentage where 100% is an ordinary hour *for this cell*: 250% is two and
-    a half times its own average, 40% is well below it. The comparison is the
-    cell against its own day, not against other cells -- the only one that
-    answers "is this hour unusual here".
-
-    Counts, not severity weights, and all categories: this is a statement about
-    how much gets reported, which is what the figure claims to be.
+    Split the way the safety ranking splits offence -- violent, and everything
+    else -- so the panel's chart and outlook describe the same track the map is
+    coloured by. gold.cell_hour_profile has no non-violent category of its own;
+    every incident has a product category, so it is `all` less `violent`.
     """
-    if hour is None:
-        return None
-
-    counts = [0] * HOUR_BLOCKS
+    totals = {c: [0] * HOUR_BLOCKS for c in ("all", "violent")}
     for row in by_hour:
-        if row["category"] == "all":
-            counts[row["hour_block"]] = row["incident_count"]
-    total = sum(counts)
-
-    if total < MIN_HOUR_EVIDENCE:
-        return {
-            "hour_count": counts[hour],
-            "day_total": total,
-            "mean_per_hour": None,
-            "percent_of_average": None,
-            "enough_evidence": False,
-        }
-
-    mean = total / HOUR_BLOCKS
+        if row["category"] in totals:
+            totals[row["category"]][row["hour_block"]] = row["incident_count"]
     return {
-        "hour_count": counts[hour],
-        "day_total": total,
-        "mean_per_hour": round(mean, 2),
-        # Rounded to whole percent: the input is a count of a few dozen
-        # incidents, and a decimal place would imply precision it has not got.
-        "percent_of_average": round(counts[hour] / mean * 100),
-        "enough_evidence": True,
+        "violent": totals["violent"],
+        "non_violent": [a - v for a, v in zip(totals["all"], totals["violent"])],
     }
-
-
-def delta_label(delta: float | None) -> str | None:
-    if delta is None:
-        return None
-    for threshold, label in DELTA_BANDS:
-        if delta < threshold:
-            return label
-    return DELTA_TOP_LABEL
 
 
 # ---------------------------------------------------------------------------
@@ -777,12 +726,10 @@ layer AS (
            -- on every feature multiplies the payload by 24.
            hv.safety_percentile AS hsafety_violent,
            hv.safety_tier       AS htier_violent,
-           hv.percentile_delta  AS hdelta_violent,
            hv.smoothed_per_km2  AS hsmoothed_violent,
            hv.incident_count    AS hcount_violent,
            hn.safety_percentile AS hsafety_nonviolent,
            hn.safety_tier       AS htier_nonviolent,
-           hn.percentile_delta  AS hdelta_nonviolent,
            hn.smoothed_per_km2  AS hsmoothed_nonviolent,
            hn.incident_count    AS hcount_nonviolent
     FROM /*ACTIVITY*/ a
@@ -912,16 +859,13 @@ SELECT jsonb_build_object(
                     'p1k_violent',       round(l.per1k_violent::numeric, 2),
                     'p1k_nonviolent',    round(l.per1k_nonviolent::numeric, 2),
                     'exposure',          round(l.exposure::numeric, 0),
-                    -- Rating 1 at the requested hour, then rating 2: how that
-                    -- differs from the cell's all-hours standing, and the plain
-                    -- ratio against its own average hour.
+                    -- The ranking at the requested hour: the all-hours rate
+                    -- times this cell's hour factor, re-ranked at that hour.
                     'hsafety_violent',    round(l.hsafety_violent::numeric, 4),
                     'hstier_violent',     l.htier_violent,
-                    'hdelta_violent',     round(l.hdelta_violent::numeric, 4),
                     'hsm_violent',        round(l.hsmoothed_violent::numeric, 3),
                     'hsafety_nonviolent', round(l.hsafety_nonviolent::numeric, 4),
                     'hstier_nonviolent',  l.htier_nonviolent,
-                    'hdelta_nonviolent',  round(l.hdelta_nonviolent::numeric, 4),
                     'hsm_nonviolent',     round(l.hsmoothed_nonviolent::numeric, 3),
                     -- Incidents in this cell during this hour block, both
                     -- tracks. Always at or below `count`: the ones the source
@@ -1141,6 +1085,7 @@ def cell_detail(
                 SELECT hour_block, category, incident_count
                 FROM gold.cell_hour_profile
                 WHERE h3_index = %s AND time_window = %s
+                  AND category IN ('all', 'violent')
                 ORDER BY hour_block, category
                 """,
                 (h3_index, time_window),
@@ -1153,7 +1098,7 @@ def cell_detail(
                 """
                 SELECT s.track, s.hour_block, s.safety_percentile, s.safety_tier,
                        s.safety_rank, s.city_cell_total, s.incident_count,
-                       s.baseline_percentile, s.percentile_delta, s.hour_index
+                       s.hour_index AS hour_factor
                 FROM gold.cell_hour_safety s
                 JOIN reference.source_registry r
                   ON r.source_id = s.source_id
@@ -1202,14 +1147,12 @@ def cell_detail(
         ],
         "hour": hour,
         "hour_label": hour_label(hour) if hour is not None else None,
-        "by_hour": by_hour,
-        "hour_relative": hour_relative(by_hour, hour),
+        "hour_profile": hour_profile(by_hour) if date_range is None else None,
         "hour_safety": [
             {
                 **row,
                 "track_label": TRACK_LABELS.get(row["track"], row["track"]),
                 "tier_label": SAFETY_TIER_LABELS.get(row["safety_tier"]),
-                "delta_label": delta_label(row["percentile_delta"]),
             }
             for row in hour_safety
         ],

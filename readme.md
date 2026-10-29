@@ -29,8 +29,11 @@ than others nearby, and researchers who want a documented API (see [docs/DESIGN.
 - For each H3 cell, a percentile and tier of reported incidents compared with other cells in the same city, over
   windows of 3, 6 and 9 months, then 1, 2, 3 … years back to the oldest incident stored for that city
   (each city has its own list; see [ARCHITECTURE.md → Windows](docs/ARCHITECTURE.md#time-windows)).
-- A severity-weighted "safety" ranking per 1,000 residents plus jobs.
-- Time-of-day profiles.
+- A severity-weighted "safety" ranking per 1,000 residents plus jobs, kept as two separate rankings: violent and
+  non-violent.
+- Time-of-day rankings. For each track, a cell's rate is multiplied by its hour factor, which is how much of the cell's
+  day falls in that hour, blended toward the city's pattern when the cell has little data. Every cell is then ranked
+  again at that hour.
 
 It deliberately does not give an address-level "risk score".
 

@@ -187,10 +187,13 @@ HOUR_BLOCKS = 24
 HOURLY_RESOLUTIONS = (8, 9)
 HOURLY_WINDOWS = ("last_1y",)
 
-# Below this many incidents across the whole window, a cell's hour-to-hour
-# ratio is noise dressed as a measurement, and hour_index is left NULL rather
-# than published. Twelve is half an incident per hour block on average.
-MIN_HOUR_EVIDENCE = 12
+# Credibility prior on a cell's hour shape, in incidents. A cell's hour factor
+# blends its own share of the day with the city's, weighting its own by
+# n / (n + HOUR_SHAPE_PRIOR): at twelve incidents -- half one per hour block --
+# the cell and the city count equally, and an empty cell follows the city's curve
+# outright. Counts rather than weights, so how heavy a track's severity weights
+# run does not change how hard the blend bites.
+HOUR_SHAPE_PRIOR = 12
 
 
 @dataclass(frozen=True, slots=True)
@@ -1166,7 +1169,7 @@ def refresh_cell_safety(
 
 
 # ---------------------------------------------------------------------------
-# Time of day: the same ranking, recomputed inside each hour block
+# Time of day: the all-hours ranking scaled by each cell's hour shape
 # ---------------------------------------------------------------------------
 
 _HOUR_SAFETY_SQL = """
@@ -1233,66 +1236,69 @@ unpivoted AS (
         ('non_violent', n_non_violent, w_non_violent)
     ) AS v(track, n, w)
 ),
-city AS (
-    -- Per hour block, not citywide-per-day: the rate a 4am cell is shrunk
-    -- toward has to be the 4am city, or the prior would drag every quiet hour
-    -- toward a daytime average it has nothing to do with.
-    SELECT track, hour_block, sum(w) / NULLIF(sum(exposure), 0) AS city_rate
+cell_day AS (
+    -- The cell's own totals across all 24 blocks, the denominator of its hour
+    -- shape. Taken from this layer rather than from gold.cell_safety, because
+    -- that one includes the incidents with no published hour and this cannot.
+    SELECT h3_index, track, sum(n) AS n_all_hours, sum(w) AS w_all_hours
+    FROM unpivoted
+    GROUP BY 1, 2
+),
+city_shape AS (
+    -- The share of this track's citywide weighted offence that falls in each
+    -- hour block: the curve a cell with little evidence of its own follows.
+    SELECT track, hour_block,
+           sum(w) / NULLIF(sum(sum(w)) OVER (PARTITION BY track), 0) AS share
     FROM unpivoted
     GROUP BY track, hour_block
 ),
-adjusted AS (
+factored AS (
     SELECT
         u.h3_index, u.area_km2, u.exposure, u.hour_block, u.track, u.n, u.w,
-        -- Same Poisson-gamma posterior as the all-hours ranking. The prior is
-        -- an exposure, so it shrinks by exposure/(exposure + prior) regardless
-        -- of how much offense the cell carries -- which means slicing the
-        -- window into 24 does not quietly change how hard the prior bites.
-        (u.w + COALESCE(c.city_rate, 0) * %(eb_prior)s)
-            / NULLIF(u.exposure + %(eb_prior)s, 0) AS adj
+        -- The hour factor: this cell's weighted share of its own day at this
+        -- hour, times 24, credibility-blended toward the city's share. 1.0 is an
+        -- ordinary hour; the 24 factors of any one cell average exactly 1, so
+        -- multiplying them into the all-hours rate redistributes it across the
+        -- day without inflating or deflating it.
+        %(hour_blocks)s * (
+            lam.own * CASE WHEN t.w_all_hours > 0 THEN u.w / t.w_all_hours ELSE 0 END
+            + (1 - lam.own) * COALESCE(s.share, 1.0 / %(hour_blocks)s)
+        ) AS hour_factor
     FROM unpivoted u
-    JOIN city c ON c.track = u.track AND c.hour_block = u.hour_block
+    JOIN cell_day t ON t.h3_index = u.h3_index AND t.track = u.track
+    LEFT JOIN city_shape s ON s.track = u.track AND s.hour_block = u.hour_block
+    CROSS JOIN LATERAL (
+        SELECT t.n_all_hours / (t.n_all_hours + %(shape_prior)s::double precision) AS own
+    ) lam
 ),
-neighbor_mean AS (
-    -- Grouped join, where the all-hours build uses a correlated LATERAL. That
-    -- form re-scans the adjusted set once per row, which is survivable at
-    -- ~8,000 rows and quadratic misery at the 192,000 this produces.
-    SELECT nbr.h3_index, x.track, x.hour_block, avg(x.adj) AS mean_adj
-    FROM gold.cell_neighbor nbr
-    JOIN adjusted x ON x.h3_index = nbr.neighbor_h3
-    WHERE nbr.source_id = %(source_id)s AND nbr.h3_res = %(h3_res)s
-    GROUP BY 1, 2, 3
-),
-blended AS (
-    SELECT
-        a.*,
-        CASE WHEN nm.mean_adj IS NULL THEN a.adj
-             ELSE %(self_weight)s * a.adj + (1 - %(self_weight)s) * nm.mean_adj
-        END AS smoothed
-    FROM adjusted a
-    LEFT JOIN neighbor_mean nm
-           ON nm.h3_index  = a.h3_index
-          AND nm.track     = a.track
-          AND nm.hour_block = a.hour_block
+rated AS (
+    -- The all-hours ranking's smoothed rate -- prior, neighbour blend and all --
+    -- multiplied by the hour factor. Inner join: without an all-hours rate
+    -- there is nothing to multiply, and refresh_cell_hour_safety runs after
+    -- refresh_cell_safety for exactly this read.
+    SELECT f.*, base.smoothed_per_km2 * f.hour_factor AS rate, base.safety_tier AS base_tier
+    FROM factored f
+    JOIN gold.cell_safety base
+      ON base.source_id      = %(source_id)s
+     AND base.h3_index       = f.h3_index
+     AND base.h3_res         = %(h3_res)s
+     AND base.time_window    = %(time_window)s
+     AND base.track          = f.track
+     AND base.scheme_version = %(scheme)s
 ),
 ranked AS (
     SELECT
-        b.*,
-        -- Ranked within the hour block, so the reference class is "other cells
-        -- at this hour" and not the all-hours distribution.
+        r.*,
+        -- Ranked within the hour block, so a cell's standing at 2am is against
+        -- every other cell at 2am. Same Hazen midrank as the all-hours ranking.
         (
-            (rank() OVER (PARTITION BY b.track, b.hour_block ORDER BY b.smoothed DESC)
-             + (count(*) OVER (PARTITION BY b.track, b.hour_block, b.smoothed) - 1) / 2.0)
+            (rank() OVER (PARTITION BY r.track, r.hour_block ORDER BY r.rate DESC)
+             + (count(*) OVER (PARTITION BY r.track, r.hour_block, r.rate) - 1) / 2.0)
             - 0.5
-        ) / count(*) OVER (PARTITION BY b.track, b.hour_block) AS pct,
-        rank()   OVER (PARTITION BY b.track, b.hour_block ORDER BY b.smoothed DESC) AS rnk,
-        count(*) OVER (PARTITION BY b.track, b.hour_block) AS cell_total,
-        -- The cell's own totals across all 24 blocks, for the hour index. Taken
-        -- from this layer rather than from gold.cell_safety, because that one
-        -- includes the incidents with no published hour and this one cannot.
-        sum(b.n) OVER (PARTITION BY b.h3_index, b.track) AS n_all_hours,
-        sum(b.w) OVER (PARTITION BY b.h3_index, b.track) AS w_all_hours
-    FROM blended b
+        ) / count(*) OVER (PARTITION BY r.track, r.hour_block) AS pct,
+        rank()   OVER (PARTITION BY r.track, r.hour_block ORDER BY r.rate DESC) AS rnk,
+        count(*) OVER (PARTITION BY r.track, r.hour_block) AS cell_total
+    FROM rated r
 )
 INSERT INTO gold.cell_hour_safety (
     source_id, h3_index, h3_res, time_window, hour_block, track, scheme_version,
@@ -1306,38 +1312,27 @@ SELECT
     %(source_id)s, r.h3_index, %(h3_res)s, %(time_window)s, r.hour_block,
     r.track, %(scheme)s,
     %(window_start)s, %(window_end)s, r.n,
-    r.w, r.w / r.area_km2, r.smoothed,
+    r.w, r.w / r.area_km2, r.rate,
     CASE WHEN %(per_capita)s THEN r.exposure END,
     CASE WHEN %(per_capita)s THEN r.w / NULLIF(r.exposure / 1000.0, 0) END,
     r.pct, r.rnk, r.cell_total,
     CASE
-        -- Tier 0 means nothing of this track was reported here at this hour.
-        -- At an hour's resolution that is the common case, and it is still not
-        -- the same claim as being among the safest quarter (S13).
-        WHEN r.n = 0      THEN 0
-        WHEN r.pct < 0.25 THEN 1
-        WHEN r.pct < 0.50 THEN 2
-        WHEN r.pct < 0.75 THEN 3
+        -- Tier 0 is the all-hours tier 0: nothing of this track reported here
+        -- in the whole window. Every other cell has a rate at every hour now,
+        -- so a quiet hour is a low rank, not a missing one (S13).
+        WHEN r.base_tier = 0 THEN 0
+        WHEN r.pct < 0.25    THEN 1
+        WHEN r.pct < 0.50    THEN 2
+        WHEN r.pct < 0.75    THEN 3
         ELSE 4
     END,
-    base.safety_percentile,
-    r.pct - base.safety_percentile,
-    -- Raw figures, not smoothed: this is a statement about this cell, and
-    -- blending in the neighbours would make it partly about them. Withheld
-    -- entirely below the evidence floor rather than published as a ratio of
-    -- two very small numbers.
-    CASE WHEN r.n_all_hours >= %(min_evidence)s
-         THEN r.w / NULLIF(r.w_all_hours / %(hour_blocks)s::double precision, 0)
-    END,
+    -- No longer written: the hour ranking is the all-hours ranking scaled, so
+    -- a separate percentile-point comparison would restate the factor. Dropped
+    -- by a later migration, once no deployed reader selects them.
+    NULL, NULL,
+    r.hour_factor,
     now()
 FROM ranked r
-LEFT JOIN gold.cell_safety base
-       ON base.source_id      = %(source_id)s
-      AND base.h3_index       = r.h3_index
-      AND base.h3_res         = %(h3_res)s
-      AND base.time_window    = %(time_window)s
-      AND base.track          = r.track
-      AND base.scheme_version = %(scheme)s
 """
 
 
@@ -1373,9 +1368,9 @@ def refresh_cell_hour_safety(
 ) -> int:
     """Rebuild gold.cell_hour_safety for one scheme.
 
-    Must run after refresh_cell_safety for the same scheme and windows: the
-    second rating is a comparison against the all-hours percentile, which this
-    reads rather than recomputes.
+    Must run after refresh_cell_safety for the same scheme and windows: each
+    hour's rate is the all-hours smoothed rate times the cell's hour factor, and
+    this reads that rate rather than recomputing it.
     """
     # Before the DELETE, so a per-capita scheme with no population is never
     # rebuilt prior-only (every cell tied) -- the same guard as the all-hours
@@ -1412,12 +1407,10 @@ def refresh_cell_hour_safety(
                         "window_start": window.start,
                         "window_end": window.end,
                         "scheme": scheme.version,
-                        "eb_prior": scheme.eb_prior,
-                        "self_weight": scheme.self_weight,
                         "per_capita": scheme.per_capita,
                         "jobs_weight": scheme.jobs_weight,
                         "hour_blocks": HOUR_BLOCKS,
-                        "min_evidence": MIN_HOUR_EVIDENCE,
+                        "shape_prior": HOUR_SHAPE_PRIOR,
                     },
                 )
                 written += cur.rowcount
