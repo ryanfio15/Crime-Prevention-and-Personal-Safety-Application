@@ -1123,6 +1123,10 @@ function renderSafety(rows) {
 
 /** The chart's title: the city's exact time now, "Time of Day: 10:13 PM EDT". */
 function renderCityClock() {
+  const popupTime = document.querySelector(".cell-popup .cp-time");
+  if (popupTime) {
+    popupTime.textContent = cityTimeLabel(state.cityRecord?.timezone, new Date(), { zoneName: true });
+  }
   if ($("d-hour-block").hidden) return;
   const now = cityTimeLabel(state.cityRecord?.timezone, new Date(), { zoneName: true });
   $("d-hour-title").textContent = `Time of Day: ${now}`;
@@ -1137,8 +1141,10 @@ function watchCityClock() {
   const tick = () => {
     if (document.hidden) return;
     const hour = cityHour(state.cityRecord?.timezone);
-    if (hour !== lastHour && state.detail) renderHours(state.detail);
-    else renderCityClock();
+    if (hour !== lastHour && state.detail) {
+      renderHours(state.detail);
+      if (state.selected) showCellPopup(state.selected, state.detail);
+    } else renderCityClock();
     lastHour = hour;
   };
   setTimeout(() => {
@@ -1562,7 +1568,7 @@ function showCellPopup(h3Index, detail) {
     : "Too few incidents here for a 12-hour outlook.";
   const span = (hour) => `${hourName(hour)} – ${hourName(hour + 1)}`;
   const chart = counts && counts.some((n) => n > 0)
-    ? html`<div class="cp-sub">Time of day · ${TRACK_LABELS[state.track]} offences</div>
+    ? html`<div class="cp-sub cp-time">${cityTimeLabel(state.cityRecord?.timezone, new Date(), { zoneName: true })}</div>
       <div class="hours" role="img" aria-label="Reported ${TRACK_LABELS[state.track]} offences by hour of the day">${counts.map((n, hour) => {
         const height = Math.max((n / max) * 100, n > 0 ? 4 : 0);
         const on = n > 0 ? html` data-on` : "";
