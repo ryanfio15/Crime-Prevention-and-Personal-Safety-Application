@@ -38,94 +38,67 @@
 </header>
 
 <!-- One filter row above everything it scopes; every view re-renders off the same slice. -->
-<div class="filters" id="filters" role="group" aria-label="Map filters">
-  <!-- A plain wrapper on a wide screen (display: contents). On a phone it
-       folds away behind the Filters button, so the map keeps the screen. -->
-  <div class="filters-fields" id="filters-fields">
-    <!-- Populated from /api/v1/cities, and hidden while only one city has data:
-         a dropdown with one entry is a control that cannot do anything. Every
-         figure on this page is relative to the selected city's own distribution
-         (design doc S3.3), so switching changes the reference class, not the
-         viewport -- values are never comparable across two cities. -->
-    <label class="field" id="f-city-field" hidden>
-      <span class="field-label">City</span>
-      <select id="f-city"></select>
-    </label>
+<div class="filters" role="group" aria-label="Map filters">
+  <!-- Populated from /api/v1/cities, and hidden while only one city has data:
+       a dropdown with one entry is a control that cannot do anything. Every
+       figure on this page is relative to the selected city's own distribution
+       (design doc S3.3), so switching changes the reference class, not the
+       viewport -- values are never comparable across two cities. -->
 
-    <!-- Two calendar dates drive the map (web/windows.js). The calendar runs from
-         the city's oldest stored day to today; the presets are the city's stored
-         windows (3/6/9 months, then years) and fill both dates in one click. -->
-    <div class="field field-range" role="group" aria-labelledby="f-range-label">
-      <span class="field-label" id="f-range-label">Dates</span>
-      <div class="range-inputs">
-        <input type="date" id="f-from" aria-label="From date" required>
-        <span class="range-sep" aria-hidden="true">–</span>
-        <input type="date" id="f-to" aria-label="To date" required>
-      </div>
-      <select id="f-preset" aria-label="Quick range">
-        <option value="custom">Custom dates</option>
-      </select>
+  <!-- Two calendar dates drive the map (web/windows.js). The calendar runs from
+       the city's oldest stored day to today; the presets are the city's stored
+       windows (3/6/9 months, then years) and fill both dates in one click. -->
+  <div class="field field-range" role="group" aria-labelledby="f-range-label">
+    <span class="field-label" id="f-range-label">Dates</span>
+    <div class="range-inputs">
+      <input type="date" id="f-from" aria-label="From date" required>
+      <span class="range-sep" aria-hidden="true">–</span>
+      <input type="date" id="f-to" aria-label="To date" required>
     </div>
+    <select id="f-preset" aria-label="Quick range">
+      <option value="custom">Custom dates</option>
+    </select>
+  </div>
 
-    <label class="field">
-      <span class="field-label">Offense category</span>
-      <select id="f-category">
-        <option value="all" selected>All reported incidents</option>
-        <option value="violent">Violent</option>
-        <option value="property">Property</option>
-        <option value="quality_of_life">Quality of life</option>
-        <option value="other">Other</option>
-      </select>
-    </label>
+  <label class="field">
+    <span class="field-label">Offense category</span>
+    <select id="f-category">
+      <option value="all" selected>All reported incidents</option>
+      <option value="violent">Violent</option>
+      <option value="property">Property</option>
+      <option value="quality_of_life">Quality of life</option>
+      <option value="other">Other</option>
+    </select>
+  </label>
 
-    <label class="field">
-      <span class="field-label">Cell size</span>
-      <select id="f-res">
-        <option value="8" selected>~500 m (H3 res 8)</option>
-        <option value="9">~175 m (H3 res 9)</option>
-        <option value="10">~75 m (H3 res 10)</option>
-      </select>
-    </label>
+  <label class="field">
+    <span class="field-label">Cell size</span>
+    <select id="f-res">
+      <option value="8" selected>~500 m (H3 res 8)</option>
+      <option value="9">~175 m (H3 res 9)</option>
+      <option value="10">~75 m (H3 res 10)</option>
+    </select>
+  </label>
 
-    <!-- "All hours" or one hour block on the city's local clock. Disabled where
-         the window or cell size has no hourly layer (syncHourAvailability). -->
-    <label class="field" id="f-hour-field">
-      <span class="field-label">Time of day</span>
-      <select id="f-hour">
-        <option value="all" selected>All hours</option>
-      </select>
-    </label>
+  <!-- "All hours" or one hour block on the city's local clock. Disabled where
+       the window or cell size has no hourly layer (syncHourAvailability). -->
+  <label class="field" id="f-hour-field">
+    <span class="field-label">Time of day</span>
+    <select id="f-hour">
+      <option value="all" selected>All hours</option>
+    </select>
+  </label>
 
-    <div class="field">
-      <span class="field-label">Colour by</span>
-      <select id="f-scale">
-        <option value="safety" selected>Safety ranking</option>
-        <option value="count">Incident count</option>
-      </select>
-    </div>
-
-    <!-- Only meaningful while the safety ranking is on screen. That is the
-         opening view, so it starts visible and hides if the scale changes. -->
-    <div class="field" id="f-track-field">
-      <span class="field-label" id="f-track-label">Offences ranked</span>
-      <div class="tabs" role="tablist" aria-labelledby="f-track-label" id="f-track">
-        <button type="button" class="tab" role="tab" data-track="violent"
-                aria-selected="true">Violent</button>
-        <button type="button" class="tab" role="tab" data-track="non_violent"
-                aria-selected="false">Non-violent</button>
-      </div>
-    </div>
+  <div class="field">
+    <span class="field-label">Colour by</span>
+    <select id="f-scale">
+      <option value="safety" selected>Safety ranking</option>
+      <option value="count">Incident count</option>
+    </select>
   </div>
 
   <div class="filters-spacer"></div>
 
-  <button type="button" id="btn-filters" class="btn filters-toggle" aria-expanded="false"
-          aria-controls="filters-fields">Filters</button>
-
-  <!-- Shown once /directions/status answers: hidden while the server has
-       directions switched off (settings.directions_enabled). -->
-  <button type="button" id="btn-directions" class="btn" aria-pressed="false"
-          aria-controls="directions" hidden>Directions</button>
   <button type="button" id="btn-locate" class="btn">Use my location</button>
   <button type="button" id="btn-table" class="btn" aria-pressed="false">Table view</button>
 </div>
@@ -133,6 +106,99 @@
 <main class="layout">
   <section class="map-pane">
     <div id="map" role="application" aria-label="Map with hexagonal cells shaded by reported incident count"></div>
+
+    <!-- Testing UI: the city selector and the violent / non-violent toggle are
+         the only controls left, floating on the map. Everything else in the
+         filter row, the header, the side panel and the table view is still in
+         the page -- app.js reads and writes it -- but hidden by the overrides
+         at the end of styles.css. -->
+    <div class="map-controls">
+      <div class="map-controls-row">
+        <label class="field map-control" id="f-city-field" hidden>
+          <span class="field-label">City</span>
+          <select id="f-city" aria-label="City"></select>
+        </label>
+        <!-- No visible heading, so the tablist names itself. -->
+        <div class="map-control" id="f-track-field">
+          <div class="tabs" role="tablist" aria-label="Offences ranked" id="f-track">
+            <button type="button" class="tab" role="tab" data-track="violent"
+                    aria-selected="true">Violent</button>
+            <button type="button" class="tab" role="tab" data-track="non_violent"
+                    aria-selected="false">Non-violent</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Address search in the city on screen. A match drops a pin and opens
+           its cell's popup; Directions then routes to it. Shown once
+           /directions/status answers (hidden while the server has directions
+           and address search switched off). -->
+      <div class="map-control map-search" id="search-field" role="search" hidden>
+        <label class="field-label" for="search-input">Find an address</label>
+        <div class="combo">
+          <input type="text" id="search-input" class="dir-input" role="combobox"
+                 aria-autocomplete="list" aria-expanded="false" aria-controls="search-list"
+                 placeholder="Address, place or lat, lng" spellcheck="false" autocomplete="off">
+          <ul class="combo-list" id="search-list" role="listbox" aria-label="Address suggestions" hidden></ul>
+        </div>
+        <p class="map-search-status" id="search-status" role="status" aria-live="polite"></p>
+        <div class="map-search-actions" id="search-actions" hidden>
+          <button type="button" class="btn" id="btn-directions" aria-expanded="false"
+                  aria-controls="dir-panel">Directions</button>
+          <button type="button" class="search-clear" id="search-clear">Clear</button>
+        </div>
+      </div>
+
+      <!-- Directions to the searched address, from the visitor's location or
+           a second address. -->
+      <section class="map-control dir-panel" id="dir-panel" aria-labelledby="dir-title" hidden>
+        <div class="dir-panel-head">
+          <h2 id="dir-title">Directions</h2>
+          <button type="button" class="dir-close" id="dir-close" aria-label="Close directions">&times;</button>
+        </div>
+
+        <div class="dir-row">
+          <span class="field-label">To</span>
+          <div class="dir-to-label" id="dir-to-label">&mdash;</div>
+        </div>
+
+        <div class="dir-row">
+          <label class="field-label" for="dir-from">From</label>
+          <div class="combo">
+            <input type="text" id="dir-from" class="dir-input" role="combobox"
+                   aria-autocomplete="list" aria-expanded="false" aria-controls="dir-from-list"
+                   placeholder="Type a start address" spellcheck="false" autocomplete="off">
+            <ul class="combo-list" id="dir-from-list" role="listbox" aria-label="Start suggestions" hidden></ul>
+          </div>
+          <div class="dir-from-actions">
+            <span>or</span>
+            <button type="button" class="btn" id="dir-from-here">Use my location</button>
+          </div>
+        </div>
+
+        <div class="tabs dir-modes" role="tablist" aria-label="Travel mode" id="dir-modes">
+          <button type="button" class="tab" role="tab" data-mode="drive" aria-selected="false">Drive</button>
+          <button type="button" class="tab" role="tab" data-mode="walk" aria-selected="true">Walk</button>
+          <button type="button" class="tab" role="tab" data-mode="bike" aria-selected="false">Bike</button>
+          <button type="button" class="tab" role="tab" data-mode="transit" aria-selected="false">Transit</button>
+        </div>
+
+        <p class="dir-status" id="dir-status" role="status" aria-live="polite"></p>
+
+        <div class="dir-results" id="dir-results" hidden>
+          <p class="dir-track" id="dir-track"></p>
+          <ol class="route-cards" id="dir-cards"></ol>
+          <p class="dir-why" id="dir-why"></p>
+          <details class="dir-steps-block">
+            <summary id="dir-steps-title">Steps</summary>
+            <ol class="dir-steps" id="dir-steps"></ol>
+          </details>
+          <ul class="dir-caveats" id="dir-caveats"></ul>
+        </div>
+
+        <p class="dir-attribution" id="dir-attribution"></p>
+      </section>
+    </div>
 
     <!-- Which way the nearby cells get quieter, read from the layer on screen
          around the visitor's location (or the map centre until they share it).
@@ -167,89 +233,7 @@
   </section>
 
   <!-- Detail panel: opens on cell click. -->
-  <aside class="detail" id="detail">
-    <!-- Directions between two addresses. Takes the panel while open; the
-         cell detail comes back when it closes. Each route is described by the
-         reported activity along it, relative to the city -- never as a score
-         for either address (design doc S13). -->
-    <section class="directions" id="directions" aria-labelledby="dir-title" hidden>
-      <button type="button" class="detail-close" id="dir-close" aria-label="Close directions">&times;</button>
-      <h2 id="dir-title">Directions</h2>
-
-      <form id="dir-form" autocomplete="off" novalidate>
-        <div class="dir-ends">
-          <div class="dir-end" data-end="from">
-            <label class="field-label" for="dir-from">From</label>
-            <div class="combo">
-              <input type="text" id="dir-from" class="dir-input" role="combobox"
-                     aria-autocomplete="list" aria-expanded="false" aria-controls="dir-from-list"
-                     placeholder="Address, place or lat, lng" spellcheck="false">
-              <ul class="combo-list" id="dir-from-list" role="listbox" aria-label="From suggestions" hidden></ul>
-            </div>
-            <div class="dir-end-actions">
-              <button type="button" class="linkish" data-pick="from">Pick on map</button>
-              <button type="button" class="linkish" id="dir-from-here">Use my location</button>
-            </div>
-          </div>
-
-          <button type="button" class="dir-swap" id="dir-swap" aria-label="Swap start and destination"
-                  title="Swap">&#8645;</button>
-
-          <div class="dir-end" data-end="to">
-            <label class="field-label" for="dir-to">To</label>
-            <div class="combo">
-              <input type="text" id="dir-to" class="dir-input" role="combobox"
-                     aria-autocomplete="list" aria-expanded="false" aria-controls="dir-to-list"
-                     placeholder="Address, place or lat, lng" spellcheck="false">
-              <ul class="combo-list" id="dir-to-list" role="listbox" aria-label="To suggestions" hidden></ul>
-            </div>
-            <div class="dir-end-actions">
-              <button type="button" class="linkish" data-pick="to">Pick on map</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="tabs dir-modes" role="tablist" aria-label="Travel mode" id="dir-modes">
-          <button type="button" class="tab" role="tab" data-mode="drive" aria-selected="false">Drive</button>
-          <button type="button" class="tab" role="tab" data-mode="walk" aria-selected="true">Walk</button>
-          <button type="button" class="tab" role="tab" data-mode="bike" aria-selected="false">Bike</button>
-          <button type="button" class="tab" role="tab" data-mode="transit" aria-selected="false">Transit</button>
-        </div>
-
-        <div class="dir-when">
-          <select id="dir-when" aria-label="Departure">
-            <option value="now" selected>Leave now</option>
-            <option value="at">Depart at</option>
-          </select>
-          <input type="datetime-local" id="dir-at" aria-label="Departure time, city clock" hidden>
-          <button type="submit" class="btn btn-primary" id="dir-go">Get directions</button>
-        </div>
-      </form>
-
-      <p class="dir-status" id="dir-status" role="status" aria-live="polite"></p>
-      <p class="dir-hint" id="dir-hint">
-        Some house numbers are not in the address search. If one is missing, use
-        <em>Pick on map</em> or paste a <em>lat, lng</em>.
-      </p>
-
-      <div class="dir-results" id="dir-results" hidden>
-        <p class="dir-track" id="dir-track"></p>
-        <ol class="route-cards" id="dir-cards"></ol>
-        <p class="dir-why" id="dir-why"></p>
-        <label class="dir-toggle">
-          <input type="checkbox" id="dir-colour" checked>
-          Colour the route by reported activity
-        </label>
-        <section class="chart-block">
-          <h3 id="dir-steps-title">Steps</h3>
-          <ol class="dir-steps" id="dir-steps"></ol>
-        </section>
-        <ul class="dir-caveats" id="dir-caveats"></ul>
-      </div>
-
-      <p class="dir-attribution" id="dir-attribution"></p>
-    </section>
-
+  <aside class="detail" id="detail" aria-live="polite">
     <div class="detail-empty" id="detail-empty">
       <h2>Select a cell</h2>
       <p>
@@ -263,7 +247,7 @@
       </p>
     </div>
 
-    <div class="detail-body" id="detail-body" aria-live="polite" hidden>
+    <div class="detail-body" id="detail-body" hidden>
       <button type="button" class="detail-close" id="detail-close" aria-label="Close cell detail">&times;</button>
 
       <div class="stat">
