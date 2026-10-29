@@ -1482,19 +1482,19 @@ function closeDetail() {
 /* ------------------------------------------------------- cell size by zoom */
 
 /* Testing UI: there is no cell-size control, so the size follows the zoom.
-   Resolution 8 (~500 m cells) until the scale bar would stop reading "1 km",
-   resolution 9 (~175 m) from there in. The bar shows the largest round
-   distance that fits in SCALE_MAX_WIDTH pixels, so "1 km" goes exactly when
-   that width spans less than a kilometre; this measures it the same way
-   MapLibre's ScaleControl does -- across the middle of the map -- so the cells
-   change at the same moment the bar does. */
+   Resolution 8 (~0.3 mi cells) while SCALE_MAX_WIDTH pixels -- the scale
+   bar's own width -- span 0.6214 mi or more, resolution 9 (~0.1 mi) from
+   there in. 0.6214 mi is exactly the kilometre this switched at when the bar
+   was metric, so the cells change at the same zoom as before. Measured the way MapLibre's
+   ScaleControl measures, across the middle of the map. */
 const SCALE_MAX_WIDTH = 110;
-const FINE_RES_BELOW_METERS = 1000;
+const METERS_PER_MILE = 1609.344;
+const FINE_RES_BELOW_MILES = 1000 / METERS_PER_MILE; // 0.6214
 
 function resForZoom() {
   const y = map.getContainer().clientHeight / 2;
   const meters = map.unproject([0, y]).distanceTo(map.unproject([SCALE_MAX_WIDTH, y]));
-  return meters < FINE_RES_BELOW_METERS ? 9 : 8;
+  return meters / METERS_PER_MILE < FINE_RES_BELOW_MILES ? 9 : 8;
 }
 
 /** The same steps as the (hidden) cell-size control, plus keeping the open
@@ -1853,7 +1853,11 @@ function nearestCity(point) {
   return best;
 }
 
-const kmLabel = (km) => (km < 10 ? `${km.toFixed(1)} km` : `${nf.format(Math.round(km))} km`);
+/** "3.4 mi", "25 mi": a distance given in km, as the page shows distances. */
+const milesLabel = (km) => {
+  const miles = km / 1.609344;
+  return miles < 10 ? `${miles.toFixed(1)} mi` : `${nf.format(Math.round(miles))} mi`;
+};
 
 /**
  * The city to open on, from a location the visitor has *already* allowed.
@@ -1935,7 +1939,7 @@ async function goToLocation(point) {
     }
     showLocateNote(
       `You are outside the cities this map covers. The nearest is ` +
-        `${near.city.city_name}, about ${kmLabel(near.km)} away.`,
+        `${near.city.city_name}, about ${milesLabel(near.km)} away.`,
       near.city.source_id === state.city
         ? null
         : { label: `View ${near.city.city_name}`, run: () => switchCity(near.city.source_id) }
@@ -3208,7 +3212,7 @@ async function initMap() {
   });
 
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
-  map.addControl(new maplibregl.ScaleControl({ maxWidth: SCALE_MAX_WIDTH, unit: "metric" }), "bottom-right");
+  map.addControl(new maplibregl.ScaleControl({ maxWidth: SCALE_MAX_WIDTH, unit: "imperial" }), "bottom-right");
 
   await new Promise((resolve) => map.on("load", resolve));
 

@@ -27,10 +27,13 @@ test("formatDuration", () => {
 });
 
 test("formatDistance", () => {
-  assert.equal(formatDistance(3), "10 m");
-  assert.equal(formatDistance(847), "850 m");
-  assert.equal(formatDistance(1234), "1.2 km");
-  assert.equal(formatDistance(14_400), "14 km");
+  assert.equal(formatDistance(3), "50 ft");
+  assert.equal(formatDistance(120), "400 ft");
+  // A tenth of a mile and up is miles.
+  assert.equal(formatDistance(160), "0.1 mi");
+  assert.equal(formatDistance(1234), "0.8 mi");
+  assert.equal(formatDistance(1609.344), "1.0 mi");
+  assert.equal(formatDistance(22_530), "14 mi");
 });
 
 const comparable = (mean, extra = {}) => ({
@@ -117,7 +120,7 @@ test("textOn picks the readable ink", () => {
 
 test("transitLegSummary", () => {
   const walk = transitLegSummary({ mode: "WALK", transit: false, duration_s: 240, distance_m: 300 });
-  assert.equal(walk.text, "Walk 4 min · 300 m");
+  assert.equal(walk.text, "Walk 4 min · 0.2 mi");
   const ride = transitLegSummary({
     mode: "SUBWAY", transit: true, duration_s: 600, route_name: "Red", headsign: "Shady Grove",
     color: "BF0D3E", text_color: null, num_stops: 4,

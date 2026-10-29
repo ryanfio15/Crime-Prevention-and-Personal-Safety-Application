@@ -19,12 +19,16 @@ function formatDuration(seconds) {
   return m ? `${h} h ${m} min` : `${h} h`;
 }
 
-/** "850 m", "1.2 km", "14 km" -- metric, like the map's scale bar. */
+const METRES_PER_MILE = 1609.344;
+const FEET_PER_METRE = 3.28084;
+
+/** "400 ft", "1.2 mi", "14 mi" -- miles, like the map's scale bar, and feet
+    under a tenth of a mile, where a turn is announced. */
 function formatDistance(metres) {
   if (!Number.isFinite(metres) || metres < 0) return "—";
-  if (metres < 950) return `${Math.max(10, Math.round(metres / 10) * 10)} m`;
-  const km = metres / 1000;
-  return km < 10 ? `${km.toFixed(1)} km` : `${Math.round(km)} km`;
+  const miles = metres / METRES_PER_MILE;
+  if (miles < 0.095) return `${Math.max(50, Math.round((metres * FEET_PER_METRE) / 50) * 50)} ft`;
+  return miles < 10 ? `${miles.toFixed(1)} mi` : `${Math.round(miles)} mi`;
 }
 
 /** A ratio as the panel writes one (formatRatio in app.js): 85%, 1.4x past 10. */
