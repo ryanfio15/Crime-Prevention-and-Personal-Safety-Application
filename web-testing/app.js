@@ -1452,6 +1452,47 @@ function closeDetail() {
   $("detail-empty").hidden = false;
 }
 
+/* ------------------------------------------------------- cell size by zoom */
+
+/* Testing UI: there is no cell-size control, so the size follows the zoom.
+   Resolution 8 (~500 m cells) until the scale bar would stop reading "1 km",
+   resolution 9 (~175 m) from there in. The bar shows the largest round
+   distance that fits in SCALE_MAX_WIDTH pixels, so "1 km" goes exactly when
+   that width spans less than a kilometre; this measures it the same way
+   MapLibre's ScaleControl does -- across the middle of the map -- so the cells
+   change at the same moment the bar does. */
+const SCALE_MAX_WIDTH = 110;
+const FINE_RES_BELOW_METERS = 1000;
+
+function resForZoom() {
+  const y = map.getContainer().clientHeight / 2;
+  const meters = map.unproject([0, y]).distanceTo(map.unproject([SCALE_MAX_WIDTH, y]));
+  return meters < FINE_RES_BELOW_METERS ? 9 : 8;
+}
+
+/** The same steps as the (hidden) cell-size control, plus keeping the open
+    cell: the popup moves to the cell at the same spot on the new layer
+    rather than closing under the user's zoom. */
+async function syncResToZoom() {
+  if (!state.cityRecord) return;
+  const res = resForZoom();
+  if (res === state.res) return;
+
+  state.res = res;
+  $("f-res").value = String(res);
+  syncActivityScope();
+  syncHourAvailability();
+  syncSafetyAvailability();
+
+  const spot = state.selected ? h3.cellToLatLng(state.selected) : null;
+  closeDetail();
+  await loadLayer();
+  // A later zoom may have moved the resolution on while this layer loaded.
+  if (spot && state.res === res && !state.selected) {
+    selectCell(h3.latLngToCell(spot[0], spot[1], res));
+  }
+}
+
 /* ---------------------------------------------------------------- cell popup */
 
 /* The testing UI's whole cell view: the relative risk rating and the day's
@@ -1935,7 +1976,7 @@ async function initMap() {
   });
 
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
-  map.addControl(new maplibregl.ScaleControl({ maxWidth: 110, unit: "metric" }), "bottom-right");
+  map.addControl(new maplibregl.ScaleControl({ maxWidth: SCALE_MAX_WIDTH, unit: "metric" }), "bottom-right");
 
   await new Promise((resolve) => map.on("load", resolve));
 
@@ -2001,6 +2042,7 @@ async function initMap() {
   // The compass reads from the map centre until a location is shared, and its
   // rose turns with the map either way.
   map.on("moveend", renderCompass);
+  map.on("zoomend", syncResToZoom);
   map.on("rotate", () => {
     $("compass-rose").style.transform = `rotate(${-map.getBearing()}deg)`;
   });
