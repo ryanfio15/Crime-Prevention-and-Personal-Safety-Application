@@ -41,9 +41,9 @@
 /* Only used to find and delete this worker's caches. Network first refreshes
    the stored copy on every online load, so a deploy never needs a bump here. */
 const CACHE_NAME = "safety-app-shell-v3";
-// "shell-", not just "safety-app-": the dev-only copies under /classic/ and
-// /testing/ keep their own caches (safety-app-classic-*, safety-app-testing-*)
-// on the same origin, and this worker must not sweep them away.
+// "shell-", not just "safety-app-": the dev-only copy under /dev/ keeps its own
+// caches (safety-app-dev-*) on the same origin, and this worker must not sweep
+// them away.
 const CACHE_PREFIX = "safety-app-shell-";
 
 const SHELL = [

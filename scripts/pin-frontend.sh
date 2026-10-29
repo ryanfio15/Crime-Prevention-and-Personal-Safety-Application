@@ -1,36 +1,33 @@
 #!/usr/bin/env bash
-# Re-pin a dev-only front end (/classic/ or /testing/) to a version from git.
+# Rebuild the frozen dev-only front end served at /dev/ (web-dev/).
 #
-#   scripts/pin-frontend.sh <classic|testing> <ref> [source-dir]
+#   scripts/pin-frontend.sh dev [ref] [source-dir]
 #
-# Replaces web-<name>/ with <source-dir> exactly as it was at <ref> (a commit,
-# tag or branch). The default source is web/ for classic -- the main site at
-# that commit -- and web-testing/ for testing, its own history. Examples:
+# Replaces web-dev/ with <source-dir> (default web/) exactly as it was at <ref>
+# (default the ui-dev tag: the main site before the map-only redesign). With no
+# arguments beyond "dev" it reproduces the committed copy byte for byte, which
+# is how to undo an accidental edit:
 #
-#   scripts/pin-frontend.sh classic ui-classic        # the original UI
-#   scripts/pin-frontend.sh classic f1f043b           # main site at a commit
-#   scripts/pin-frontend.sh testing 0dd0b83           # roll the testing UI back
-#   scripts/pin-frontend.sh testing HEAD web          # testing UI := main site
+#   scripts/pin-frontend.sh dev
+#
+# web-dev/ is meant never to change; tests/test_dev_frontend.py pins every
+# file's hash and fails CI on any difference. Pinning a different ref is a
+# deliberate change and needs that test's hashes updated in the same commit.
 #
 # The copy's service worker is then given its own cache name and prefix, which
-# tests/test_extra_frontends.py requires: three workers share one origin, and a
+# tests/test_extra_frontends.py requires: two workers share one origin, and a
 # copy left with the main site's names would delete the main site's cache.
 #
-# Stages the result and stops. Review with `git diff --cached --stat`, then
-# commit and push to testing; the copy deploys with everything else.
+# Stages the result and stops. Review with `git diff --cached --stat`.
 set -euo pipefail
 
-usage() { sed -n '2,5p' "$0" >&2; exit 2; }
+usage() { sed -n '2,4p' "$0" >&2; exit 2; }
 
-[[ $# -ge 2 && $# -le 3 ]] || usage
+[[ $# -ge 1 && $# -le 3 ]] || usage
 name=$1
-ref=$2
-case $name in
-    classic) default_src=web ;;
-    testing) default_src=web-testing ;;
-    *) echo "unknown front end '$name' (expected classic or testing)" >&2; exit 2 ;;
-esac
-src=${3:-$default_src}
+[[ $name == dev ]] || { echo "unknown front end '$name' (expected dev)" >&2; exit 2; }
+ref=${2:-ui-dev}
+src=${3:-web}
 dest=web-$name
 
 cd "$(git rev-parse --show-toplevel)"

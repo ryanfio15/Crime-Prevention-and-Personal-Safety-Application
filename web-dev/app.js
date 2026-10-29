@@ -623,6 +623,12 @@ const COMPASS_MIN_CELLS = 2;
  */
 function rampColorAt(value) {
   if (!state.rampDomain) return ZERO_FILL;
+  return rampColor(value);
+}
+
+/** The ramp's colour for a multiple of the city average, whatever is on
+    screen -- for a route, whose ratios come from the server. */
+function rampColor(value) {
   const stops = valueRampStops(VALUE_RAMP);
   if (value <= stops[0]) return stops[1];
   for (let i = 2; i < stops.length; i += 2) {
@@ -969,8 +975,7 @@ async function selectCity(sourceId) {
   if (sourceId === state.city) return;
   state.city = sourceId;
   closeDetail();
-  // An address, a start or a route in the old city means nothing in the new.
-  resetSearch();
+  resetDirectionsForCity();
   // The stamp is per city now, so carrying the old one across would read as "the
   // pipeline just ran" on the next poll and trigger a pointless reload. Null
   // makes the next tick record rather than compare.
@@ -1079,8 +1084,6 @@ async function selectCell(h3) {
   renderCategoryBars(detail.by_category, detail.by_category_available);
   renderSparkline(detail.monthly, headline.window_end);
   renderOffenseMix(detail.top_offenses);
-  // A later click may have moved on while this one was in flight.
-  if (state.selected === h3) showCellPopup(h3, detail);
 }
 
 /**
@@ -1125,10 +1128,6 @@ function renderSafety(rows) {
 
 /** The chart's title: the city's exact time now, "Time of Day: 10:13 PM EDT". */
 function renderCityClock() {
-  const popupTime = document.querySelector(".cell-popup .cp-time");
-  if (popupTime) {
-    popupTime.textContent = cityTimeLabel(state.cityRecord?.timezone, new Date(), { zoneName: true });
-  }
   if ($("d-hour-block").hidden) return;
   const now = cityTimeLabel(state.cityRecord?.timezone, new Date(), { zoneName: true });
   $("d-hour-title").textContent = `Time of Day: ${now}`;
@@ -1143,10 +1142,8 @@ function watchCityClock() {
   const tick = () => {
     if (document.hidden) return;
     const hour = cityHour(state.cityRecord?.timezone);
-    if (hour !== lastHour && state.detail) {
-      renderHours(state.detail);
-      if (state.selected) showCellPopup(state.selected, state.detail);
-    } else renderCityClock();
+    if (hour !== lastHour && state.detail) renderHours(state.detail);
+    else renderCityClock();
     lastHour = hour;
   };
   setTimeout(() => {
@@ -1450,7 +1447,6 @@ function renderOffenseMix(rows) {
 }
 
 function closeDetail() {
-  removeCellPopup();
   if (state.selected) {
     map.setFeatureState({ source: "cells", id: state.selected }, { selected: false });
     state.selected = null;
@@ -1458,150 +1454,6 @@ function closeDetail() {
   state.detail = null;
   $("detail-body").hidden = true;
   $("detail-empty").hidden = false;
-}
-
-/* ------------------------------------------------------- cell size by zoom */
-
-/* Testing UI: there is no cell-size control, so the size follows the zoom.
-   Resolution 8 (~500 m cells) until the scale bar would stop reading "1 km",
-   resolution 9 (~175 m) from there in. The bar shows the largest round
-   distance that fits in SCALE_MAX_WIDTH pixels, so "1 km" goes exactly when
-   that width spans less than a kilometre; this measures it the same way
-   MapLibre's ScaleControl does -- across the middle of the map -- so the cells
-   change at the same moment the bar does. */
-const SCALE_MAX_WIDTH = 110;
-const FINE_RES_BELOW_METERS = 1000;
-
-function resForZoom() {
-  const y = map.getContainer().clientHeight / 2;
-  const meters = map.unproject([0, y]).distanceTo(map.unproject([SCALE_MAX_WIDTH, y]));
-  return meters < FINE_RES_BELOW_METERS ? 9 : 8;
-}
-
-/** The same steps as the (hidden) cell-size control, plus keeping the open
-    cell: the popup moves to the cell at the same spot on the new layer
-    rather than closing under the user's zoom. */
-async function syncResToZoom() {
-  if (!state.cityRecord) return;
-  const res = resForZoom();
-  if (res === state.res) return;
-
-  state.res = res;
-  $("f-res").value = String(res);
-  syncActivityScope();
-  syncHourAvailability();
-  syncSafetyAvailability();
-
-  const spot = state.selected ? h3.cellToLatLng(state.selected) : null;
-  closeDetail();
-  await loadLayer();
-  // A later zoom may have moved the resolution on while this layer loaded.
-  if (spot && state.res === res && !state.selected) {
-    selectCell(h3.latLngToCell(spot[0], spot[1], res));
-  }
-}
-
-/* ---------------------------------------------------------------- cell popup */
-
-/* The testing UI's whole cell view: the relative risk rating and the day's
-   shape, in a small box on the map rather than the side panel (which is still
-   rendered, hidden, so the rest of the app keeps reading from it). */
-let cellPopup = null;
-
-/** "#rrggbb" for a multiple of the city average, by the same linear
-    interpolation the fill's `interpolate` expression makes over
-    valueRampStops, so the outline matches the cell it belongs to. */
-function colorForRatio(ratio) {
-  if (ratio === null || ratio === undefined || ratio < 0) return ZERO_FILL;
-  const stops = valueRampStops(VALUE_RAMP);
-  const parse = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-  for (let k = 2; k < stops.length; k += 2) {
-    const [r0, c0, r1, c1] = stops.slice(k - 2, k + 2);
-    if (ratio > r1) continue;
-    const t = r1 === r0 ? 1 : Math.max(0, (ratio - r0) / (r1 - r0));
-    const [a, b] = [parse(c0), parse(c1)];
-    return `#${a.map((x, i) => Math.round(x + (b[i] - x) * t).toString(16).padStart(2, "0")).join("")}`;
-  }
-  return stops[stops.length - 1];
-}
-
-function removeCellPopup() {
-  const popup = cellPopup;
-  cellPopup = null;
-  popup?.remove();
-}
-
-function showCellPopup(h3Index, detail) {
-  removeCellPopup();
-
-  const props = state.featureIndex.get(h3Index);
-  const ratio = props ? cellRatio(props, paintedMeasure(), state.rampDomain) : null;
-
-  // The rating is the same multiple of the city average the cell's colour
-  // (and so the outline) comes from: the smoothed, severity-weighted rate the
-  // ranking is built on. The side panel's headline uses the raw rate instead,
-  // which can read very differently for a small cell.
-  const windowLabel = detail.range ? detail.window_label : detail.window_label.toLowerCase();
-  const track = TRACK_LABELS[state.track];
-  const sense = ratio === null ? ""
-    : ratio > 1.05 ? "higher than the city average"
-    : ratio < 0.95 ? "lower than the city average"
-    : "about the city average";
-  const rating = ratio === null
-    ? {
-        value: "—",
-        label: `no ${track} risk rating for this cell · ${windowLabel}`,
-      }
-    : {
-        value: formatRatio(ratio),
-        label: `relative ${track} risk — ${sense} · ${windowLabel}`,
-      };
-
-  const counts = detail.hour_profile?.[state.track];
-  const max = Math.max(...(counts ?? []), 1);
-  const now = cityHour(state.cityRecord?.timezone);
-  // The 12-hour outlook: the quietest three-hour stretch ahead, from this
-  // cell's own day on this track (hours.js). Its bars go green only when it
-  // is worth pointing at -- it starts now, or it is meaningfully lower.
-  const win = counts ? quietestWindow(counts, now) : null;
-  const safer = new Set(win && (win.startsNow || win.quieter) ? win.blocks : []);
-  const outlook = win
-    ? windowSentence(win)
-    : "Too few incidents here for a 12-hour outlook.";
-  const span = (hour) => `${hourName(hour)} – ${hourName(hour + 1)}`;
-  const chart = counts && counts.some((n) => n > 0)
-    ? html`<div class="cp-sub cp-time">${cityTimeLabel(state.cityRecord?.timezone, new Date(), { zoneName: true })}</div>
-      <div class="hours" role="img" aria-label="Reported ${TRACK_LABELS[state.track]} offences by hour of the day">${counts.map((n, hour) => {
-        const height = Math.max((n / max) * 100, n > 0 ? 4 : 0);
-        const on = n > 0 ? html` data-on` : "";
-        const current = hour === now ? html` data-selected` : "";
-        const quiet = safer.has(hour) ? html` data-safer` : "";
-        return html`<i style="height:${height}%"${on}${quiet}${current} title="${span(hour)}: ${nf.format(n)}"></i>`;
-      })}</div>
-      <div class="hours-axis"><span>12 AM</span><span>6 AM</span><span>12 PM</span><span>6 PM</span><span>11 PM</span></div>
-      <div class="cp-outlook">${outlook}</div>
-      <div class="cp-foot">Dark bar: now in the city.${safer.size ? " Green bars: the lower-risk window." : ""}
-        The usual pattern here, not a forecast.</div>`
-    : html`<div class="cp-foot">No incidents here with a recorded hour.</div>`;
-
-  const box = document.createElement("div");
-  box.className = "cp";
-  box.innerHTML = html`<div class="cp-value">${rating.value}</div>
-    <div class="cp-label">${rating.label}</div>${chart}`;
-
-  const [lat, lng] = h3.cellToLatLng(h3Index);
-  // closeOnClick off: the map's own click handler decides, so clicking a
-  // second cell swaps the popup instead of racing a close against the open.
-  const popup = new maplibregl.Popup({ closeOnClick: false, maxWidth: "240px", className: "cell-popup" })
-    .setLngLat([lng, lat])
-    .setDOMContent(box)
-    .addTo(map);
-  popup.getElement().style.setProperty("--cell-color", colorForRatio(ratio));
-  popup.on("close", () => {
-    // Only the close button gets here with this popup still current.
-    if (cellPopup === popup) closeDetail();
-  });
-  cellPopup = popup;
 }
 
 /* ---------------------------------------------------------------- table view */
@@ -1722,6 +1574,8 @@ async function openMethodology() {
     <ul>${m.time_of_day.known_limitations.map((line) => html`<li>${line}</li>`)}</ul>
     ` : ""}
 
+    ${dir.status ? directionsMethodology() : ""}
+
     <h3>Offence classification</h3>
     <p>${m.classification.standard}</p>
     <dl>
@@ -1741,6 +1595,45 @@ async function openMethodology() {
     <p>${m.freshness_note ?? ""}</p>
     <p>${m.location_precision_note ?? ""}</p>
     ${terms ? html`<p><a href="${terms}" target="_blank" rel="noopener">Source dataset and terms of use</a></p>` : ""}
+  `;
+}
+
+/** The methodology dialog's Directions section. Static text: the rules it
+    describes are the server's (safety/routing/scoring.py), restated here. */
+function directionsMethodology() {
+  const a = dir.status.attribution;
+  const sources = safeHttpUrl(a.transit_sources_url);
+  return html`
+    <h3>Directions</h3>
+    <p>
+      Each route is described by the reported activity along it: every stretch is
+      compared with the city average the same way the map colours a ~175 m cell, on
+      the selected ranking (violent or non-violent), and the comparisons are averaged
+      by length. Where the 12-month window is selected, each stretch is compared at
+      the hour it would be passed. Transit compares only the walks and the stops;
+      time on board is not scored.
+    </p>
+    <p>
+      A route is offered as "lower reported activity" only when it takes no more
+      than a fifth longer than the fastest (at least 3 minutes, at most 8 to 15
+      depending on the mode) and is both 10% and 0.10 of the city average lower.
+      No comparison is made when under 60% of a route is in rated cells.
+    </p>
+    <div class="callout">
+      <h3 style="margin-top:0">What a route figure is not</h3>
+      <p style="margin-bottom:0">
+        It is not a rating of either address, not a statement that a route is safe,
+        and not a prediction. It describes reported incidents, which are not all
+        crime and not all of it reported.
+      </p>
+    </div>
+    <p>
+      Your start and destination go to this site's server, which asks the routing
+      services on your behalf. They are not logged or written to disk; recent answers
+      are kept in the server's memory for a few hours so a repeat is quick. Routing:
+      ${a.routing} · Map data ${a.map_data} · Address search: ${a.geocoding} ·
+      Transit: ${a.transit}${sources ? html` (<a href="${sources}" target="_blank" rel="noopener">data sources</a>)` : ""}.
+    </p>
   `;
 }
 
@@ -1910,36 +1803,43 @@ async function goToLocation(point) {
   selectCell(cell);
 }
 
-function locateMe() {
+/** One location fix as {lat, lng}; rejects with the browser's error. Shared
+    by "Use my location" on the map and in directions. */
+function getPosition() {
   if (!navigator.geolocation) {
-    showLocateNote("This browser does not expose a location.");
-    return;
+    return Promise.reject(new Error("This browser does not expose a location."));
   }
+  return new Promise((resolve, reject) =>
+    navigator.geolocation.getCurrentPosition(
+      (position) =>
+        resolve({ lat: position.coords.latitude, lng: position.coords.longitude }),
+      reject,
+      { enableHighAccuracy: false, timeout: 10000 }
+    )
+  );
+}
+
+async function locateMe() {
   const button = $("btn-locate");
   button.disabled = true;
   button.textContent = "Locating…";
-
-  navigator.geolocation.getCurrentPosition(
-    (position) => {
-      button.disabled = false;
-      button.textContent = "Use my location";
-      // S10: the cell is computed here, on the client, from GPS coordinates --
-      // no server round trip and no spatial query is involved in "which cell
-      // am I in". Which *city* is the same: every bounding box is already here.
-      state.userLocation = {
-        lat: position.coords.latitude,
-        lng: position.coords.longitude,
-      };
-      followLocation();
-      goToLocation(state.userLocation);
-    },
-    (error) => {
-      button.disabled = false;
-      button.textContent = "Use my location";
-      showLocateNote(`Could not read your location: ${error.message}`);
-    },
-    { enableHighAccuracy: false, timeout: 10000 }
-  );
+  try {
+    // S10: the cell is computed here, on the client, from GPS coordinates --
+    // no server round trip and no spatial query is involved in "which cell
+    // am I in". Which *city* is the same: every bounding box is already here.
+    state.userLocation = await getPosition();
+    followLocation();
+    goToLocation(state.userLocation);
+  } catch (error) {
+    showLocateNote(
+      navigator.geolocation
+        ? `Could not read your location: ${error.message}`
+        : "This browser does not expose a location."
+    );
+  } finally {
+    button.disabled = false;
+    button.textContent = "Use my location";
+  }
 }
 
 /**
@@ -1963,33 +1863,31 @@ function followLocation() {
   );
 }
 
-/* ---------------------------------------------------- address search + route */
+/* ---------------------------------------------------------------- directions */
 
-/* Testing UI: find an address in the city on screen, pin it and open its
-   cell's popup, then route to it -- from the visitor's location or a second
-   address -- with the same POST /api/v1/directions the main page uses. The
-   formatting and the map features are web/directions.js's, copied here as
-   directions.js.
+/* Directions between two points in the city on screen (design doc S13). The
+   formatting and the map features are pure functions in web/directions.js;
+   this is the page half: the panel, the two address boxes, picking a point on
+   the map, the request and the route layers.
 
    Addresses and points go to the server in POST bodies, never in a URL, and
    the server makes every provider call: nothing here talks to a third party,
    so the content security policy is unchanged. */
 
-const search = { place: null, marker: null, seq: 0 };
-
 const dir = {
   open: false,
   status: null,
-  // The start; the destination is always search.place.
-  from: null,
-  // Bumped on every new start, so a location lookup that finishes after a
-  // newer choice can tell, and drop its answer.
-  fromSeq: 0,
+  ends: { from: null, to: null },
   mode: "walk",
+  picking: null,
   result: null,
   selected: 0,
   seq: 0,
   abort: null,
+  searchAbort: { from: null, to: null },
+  // Bumped on every setEnd, so a point lookup that finishes after a newer
+  // choice for the same end can tell, and drop its answer.
+  endSeq: { from: 0, to: 0 },
   markers: { from: null, to: null },
   // Results already shown, so going back to a mode does not ask again --
   // transit plans come out of a small daily allowance shared by everyone.
@@ -2004,23 +1902,6 @@ const UNAVAILABLE = {
   budget: "has reached today's limit for this site",
   unavailable: "is unavailable right now",
 };
-// Close enough to read the street the address is on.
-const SEARCH_ZOOM = 15;
-const isNarrow = () => window.matchMedia("(max-width: 600px)").matches;
-
-/** Camera padding that keeps a target clear of the floating controls: the
-    search box above it on a phone, the directions sheet below it once open,
-    the column down the left edge on a wide screen. */
-function clearOfControls() {
-  const gap = 24;
-  if (!isNarrow()) {
-    return dir.open ? { top: 60, bottom: 60, right: 60, left: 360 } : { top: 0, bottom: 0, left: 0, right: 0 };
-  }
-  const top = $("search-field").getBoundingClientRect().bottom + gap;
-  const sheet = $("dir-panel");
-  const bottom = dir.open && !sheet.hidden ? window.innerHeight - sheet.getBoundingClientRect().top + gap : gap;
-  return { top, bottom, left: gap, right: gap };
-}
 
 async function postJson(path, body, signal) {
   const response = await fetch(`${API}${path}`, {
@@ -2043,17 +1924,17 @@ async function postJson(path, body, signal) {
   };
 }
 
-/** A server error as one sentence. FastAPI's own 422s carry a list of field
-    errors, not prose; those read as a generic line. */
+/** A server error as one sentence for the status line. FastAPI's own 422s
+    carry a list of field errors, not prose; those read as a generic line. */
 function errorText(result) {
   const detail = result.payload?.detail;
   if (typeof detail === "string") return detail;
   if (result.status === 429) return "Too many requests just now; wait a moment and try again.";
-  return "That could not be loaded. Try again shortly.";
+  return "Directions could not be loaded. Try again shortly.";
 }
 
-function setStatus(id, text, isError = false) {
-  const el = $(id);
+function setDirStatus(text, isError = false) {
+  const el = $("dir-status");
   el.textContent = text;
   el.classList.toggle("is-error", isError);
 }
@@ -2066,7 +1947,7 @@ async function loadDirectionsStatus() {
   } catch {
     return;
   }
-  $("search-field").hidden = false;
+  $("btn-directions").hidden = false;
   syncModeTabs();
   renderDirAttribution();
 }
@@ -2091,10 +1972,9 @@ function syncModeTabs() {
   });
   const geocode = dir.status?.geocode;
   if (geocode && !geocode.available) {
-    setStatus(
-      "search-status",
-      `Address search ${UNAVAILABLE[geocode.reason] ?? UNAVAILABLE.unavailable}. You can still paste a lat, lng.`
-    );
+    $("dir-hint").textContent =
+      `Address search ${UNAVAILABLE[geocode.reason] ?? UNAVAILABLE.unavailable}. ` +
+      "Use Pick on map, or paste a lat, lng.";
   }
 }
 
@@ -2108,236 +1988,41 @@ function renderDirAttribution() {
   `;
 }
 
-/* ---- address boxes: an ARIA combobox each */
-
-/**
- * Suggestions under `input` as the visitor types: places from /geocode in the
- * city on screen, or a typed "lat, lng" as it is. `onChoose` gets
- * {lat, lng, label}; `statusId` is where "no match" and errors go.
- */
-function wireCombo(input, list, { onChoose, onType, statusId }) {
-  let options = [];
-  let active = -1;
-  let abort = null;
-
-  const render = (next) => {
-    options = next;
-    active = -1;
-    list.innerHTML = html`${next.map(
-      (o, i) => html`<li role="option" id="${list.id}-opt-${i}" data-index="${i}" aria-selected="false">
-        <span class="opt-title">${o.title}</span>${o.subtitle ? html`<span class="opt-sub">${o.subtitle}</span>` : ""}
-      </li>`
-    )}`;
-    list.hidden = next.length === 0;
-    input.setAttribute("aria-expanded", String(next.length > 0));
-    input.removeAttribute("aria-activedescendant");
-  };
-
-  const move = (step) => {
-    if (!options.length) return;
-    active = (active + step + options.length) % options.length;
-    list.querySelectorAll("[role=option]").forEach((li, i) => {
-      li.setAttribute("aria-selected", String(i === active));
-      if (i === active) li.scrollIntoView({ block: "nearest" });
-    });
-    input.setAttribute("aria-activedescendant", `${list.id}-opt-${active}`);
-  };
-
-  const choose = (index) => {
-    const option = options[index];
-    if (!option) return;
-    render([]);
-    input.value = option.label ?? option.title;
-    onChoose(option.point ?? { lat: option.lat, lng: option.lng, label: option.label });
-  };
-
-  const lookup = debounce(async (q) => {
-    abort?.abort();
-    const point = latLngFromString(q);
-    if (point) {
-      render([{ title: `${point.lat}, ${point.lng}`, subtitle: "Coordinates", point: { ...point, label: `${point.lat}, ${point.lng}` } }]);
-      return;
-    }
-    if (q.length < 3 || dir.status?.geocode?.available === false) {
-      render([]);
-      return;
-    }
-    const controller = new AbortController();
-    abort = controller;
-    let result;
-    try {
-      result = await postJson("/geocode", { q, city: state.city, limit: 5 }, controller.signal);
-    } catch (error) {
-      if (error.name !== "AbortError") setStatus(statusId, "Address search could not be reached.", true);
-      return;
-    }
-    if (controller.signal.aborted) return;
-    if (!result.ok) {
-      setStatus(statusId, errorText(result), true);
-      return;
-    }
-    const found = result.payload.results ?? [];
-    render(found);
-    const city = state.cityRecord?.city_name ?? "this city";
-    setStatus(statusId, found.length ? "" : `No match in ${city}. Try more of the address, or paste a lat, lng.`);
-  }, 350);
-
-  input.addEventListener("input", () => {
-    onType?.();
-    lookup(input.value.trim());
-  });
-  input.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      move(1);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      move(-1);
-    } else if (event.key === "Enter") {
-      if (!list.hidden) {
-        event.preventDefault();
-        choose(Math.max(0, active));
-      }
-    } else if (event.key === "Escape" && !list.hidden) {
-      event.stopPropagation();
-      render([]);
-    }
-  });
-  // After a click on an option has had its mousedown.
-  input.addEventListener("blur", () => setTimeout(() => render([]), 150));
-  list.addEventListener("mousedown", (event) => {
-    const li = event.target.closest("[role=option]");
-    if (!li) return;
-    event.preventDefault();
-    choose(Number(li.dataset.index));
-  });
-}
-
-/* ---- the searched address: a pin and its cell's popup */
-
-function searchPin() {
-  const el = document.createElement("div");
-  el.className = "search-pin";
-  el.setAttribute("aria-hidden", "true");
-  return new maplibregl.Marker({ element: el, anchor: "center" });
-}
-
-/** Resolves once the camera has stopped, and any cell-size change that move
-    set off has loaded its layer. */
-let resSync = null;
-function flyAndSettle(center, zoom) {
-  return new Promise((resolve) => {
-    const done = () => {
-      clearTimeout(timer);
-      // zoomend (and with it syncResToZoom) fires before moveend.
-      Promise.resolve(resSync).then(resolve, resolve);
-    };
-    // A camera already where it is asked to be may not fire moveend.
-    const timer = setTimeout(() => {
-      map.off("moveend", done);
-      done();
-    }, 2500);
-    map.once("moveend", done);
-    // An offset, not padding: padding passed to a camera move stays on the
-    // map and would then add to every later fitBounds.
-    const pad = clearOfControls();
-    const offset = [(pad.left - pad.right) / 2, (pad.top - pad.bottom) / 2];
-    map.flyTo({ center, zoom, offset, duration: 900 });
-  });
-}
-
-/** Pin `place`, fly to it and open its cell's popup -- if it is a cell of
-    the city on screen. */
-async function showPlace(place) {
-  const seq = ++search.seq;
-  clearSearchPin();
-  const city = cityAt(place);
-  if (!city || city.source_id !== state.city) {
-    closeDirections();
-    setStatus(
-      "search-status",
-      `That address is outside ${state.cityRecord?.city_name ?? "this city"}.`,
-      true
-    );
-    return;
-  }
-  setStatus("search-status", "");
-  closeDetail();
-  await flyAndSettle([place.lng, place.lat], Math.max(map.getZoom(), SEARCH_ZOOM));
-  if (seq !== search.seq) return;
-
-  const cell = h3.latLngToCell(place.lat, place.lng, state.res);
-  if (!state.featureIndex.has(cell)) {
-    // Inside the city's box but past the edge of its data: across the city
-    // line, or somewhere the source publishes nothing.
-    closeDirections();
-    setStatus(
-      "search-status",
-      `That address is just outside the area ${city.city_name}'s data covers.`,
-      true
-    );
-    return;
-  }
-  search.place = place;
-  search.marker = searchPin().setLngLat([place.lng, place.lat]).addTo(map);
-  $("search-actions").hidden = false;
-  selectCell(cell);
-  // An open panel routes to the new address.
-  if (dir.open) {
-    search.marker.remove();
-    $("dir-to-label").textContent = place.label;
-    clearResult();
-    placeMarkers();
-    if (dir.from) submitDirections();
-  }
-}
-
-function clearSearchPin() {
-  search.place = null;
-  search.marker?.remove();
-  search.marker = null;
-  $("search-actions").hidden = true;
-}
-
-/** Back to no address: the box, the pin, the panel and any route. */
-function resetSearch() {
-  search.seq += 1;
-  closeDirections();
-  clearSearchPin();
-  dir.fromSeq += 1;
-  dir.from = null;
-  $("dir-from").value = "";
-  $("search-input").value = "";
-  setStatus("search-status", "");
-}
-
-/* ---- the directions panel */
-
 function openDirections() {
-  if (!search.place) return;
   dir.open = true;
-  $("dir-panel").hidden = false;
-  document.body.classList.add("dir-open");
-  $("btn-directions").setAttribute("aria-expanded", "true");
-  $("dir-to-label").textContent = search.place.label;
-  // The route takes the map: the popup would sit on top of it, and the
-  // searched pin becomes the B end.
-  closeDetail();
-  search.marker?.remove();
+  $("detail").classList.add("dir-open");
+  $("directions").hidden = false;
+  $("btn-directions").setAttribute("aria-pressed", "true");
+  // The selected cell's outline would compete with the route.
+  if (state.selected) {
+    map.setFeatureState({ source: "cells", id: state.selected }, { selected: false });
+  }
   placeMarkers();
   if (dir.result) drawRoutes();
-  $("dir-from").focus();
+  (dir.ends.from ? $("dir-to") : $("dir-from")).focus();
 }
 
 function closeDirections() {
-  if (!dir.open) return;
   dir.open = false;
-  $("dir-panel").hidden = true;
-  document.body.classList.remove("dir-open");
-  $("btn-directions").setAttribute("aria-expanded", "false");
-  clearResult();
+  stopPicking();
+  $("detail").classList.remove("dir-open");
+  $("directions").hidden = true;
+  $("btn-directions").setAttribute("aria-pressed", "false");
   clearRouteLayers();
-  if (search.marker) search.marker.addTo(map);
+  if (state.selected) {
+    map.setFeatureState({ source: "cells", id: state.selected }, { selected: true });
+  }
+  $("btn-directions").focus();
+}
+
+/** After a city switch: a point that is not in the new city cannot be routed
+    from here, so it goes, and so does any result. */
+function resetDirectionsForCity() {
+  for (const end of ["from", "to"]) {
+    const point = dir.ends[end];
+    if (point && cityAt(point)?.source_id !== state.city) setEnd(end, null);
+  }
+  clearResult();
 }
 
 function clearResult() {
@@ -2345,9 +2030,10 @@ function clearResult() {
   dir.abort?.abort();
   dir.result = null;
   $("dir-results").hidden = true;
-  setStatus("dir-status", "");
   clearRouteLayers({ keepMarkers: true });
 }
+
+/* ---- the two ends */
 
 function endMarker(end) {
   const el = document.createElement("div");
@@ -2367,28 +2053,19 @@ function endMarker(end) {
   return new maplibregl.Marker({ element: el, anchor: "center", offset: [0, -18] });
 }
 
-/** A pin at each end of the trip, where they are not already. */
-function placeMarkers() {
-  const ends = { from: dir.from, to: search.place };
-  for (const end of ["from", "to"]) {
-    dir.markers[end]?.remove();
-    dir.markers[end] = ends[end] && dir.open
-      ? endMarker(end).setLngLat([ends[end].lng, ends[end].lat]).addTo(map)
-      : null;
-  }
-}
-
-/** Set (or clear, with null) the start, and route once there is one. */
-function setFrom(place) {
-  dir.fromSeq += 1;
-  dir.from = place;
-  $("dir-from").value = place?.label ?? "";
+/** Set (or clear, with null) one end: the box, the pin, and a fresh result. */
+function setEnd(end, place) {
+  dir.endSeq[end] += 1;
+  dir.ends[end] = place;
+  $(`dir-${end}`).value = place?.label ?? "";
+  dir.markers[end]?.remove();
+  dir.markers[end] = null;
+  if (dir.open) placeMarkers();
   clearResult();
-  placeMarkers();
-  if (place) submitDirections();
+  if (dir.ends.from && dir.ends.to) submitDirections();
 }
 
-/** Name a point (reverse geocode) and say which served city it is in. */
+/** Name a point (reverse geocode) and check it is in a served city. */
 async function placeAt(point) {
   const result = await postJson("/geocode/reverse", point).catch(() => null);
   const label = `${point.lat.toFixed(5)}, ${point.lng.toFixed(5)}`;
@@ -2399,56 +2076,224 @@ async function placeAt(point) {
   };
 }
 
-/** A start from the visitor's location or a typed lat, lng: kept only if it
-    is in the city on screen -- a route never crosses between two. */
-async function setFromPoint(point) {
-  const seq = ++dir.fromSeq;
-  setStatus("dir-status", "Looking up that point…");
+/** A picked or located point: kept if it is in the city on screen, else an
+    offer to open the city it is in. */
+async function setEndFromPoint(end, point) {
+  setDirStatus("Looking up that point…");
+  // Claimed now, so a second pick made while this one is looked up wins.
+  const seq = ++dir.endSeq[end];
   const { place, city } = await placeAt(point);
-  // Something newer was chosen while the lookup ran.
-  if (seq !== dir.fromSeq) return;
-  if (city !== state.city) {
-    const name = state.cityRecord?.city_name ?? "this city";
-    setStatus(
-      "dir-status",
-      city ? `That start is in another city. Directions stay within ${name}.` : `That start is outside ${name}.`,
-      true
-    );
+  // Something newer was chosen for this end while the lookup ran.
+  if (seq !== dir.endSeq[end]) return;
+  if (!city) {
+    setDirStatus("That point is outside the cities this map covers.", true);
     return;
   }
-  setFrom({ ...place, label: point.label === undefined ? `Your location (${place.label})` : place.label });
+  if (city !== state.city) {
+    const record = state.cities.find((c) => c.source_id === city);
+    setDirStatus(`That point is in ${record?.city_name ?? "another city"}. Directions stay within one city.`, true);
+    if (record) {
+      showLocateNote(`That point is in ${record.city_name}.`, {
+        label: `View ${record.city_name}`,
+        run: async () => {
+          await switchCity(city);
+          setEnd(end, place);
+        },
+      });
+    }
+    return;
+  }
+  setDirStatus("");
+  setEnd(end, place);
 }
 
-function getPosition() {
-  if (!navigator.geolocation) {
-    return Promise.reject(new Error("This browser does not expose a location."));
+function startPicking(end) {
+  stopPicking();
+  dir.picking = end;
+  map.getCanvas().style.cursor = "crosshair";
+  map.getCanvasContainer().classList.add("is-picking");
+  document.querySelector(`[data-pick="${end}"]`)?.setAttribute("aria-pressed", "true");
+  setDirStatus(`Click the map to set the ${end === "from" ? "start" : "destination"}. Esc cancels.`);
+}
+
+function stopPicking() {
+  if (!dir.picking) return;
+  document.querySelector(`[data-pick="${dir.picking}"]`)?.setAttribute("aria-pressed", "false");
+  dir.picking = null;
+  map.getCanvas().style.cursor = "";
+  map.getCanvasContainer().classList.remove("is-picking");
+}
+
+/* ---- address boxes: an ARIA combobox each */
+
+function renderOptions(end, options) {
+  const list = $(`dir-${end}-list`);
+  const input = $(`dir-${end}`);
+  list.innerHTML = html`${options.map(
+    (o, i) => html`<li role="option" id="dir-${end}-opt-${i}" data-index="${i}" aria-selected="false">
+      <span class="opt-title">${o.title}</span>${o.subtitle ? html`<span class="opt-sub">${o.subtitle}</span>` : ""}
+    </li>`
+  )}`;
+  list.hidden = options.length === 0;
+  input.setAttribute("aria-expanded", String(options.length > 0));
+  input.removeAttribute("aria-activedescendant");
+  list._options = options;
+  list._active = -1;
+}
+
+function closeOptions(end) {
+  renderOptions(end, []);
+}
+
+function moveActive(end, step) {
+  const list = $(`dir-${end}-list`);
+  const options = list._options ?? [];
+  if (!options.length) return;
+  list._active = (list._active + step + options.length) % options.length;
+  list.querySelectorAll("[role=option]").forEach((li, i) => {
+    li.setAttribute("aria-selected", String(i === list._active));
+    if (i === list._active) li.scrollIntoView({ block: "nearest" });
+  });
+  $(`dir-${end}`).setAttribute("aria-activedescendant", `dir-${end}-opt-${list._active}`);
+}
+
+function chooseOption(end, index) {
+  const option = $(`dir-${end}-list`)._options?.[index];
+  if (!option) return;
+  closeOptions(end);
+  if (option.point) {
+    setEndFromPoint(end, option.point);
+    return;
   }
-  return new Promise((resolve, reject) =>
-    navigator.geolocation.getCurrentPosition(
-      (position) => resolve({ lat: position.coords.latitude, lng: position.coords.longitude }),
-      reject,
-      { enableHighAccuracy: false, timeout: 10000 }
-    )
-  );
+  setEnd(end, { lat: option.lat, lng: option.lng, label: option.label });
+}
+
+const searchPlaces = {};
+function makeSearch(end) {
+  return debounce(async (q) => {
+    dir.searchAbort[end]?.abort();
+    const options = [];
+    const point = latLngFromString(q);
+    if (point) {
+      options.push({ title: `${point.lat}, ${point.lng}`, subtitle: "Coordinates", point });
+      renderOptions(end, options);
+      return;
+    }
+    if (q.length < 3 || dir.status?.geocode?.available === false) {
+      renderOptions(end, []);
+      return;
+    }
+    const controller = new AbortController();
+    dir.searchAbort[end] = controller;
+    let result;
+    try {
+      result = await postJson("/geocode", { q, city: state.city, limit: 5 }, controller.signal);
+    } catch (error) {
+      if (error.name !== "AbortError") setDirStatus("Address search could not be reached.", true);
+      return;
+    }
+    if (controller.signal.aborted) return;
+    if (!result.ok) {
+      setDirStatus(errorText(result), true);
+      return;
+    }
+    const found = result.payload.results ?? [];
+    renderOptions(end, found);
+    setDirStatus(found.length ? "" : "No match in this city. Try Pick on map, or paste a lat, lng.");
+  }, 350);
+}
+
+function wireEnd(end) {
+  const input = $(`dir-${end}`);
+  const list = $(`dir-${end}-list`);
+  searchPlaces[end] = makeSearch(end);
+
+  input.addEventListener("input", () => {
+    // Typing over a chosen place un-chooses it.
+    if (dir.ends[end]) {
+      dir.ends[end] = null;
+      dir.markers[end]?.remove();
+      dir.markers[end] = null;
+      clearResult();
+    }
+    searchPlaces[end](input.value.trim());
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveActive(end, 1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveActive(end, -1);
+    } else if (event.key === "Enter") {
+      if (!list.hidden) {
+        event.preventDefault();
+        chooseOption(end, Math.max(0, list._active));
+      }
+    } else if (event.key === "Escape") {
+      if (!list.hidden) {
+        event.stopPropagation();
+        closeOptions(end);
+      }
+    }
+  });
+  input.addEventListener("blur", () => {
+    // After a click on an option has had its mousedown.
+    setTimeout(() => closeOptions(end), 150);
+  });
+  list.addEventListener("mousedown", (event) => {
+    const li = event.target.closest("[role=option]");
+    if (!li) return;
+    event.preventDefault();
+    chooseOption(end, Number(li.dataset.index));
+  });
+}
+
+/* ---- departure, in the city's own clock */
+
+/** "YYYY-MM-DDTHH:MM" for now in the city, for the datetime-local box. */
+function cityNowLocal() {
+  const zone = state.cityRecord?.timezone;
+  try {
+    const parts = Object.fromEntries(
+      new Intl.DateTimeFormat("en-CA", {
+        timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+      }).formatToParts(new Date()).map((p) => [p.type, p.value])
+    );
+    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+  } catch {
+    return localIso(new Date()) + "T" + new Date().toTimeString().slice(0, 5);
+  }
+}
+
+function departAt() {
+  return $("dir-when").value === "at" && $("dir-at").value ? $("dir-at").value : null;
 }
 
 /* ---- the request */
 
 async function submitDirections() {
-  const from = dir.from;
-  const to = search.place;
-  if (!from || !to) return;
+  stopPicking();
+  const { from, to } = dir.ends;
+  if (!from || !to) {
+    setDirStatus(`Choose ${from ? "a destination" : "a start"} first.`, true);
+    $(from ? "dir-to" : "dir-from").focus();
+    return;
+  }
   const request = {
     from: { lat: from.lat, lng: from.lng },
     to: { lat: to.lat, lng: to.lng },
     mode: dir.mode,
   };
+  const at = departAt();
+  if (at) request.depart_at = at;
   const preset = currentPreset();
   if (preset) request.window = preset.id;
 
   const key = directionsKey(request);
   const kept = dir.cache.get(key);
-  if (kept && Date.now() - kept.at < DIR_NOW_TTL_MS) {
+  if (kept && (at || Date.now() - kept.at < DIR_NOW_TTL_MS)) {
     showResult(kept.result);
     return;
   }
@@ -2457,31 +2302,34 @@ async function submitDirections() {
   const controller = new AbortController();
   dir.abort = controller;
   const seq = ++dir.seq;
-  setStatus("dir-status", `Finding ${MODE_NAMES[dir.mode].toLowerCase()} routes…`);
+  setDirStatus(`Finding ${MODE_NAMES[dir.mode].toLowerCase()} routes…`);
+  $("dir-go").disabled = true;
   let result;
   try {
     result = await postJson("/directions", request, controller.signal);
   } catch (error) {
     if (error.name !== "AbortError" && seq === dir.seq) {
-      setStatus("dir-status", "Directions could not be reached. Check your connection.", true);
+      setDirStatus("Directions could not be reached. Check your connection.", true);
     }
     return;
+  } finally {
+    if (seq === dir.seq) $("dir-go").disabled = false;
   }
   if (seq !== dir.seq) return;
   if (!result.ok) {
     $("dir-results").hidden = true;
     clearRouteLayers({ keepMarkers: true });
-    // Transit is one plan per visitor per 20 s: asked for again when it is
-    // allowed, unless something changes first.
+    // Transit is one plan per visitor per 20 s: a new point picked inside
+    // that is asked for again when it is allowed, unless something changes.
     if (result.payload?.code === "too_soon") {
       const wait = result.retryAfter ?? 5;
-      setStatus("dir-status", `Transit can be asked for again in ${wait} s; it will be, automatically.`);
+      setDirStatus(`Transit can be asked for again in ${wait} s; it will be, automatically.`);
       setTimeout(() => {
         if (seq === dir.seq) submitDirections();
       }, wait * 1000);
       return;
     }
-    setStatus("dir-status", errorText(result), true);
+    setDirStatus(errorText(result), true);
     // A mode that just ran out says so on its tab too.
     if (result.payload?.code === "budget_exhausted" || result.status === 503) loadDirectionsStatus();
     return;
@@ -2496,14 +2344,18 @@ function showResult(result) {
   dir.selected = result.picks?.[state.track]?.fastest ?? 0;
   renderDirections();
   const bounds = routesBbox(result.routes);
-  if (bounds) map.fitBounds(bounds, { padding: clearOfControls(), maxZoom: 16, duration: 700 });
+  if (bounds) {
+    const narrow = window.matchMedia("(max-width: 900px)").matches;
+    map.fitBounds(bounds, { padding: narrow ? 40 : 70, maxZoom: 16, duration: 700 });
+  }
   const n = result.routes.length;
-  setStatus(
-    "dir-status",
+  setDirStatus(
     `${n} ${MODE_NAMES[result.mode].toLowerCase()} route${n === 1 ? "" : "s"} found · ` +
       `fastest ${formatDuration(result.routes[result.picks?.[state.track]?.fastest ?? 0].duration_s)}`
   );
 }
+
+/* ---- the panel */
 
 function renderDirections() {
   const result = dir.result;
@@ -2520,7 +2372,7 @@ function renderDirections() {
   $("dir-cards").innerHTML = html`${cards.map((card) => {
     const route = result.routes[card.index];
     const words = activitySentence(card.activity, track);
-    const swatch = card.activity?.comparable ? colorForRatio(card.activity.mean_ratio) : ZERO_FILL;
+    const swatch = card.activity?.comparable ? rampColor(card.activity.mean_ratio) : ZERO_FILL;
     const legs = route.mode === "transit" ? route.legs.map(transitLegSummary) : [];
     return html`<li>
       <button type="button" class="route-card" data-index="${card.index}"
@@ -2586,7 +2438,9 @@ function selectRoute(index) {
   drawRoutes();
 }
 
-/* ---- the route on the map */
+/* ---- the map */
+
+const ROUTE_LAYERS = ["route-alt-line", "route-casing", "route-line", "route-walk", "route-activity"];
 
 /** Route sources and layers, above the cells and roads but under the street
     and place names, so a name stays readable along the route. */
@@ -2605,7 +2459,7 @@ function initRouteLayers() {
     layout: { "line-cap": "round", "line-join": "round" },
     paint: { "line-color": INK_SECONDARY, "line-width": 4, "line-opacity": 0.6, "line-dasharray": [1.5, 1.5] },
   }, before);
-  // A dark casing: the route sits on cells painted in the same ramp it is
+  // A dark casing: the route sits on cells painted in the same ramp it may be
   // coloured with, and only an edge keeps a green route off a green cell.
   map.addLayer({
     id: "route-casing", type: "line", source: "route-line",
@@ -2639,15 +2493,22 @@ function initRouteLayers() {
     },
   }, before);
 
-  map.on("click", "route-alt-line", (event) => {
-    const alt = event.features?.[0];
-    if (alt && dir.open) selectRoute(alt.properties.index);
+  map.on("click", (event) => {
+    if (!dir.open) return;
+    if (dir.picking) {
+      const end = dir.picking;
+      stopPicking();
+      setEndFromPoint(end, { lat: event.lngLat.lat, lng: event.lngLat.lng });
+      return;
+    }
+    const alt = map.queryRenderedFeatures(event.point, { layers: ["route-alt-line"] })[0];
+    if (alt) selectRoute(alt.properties.index);
   });
   map.on("mouseenter", "route-alt-line", () => {
-    map.getCanvas().style.cursor = "pointer";
+    if (!dir.picking) map.getCanvas().style.cursor = "pointer";
   });
   map.on("mouseleave", "route-alt-line", () => {
-    map.getCanvas().style.cursor = "";
+    if (!dir.picking) map.getCanvas().style.cursor = "";
   });
 }
 
@@ -2657,8 +2518,19 @@ function drawRoutes() {
   const route = result.routes[dir.selected];
   map.getSource("route-alt").setData(altFeatures(result.routes, dir.selected));
   map.getSource("route-line").setData(routeLineFeatures(route));
-  map.getSource("route-activity").setData(segmentFeatures(route.activity?.[state.track]));
+  map.getSource("route-activity").setData(
+    $("dir-colour").checked ? segmentFeatures(route.activity?.[state.track]) : { type: "FeatureCollection", features: [] }
+  );
   placeMarkers();
+}
+
+/** A pin for each chosen end that does not have one yet. */
+function placeMarkers() {
+  for (const end of ["from", "to"]) {
+    if (!dir.markers[end] && dir.ends[end]) {
+      dir.markers[end] = endMarker(end).setLngLat([dir.ends[end].lng, dir.ends[end].lat]).addTo(map);
+    }
+  }
 }
 
 function clearRouteLayers({ keepMarkers = false } = {}) {
@@ -2673,50 +2545,39 @@ function clearRouteLayers({ keepMarkers = false } = {}) {
 
 /* ---- wiring */
 
-function wireSearch() {
-  wireCombo($("search-input"), $("search-list"), {
-    statusId: "search-status",
-    onChoose: showPlace,
-  });
-  $("search-clear").onclick = () => {
-    resetSearch();
-    closeDetail();
-    $("search-input").focus();
-  };
+function wireDirections() {
   $("btn-directions").onclick = () => (dir.open ? closeDirections() : openDirections());
-  $("dir-close").onclick = () => {
-    closeDirections();
-    $("btn-directions").focus();
-  };
+  $("dir-close").onclick = closeDirections;
+  wireEnd("from");
+  wireEnd("to");
 
-  wireCombo($("dir-from"), $("dir-from-list"), {
-    statusId: "dir-status",
-    // A typed lat, lng is named and checked like a located point; a place
-    // from the search is already known to be in the city.
-    onChoose: (place) => (latLngFromString(place.label) ? setFromPoint(place) : setFrom(place)),
-    // Typing over a chosen start un-chooses it.
-    onType: () => {
-      if (!dir.from) return;
-      dir.fromSeq += 1;
-      dir.from = null;
-      clearResult();
-      placeMarkers();
-    },
+  document.querySelectorAll("[data-pick]").forEach((button) => {
+    button.setAttribute("aria-pressed", "false");
+    button.onclick = () =>
+      dir.picking === button.dataset.pick ? (stopPicking(), setDirStatus("")) : startPicking(button.dataset.pick);
   });
 
   $("dir-from-here").onclick = async () => {
-    const button = $("dir-from-here");
-    button.disabled = true;
-    setStatus("dir-status", "Locating…");
+    setDirStatus("Locating…");
     try {
       const point = await getPosition();
       state.userLocation = point;
-      await setFromPoint(point);
+      await setEndFromPoint("from", point);
     } catch (error) {
-      setStatus("dir-status", `Could not read your location: ${error.message}`, true);
-    } finally {
-      button.disabled = false;
+      setDirStatus(`Could not read your location: ${error.message}`, true);
     }
+  };
+
+  $("dir-swap").onclick = () => {
+    const { from, to } = dir.ends;
+    dir.ends = { from: null, to: null };
+    for (const end of ["from", "to"]) {
+      dir.markers[end]?.remove();
+      dir.markers[end] = null;
+    }
+    // setEnd submits once both are set, so the second call asks.
+    setEnd("from", to);
+    setEnd("to", from);
   };
 
   $("dir-modes").querySelectorAll("[data-mode]").forEach((tab) => {
@@ -2725,7 +2586,7 @@ function wireSearch() {
       dir.mode = tab.dataset.mode;
       syncModeTabs();
       clearResult();
-      submitDirections();
+      if (dir.ends.from && dir.ends.to) submitDirections();
     };
   });
   // Arrow keys move between the mode tabs, as in any tablist.
@@ -2739,9 +2600,30 @@ function wireSearch() {
     next.click();
   });
 
+  $("dir-when").onchange = (event) => {
+    const at = event.target.value === "at";
+    $("dir-at").hidden = !at;
+    if (at && !$("dir-at").value) $("dir-at").value = cityNowLocal();
+    clearResult();
+  };
+  $("dir-at").onchange = clearResult;
+
+  $("dir-form").onsubmit = (event) => {
+    event.preventDefault();
+    submitDirections();
+  };
+
   $("dir-cards").addEventListener("click", (event) => {
     const card = event.target.closest(".route-card");
     if (card) selectRoute(Number(card.dataset.index));
+  });
+  $("dir-colour").onchange = drawRoutes;
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && dir.picking) {
+      stopPicking();
+      setDirStatus("");
+    }
   });
 }
 
@@ -2778,7 +2660,7 @@ async function initMap() {
   });
 
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
-  map.addControl(new maplibregl.ScaleControl({ maxWidth: SCALE_MAX_WIDTH, unit: "metric" }), "bottom-right");
+  map.addControl(new maplibregl.ScaleControl({ maxWidth: 110, unit: "metric" }), "bottom-right");
 
   await new Promise((resolve) => map.on("load", resolve));
 
@@ -2833,28 +2715,22 @@ async function initMap() {
   });
 
   map.on("click", "cells-fill", (event) => {
-    // A click on another route picks that route, not the cell under it.
-    if (dir.open && map.queryRenderedFeatures(event.point, { layers: ["route-alt-line"] }).length) return;
+    // While directions hold the panel a click belongs to them: it sets a
+    // picked point, or selects a route, and never opens a cell underneath.
+    if (dir.open) return;
     const feature = event.features?.[0];
     if (feature) selectCell(feature.properties.h3);
   });
-  map.on("click", (event) => {
-    const onCell = map.queryRenderedFeatures(event.point, { layers: ["cells-fill"] }).length;
-    if (!onCell) closeDetail();
-  });
+
+  initRouteLayers();
 
   // The compass reads from the map centre until a location is shared, and its
   // rose turns with the map either way.
   map.on("moveend", renderCompass);
-  // Kept, so a search can wait for the layer its own zoom set loading.
-  map.on("zoomend", () => {
-    resSync = syncResToZoom();
-  });
   map.on("rotate", () => {
     $("compass-rose").style.transform = `rotate(${-map.getBearing()}deg)`;
   });
 
-  initRouteLayers();
   window.__safetyMap = map;
 }
 
@@ -3161,9 +3037,6 @@ function wireControls() {
       if (state.detail) {
         renderHeadlineStat(state.detail);
         renderHours(state.detail);
-        // repaint() has just moved the city average, so the popup's rating,
-        // outline and chart are all re-read for the new track.
-        if (state.selected) showCellPopup(state.selected, state.detail);
       }
       // Both tracks ride on every route too.
       if (dir.result) renderDirections();
@@ -3172,7 +3045,12 @@ function wireControls() {
   });
 
   $("btn-locate").onclick = locateMe;
-  wireSearch();
+  // Only shown on a phone, where the fields are folded away (styles.css).
+  $("btn-filters").onclick = () => {
+    const open = $("filters").classList.toggle("is-open");
+    $("btn-filters").setAttribute("aria-expanded", String(open));
+  };
+  wireDirections();
   $("locate-note-close").onclick = hideLocateNote;
   $("detail-close").onclick = closeDetail;
 
@@ -3244,8 +3122,6 @@ function watchForRefresh() {
 
   fillHourOptions();
   wireControls();
-  // Not awaited: the map does not wait on routing being up.
-  loadDirectionsStatus();
   // Expose read-only state for debugging and for the smoke-test driver.
   window.__safetyState = state;
   // Sequential, not parallel: the frame and the window control read the city
@@ -3266,4 +3142,5 @@ function watchForRefresh() {
   state.refreshStamp = version ? String(version.last_refreshed_at) : null;
   watchForRefresh();
   watchCityClock();
+  loadDirectionsStatus();
 })();

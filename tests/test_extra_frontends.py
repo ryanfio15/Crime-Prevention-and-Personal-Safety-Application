@@ -2,8 +2,8 @@
 
 Mounted only when EXTRA_FRONTENDS is on (safety/api/main.py), so a missing
 directory would only surface as a startup crash on dev. Each is a complete copy
-of web/ with its own service-worker cache, so the three never sweep each
-other's caches on the shared origin.
+of web/ with its own service-worker cache, so no two of them sweep each other's
+caches on the shared origin.
 """
 
 from __future__ import annotations
