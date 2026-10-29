@@ -48,14 +48,6 @@ const SAFETY = [
    and not a change of vocabulary. Quiet cells land in the green. */
 const COUNT_RAMP = [...SAFETY].reverse();
 
-/** A ramp as CSS stops, for a legend that reads as one continuous bar. */
-function rampGradient(colors) {
-  const stops = colors.map(
-    (hex, i) => `${hex} ${((i / (colors.length - 1)) * 100).toFixed(1)}%`
-  );
-  return `linear-gradient(to right, ${stops.join(", ")})`;
-}
-
 /** Midpoint of two hexes in sRGB. Adjacent ramp steps are ~0.025 apart in
     lightness, so averaging channels here is indistinguishable from doing it in
     OKLCH, and it avoids carrying a colour-space conversion for one blend. */
@@ -73,8 +65,7 @@ function mixHex(a, b) {
  * Twenty steps have no middle one: they sit at i/19, and 0.5 falls between the
  * tenth and eleventh. The value scale puts 150% of the city average on the centre step,
  * so without a stop there the average lands inside a segment and its colour is
- * a blend rather than the yellow the legend promises. Both the fill and the
- * legend gradient are built from this list, so they cannot drift apart.
+ * a blend rather than the yellow it is meant to be.
  */
 function withMidpoint(colors) {
   const half = colors.length / 2;
@@ -94,18 +85,6 @@ const VALUE_RAMP = withMidpoint(COUNT_RAMP);
    so an ordinary cell reads green -- a little over average is not a warning.
    Steps between two hinges are spread evenly across them. */
 const RAMP_HINGES = [[0, 0], [10, 1.5], [15, 2], [20, 3]];
-
-/** Fraction of the legend bar a multiple of the average sits at. */
-function rampPosition(ratio) {
-  for (let k = 1; k < RAMP_HINGES.length; k++) {
-    const [i0, r0] = RAMP_HINGES[k - 1];
-    const [i1, r1] = RAMP_HINGES[k];
-    if (ratio <= r1) {
-      return (i0 + ((ratio - r0) / (r1 - r0)) * (i1 - i0)) / (VALUE_RAMP.length - 1);
-    }
-  }
-  return 1;
-}
 
 /**
  * Ramp stops laid out over a cell's multiple of its city average (1 = average).
@@ -454,8 +433,8 @@ const state = {
   userLocation: null,
   // The open cell's detail payload, so a track switch re-reads rather than refetches.
   detail: null,
-  // City average the ramp is currently pinned to, so the legend and the fill
-  // cannot disagree about what the middle of the bar means.
+  // City average the ramp is currently pinned to, so the compass reads cells
+  // on the same scale the fill paints them with.
   rampDomain: null,
   refreshStamp: null,
   framed: false,
@@ -518,8 +497,8 @@ let map;
  * raw value, so a cell borrowing its all-hours standing (see `paintedMeasure`)
  * sits on the same bar as the cells rated at this hour.
  *
- * The chosen domain is stashed on `state` for the legend, so the key and the
- * fill can never disagree about what the middle of the bar means.
+ * The chosen domain is stashed on `state` for the compass, so it can never
+ * read a cell on a different scale from the one the fill uses.
  */
 /** The property the map is coloured by right now, and which cells take a
     colour from the ramp. Shared by the fill and the compass, so the compass
@@ -616,72 +595,6 @@ function fillColorExpression() {
       ["interpolate", ["linear"], ["var", "ratio"], ...valueRampStops(VALUE_RAMP)],
     ],
   ];
-}
-
-/* ------------------------------------------------------------------- legend */
-
-function renderLegend() {
-  const legend = $("legend");
-  const meta = state.meta;
-  if (!meta) return;
-  legend.setAttribute("aria-hidden", "false");
-
-  // Both measures are continuous, so the key is one gradient-filled bar rather
-  // than a row of swatches: stepped swatches would imply bands the data does
-  // not have.
-  $("legend-ramp").classList.add("is-smooth");
-
-  // Appended to every title once a time is chosen, so no view can be mistaken
-  // for the all-hours one.
-  const atHour = state.hour === null ? "" : ` · ${hourLabel(state.hour)}`;
-  const safety = state.scale === "safety";
-
-  $("legend-title").textContent = safety
-    ? `Safety ranking — ${TRACK_LABELS[state.track]} offences${atHour}`
-    : `Reported incidents per cell${atHour}`;
-
-  // Both modes run the same direction now: green at the low end of the
-  // measured value, red at the high end.
-  $("legend-ramp").innerHTML =
-    html`<span style="background:${rampGradient(VALUE_RAMP)}"></span>`;
-
-  const domain = state.rampDomain;
-  if (!domain) {
-    $("legend-ticks").innerHTML = "";
-    $("legend-foot").innerHTML = safety
-      ? "The safety ranking has not been built for this layer."
-      : "Nothing reported in this layer.";
-    return;
-  }
-
-  // The multiples the ramp is pinned to, at the positions they occupy on the
-  // bar -- not evenly spaced, because the green half covers 0..1.5x on its own.
-  $("legend-ticks").innerHTML = html`${RAMP_HINGES.map(([, ratio], k) => html`<span style="left:${
-    (rampPosition(ratio) * 100).toFixed(1)
-  }%">${ratio * 100}%${k === RAMP_HINGES.length - 1 ? "+" : ""}</span>`)}`;
-
-  const rated = (domain.own?.painted ?? 0) + domain.borrowed;
-  const skew =
-    `Colour is each cell's value as a percentage of the city average ` +
-    `(${nf.format(rated)} cells): green up to 150% of average, yellow at 150%, ` +
-    `orange from double, red at triple and above.` +
-    (domain.borrowed
-      ? ` ${nf.format(domain.borrowed)} cells with nothing of this kind reported` +
-        `${state.hour === null ? "" : " at this hour"} are coloured by their ` +
-        `all-hours ranking, which leans on neighbouring cells and the city baseline.`
-      : "");
-
-  // `skew` is plain text and is escaped like any other value; the markup lives
-  // only in the literal parts.
-  $("legend-foot").innerHTML = safety
-    ? html`<span class="legend-zero"><i></i> Nothing of this kind reported</span><br>Severity-weighted offence per 1,000 residents and workers, smoothed${
-        state.hour === null ? "" : html` <b>within this hour</b>`
-      }. ${skew} A cell with no reports is not therefore safe.`
-    : html`<span class="legend-zero"><i></i> No reported incidents</span><br>${skew}${
-        state.hour === null
-          ? ""
-          : html`<br>Counts exclude incidents the source published with no clock time.`
-      }`;
 }
 
 /* ------------------------------------------------------------------ compass */
@@ -910,7 +823,6 @@ async function loadLayer({ quiet = false } = {}) {
     if (source) source.setData(collection);
 
     map.setPaintProperty("cells-fill", "fill-color", fillColorExpression());
-    renderLegend();
     renderCompass();
     renderTable();
     // The city rate the safety headline is a share of has just moved, and so has
@@ -2003,7 +1915,6 @@ async function initMap() {
 /** Recolour from data already in hand -- no refetch. */
 function repaint() {
   map.setPaintProperty("cells-fill", "fill-color", fillColorExpression());
-  renderLegend();
   renderCompass();
 }
 
