@@ -1552,16 +1552,28 @@ function showCellPopup(h3Index, detail) {
   const counts = detail.hour_profile?.[state.track];
   const max = Math.max(...(counts ?? []), 1);
   const now = cityHour(state.cityRecord?.timezone);
+  // The 12-hour outlook: the quietest three-hour stretch ahead, from this
+  // cell's own day on this track (hours.js). Its bars go green only when it
+  // is worth pointing at -- it starts now, or it is meaningfully lower.
+  const win = counts ? quietestWindow(counts, now) : null;
+  const safer = new Set(win && (win.startsNow || win.quieter) ? win.blocks : []);
+  const outlook = win
+    ? windowSentence(win)
+    : "Too few incidents here for a 12-hour outlook.";
+  const span = (hour) => `${hourName(hour)} – ${hourName(hour + 1)}`;
   const chart = counts && counts.some((n) => n > 0)
     ? html`<div class="cp-sub">Time of day · ${TRACK_LABELS[state.track]} offences</div>
       <div class="hours" role="img" aria-label="Reported ${TRACK_LABELS[state.track]} offences by hour of the day">${counts.map((n, hour) => {
         const height = Math.max((n / max) * 100, n > 0 ? 4 : 0);
         const on = n > 0 ? html` data-on` : "";
         const current = hour === now ? html` data-selected` : "";
-        return html`<i style="height:${height}%"${on}${current} title="${hourLabel(hour)}: ${nf.format(n)}"></i>`;
+        const quiet = safer.has(hour) ? html` data-safer` : "";
+        return html`<i style="height:${height}%"${on}${quiet}${current} title="${span(hour)}: ${nf.format(n)}"></i>`;
       })}</div>
-      <div class="hours-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
-      <div class="cp-foot">Dark bar: the hour it is now in the city.</div>`
+      <div class="hours-axis"><span>12 AM</span><span>6 AM</span><span>12 PM</span><span>6 PM</span><span>11 PM</span></div>
+      <div class="cp-outlook">${outlook}</div>
+      <div class="cp-foot">Dark bar: now in the city.${safer.size ? " Green bars: the lower-risk window." : ""}
+        The usual pattern here, not a forecast.</div>`
     : html`<div class="cp-foot">No incidents here with a recorded hour.</div>`;
 
   const box = document.createElement("div");

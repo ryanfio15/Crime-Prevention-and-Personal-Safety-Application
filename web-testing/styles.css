@@ -715,6 +715,11 @@ body { grid-template-rows: minmax(0, 1fr); }
   color: var(--text-muted);
 }
 .cp .hours { height: 44px; }
+/* The lower-risk window, in the map ramp's green; "now" (data-selected) still
+   wins where the two overlap, being declared after it in the base styles. */
+.cp .hours i[data-safer] { background: #39c631; }
+.cp .hours i[data-selected] { background: var(--text-primary); }
+.cp-outlook { margin-top: 7px; font-size: 12px; line-height: 1.35; color: var(--text-primary); }
 .cp-foot { margin-top: 5px; font-size: 10.5px; color: var(--text-muted); }
 
 @media (max-width: 900px) {
