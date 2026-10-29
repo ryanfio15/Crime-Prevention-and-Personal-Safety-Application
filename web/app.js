@@ -419,6 +419,9 @@ const state = {
   res: 8,
   scale: "safety",
   track: "violent",
+  // Show tiles: off paints the cells invisible (cellsOpacity), but they stay
+  // on the map, so hovering and clicking one still opens its popup.
+  tiles: true,
   // The selected hour block 0-23 on the city's clock, or null for all hours.
   // Picked in the time-of-day control; cleared by syncHourAvailability where
   // the window or cell size has no hourly layer.
@@ -2871,15 +2874,7 @@ async function initMap() {
     id: "cells-fill",
     type: "fill",
     source: "cells",
-    paint: {
-      "fill-color": ZERO_FILL,
-      "fill-opacity": [
-        "case",
-        ["boolean", ["feature-state", "selected"], false], 0.95,
-        ["boolean", ["feature-state", "hover"], false], 0.9,
-        0.74,
-      ],
-    },
+    paint: { "fill-color": ZERO_FILL, "fill-opacity": cellsOpacity() },
   }, cellsBeforeId());
 
   // Building footprints are fills the basemap draws after its roads. Left above
@@ -2947,6 +2942,34 @@ async function initMap() {
 function repaint() {
   map.setPaintProperty("cells-fill", "fill-color", fillColorExpression());
   renderCompass();
+}
+
+/** The cells' opacity: brighter where hovered or selected -- or nothing at
+    all with Show tiles off. Zero, not a hidden layer: MapLibre does not
+    hit-test a layer with visibility "none", and the popup needs the click. */
+function cellsOpacity() {
+  if (!state.tiles) return 0;
+  return [
+    "case",
+    ["boolean", ["feature-state", "selected"], false], 0.95,
+    ["boolean", ["feature-state", "hover"], false], 0.9,
+    0.74,
+  ];
+}
+
+/** The track toggle picks the colour the cells are painted in, so it shows
+    only while the safety ramp is painted -- and the tiles are on. */
+function syncTrackField() {
+  $("f-track-field").hidden = state.scale !== "safety" || !state.tiles;
+}
+
+function setTiles(on) {
+  state.tiles = on;
+  $("f-tiles")
+    .querySelectorAll("[data-tiles]")
+    .forEach((b) => b.setAttribute("aria-checked", String((b.dataset.tiles === "on") === on)));
+  map.setPaintProperty("cells-fill", "fill-opacity", cellsOpacity());
+  syncTrackField();
 }
 
 /** Fill the time-of-day control with the 24 hour blocks, after "All hours". */
@@ -3028,7 +3051,7 @@ function syncSafetyAvailability() {
   if (!ok && state.scale === "safety") {
     state.scale = "count";
     $("f-scale").value = "count";
-    $("f-track-field").hidden = true;
+    syncTrackField();
   }
   $("f-scale").title = ok
     ? ""
@@ -3222,13 +3245,16 @@ function wireControls() {
   };
   $("f-scale").onchange = (e) => {
     state.scale = e.target.value;
-    // The track tabs only mean anything while the safety ramp is on screen.
-    $("f-track-field").hidden = state.scale !== "safety";
+    syncTrackField();
     repaint();
     // The open cell's headline measures whatever the map is coloured by, so it
     // changes with this control -- and the detail is already in hand.
     if (state.detail) renderHeadlineStat(state.detail);
   };
+
+  $("f-tiles").querySelectorAll("[data-tiles]").forEach((button) => {
+    button.onclick = () => setTiles(button.dataset.tiles === "on");
+  });
 
   // Both tracks ride along on every feature, so switching is a repaint with no
   // request and no loading state.

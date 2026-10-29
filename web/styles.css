@@ -204,7 +204,8 @@ select:disabled { opacity: 0.55; cursor: not-allowed; }
 }
 .tab + .tab { border-left: 1px solid var(--border); }
 .tab:hover { color: var(--text-primary); }
-.tab[aria-selected="true"] {
+.tab[aria-selected="true"],
+.tab[aria-checked="true"] {
   background: rgba(11, 11, 11, 0.06);
   color: var(--text-primary);
 }
@@ -892,11 +893,12 @@ body { grid-template-rows: minmax(0, 1fr); }
   .layout { grid-template-rows: minmax(0, 1fr); }
 }
 
-/* Address search, under the city selector, and the directions panel that
-   opens under it. One column down the map's left edge. */
-.map-controls { flex-direction: column; align-items: flex-start; width: 320px; max-height: calc(100% - 24px); }
-.map-controls-row { display: flex; align-items: flex-end; gap: 8px; }
-.map-search { width: 100%; }
+/* One row across the top -- city, address search, Show tiles, the track
+   toggle -- and the directions panel that opens under it. Clear of the zoom
+   buttons and the compass on the right; a row too wide for the window wraps. */
+.map-controls { flex-direction: column; align-items: flex-start; max-width: calc(100% - 200px); max-height: calc(100% - 24px); }
+.map-controls-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
+.map-search { width: 300px; }
 .map-search .combo-list { max-height: 240px; }
 .map-search-status { margin: 6px 2px 0; font-size: 12px; color: var(--text-secondary); }
 .map-search-status:empty { display: none; }
@@ -915,7 +917,7 @@ body { grid-template-rows: minmax(0, 1fr); }
 }
 
 .dir-panel {
-  width: 100%;
+  width: 340px;
   min-height: 0;
   overflow-y: auto;
   padding: 10px 12px 12px;
@@ -947,22 +949,26 @@ body { grid-template-rows: minmax(0, 1fr); }
 }
 
 @media (max-width: 600px) {
-  /* Clear of the zoom buttons on the right. City and the track toggle share
-     one row, the city's label left to the select's own name. */
-  .map-controls { left: 8px; right: 56px; top: 8px; width: auto; max-height: none; }
-  .map-controls-row { width: 100%; }
+  /* Clear of the zoom buttons on the right. The row wraps in its own order:
+     the city, then the search, each the full width, then Show tiles and the
+     track toggle side by side. The city's label is left to the select's own
+     name. */
+  .map-controls { left: 8px; right: 56px; top: 8px; width: auto; max-width: none; max-height: none; }
+  .map-controls-row { width: 100%; gap: 6px; }
   .map-controls-row .map-control { padding: 5px 6px; }
-  #f-city-field { flex: 1 1 auto; min-width: 0; }
+  #f-city-field { flex: 1 1 100%; min-width: 0; }
   #f-city-field .field-label { display: none; }
   #f-city { width: 100%; }
+  #f-tiles-field { flex-direction: row; align-items: center; gap: 6px; }
   .map-controls-row .tab { padding: 6px 9px; }
-  .map-search { padding: 8px 10px; }
+  .map-search { flex: 1 1 100%; width: auto; padding: 8px 10px; }
   .dir-input, .dir-modes .tab, .btn, #f-city, .map-controls-row .tab { min-height: 44px; }
 
   /* Directions as a bottom sheet, so the route stays in view above it. */
   .dir-panel {
     position: fixed;
     left: 0; right: 0; bottom: 0;
+    width: auto;
     z-index: 4;
     max-height: 52dvh;
     border-radius: 14px 14px 0 0;

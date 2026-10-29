@@ -107,17 +107,50 @@
   <section class="map-pane">
     <div id="map" role="application" aria-label="Map with hexagonal cells shaded by reported incident count"></div>
 
-    <!-- Testing UI: the city selector and the violent / non-violent toggle are
-         the only controls left, floating on the map. Everything else in the
-         filter row, the header, the side panel and the table view is still in
-         the page -- app.js reads and writes it -- but hidden by the overrides
-         at the end of styles.css. -->
+    <!-- Testing UI: one row of controls floating on the map -- the city, the
+         address search, Show tiles and the violent / non-violent toggle.
+         Everything else in the filter row, the header, the side panel and the
+         table view is still in the page -- app.js reads and writes it -- but
+         hidden by the overrides at the end of styles.css. -->
     <div class="map-controls">
       <div class="map-controls-row">
         <label class="field map-control" id="f-city-field" hidden>
           <span class="field-label">City</span>
           <select id="f-city" aria-label="City"></select>
         </label>
+
+        <!-- Address search in the city on screen. A match drops a pin and opens
+             its cell's popup; Directions then routes to it. Shown once
+             /directions/status answers (hidden while the server has directions
+             and address search switched off). -->
+        <div class="map-control map-search" id="search-field" role="search" hidden>
+          <label class="field-label" for="search-input">Find an address</label>
+          <div class="combo">
+            <input type="text" id="search-input" class="dir-input" role="combobox"
+                   aria-autocomplete="list" aria-expanded="false" aria-controls="search-list"
+                   placeholder="Address, place or lat, lng" spellcheck="false" autocomplete="off">
+            <ul class="combo-list" id="search-list" role="listbox" aria-label="Address suggestions" hidden></ul>
+          </div>
+          <p class="map-search-status" id="search-status" role="status" aria-live="polite"></p>
+          <div class="map-search-actions" id="search-actions" hidden>
+            <button type="button" class="btn" id="btn-directions" aria-expanded="false"
+                    aria-controls="dir-panel">Directions</button>
+            <button type="button" class="search-clear" id="search-clear">Clear</button>
+          </div>
+        </div>
+
+        <!-- Off makes the cells invisible, not absent: they still answer a
+             click with their popup. The track toggle goes with the colour. -->
+        <div class="field map-control" id="f-tiles-field">
+          <span class="field-label" id="f-tiles-label">Show tiles</span>
+          <div class="tabs" role="radiogroup" aria-labelledby="f-tiles-label" id="f-tiles">
+            <button type="button" class="tab" role="radio" data-tiles="on"
+                    aria-checked="true">On</button>
+            <button type="button" class="tab" role="radio" data-tiles="off"
+                    aria-checked="false">Off</button>
+          </div>
+        </div>
+
         <!-- No visible heading, so the tablist names itself. -->
         <div class="map-control" id="f-track-field">
           <div class="tabs" role="tablist" aria-label="Offences ranked" id="f-track">
@@ -126,26 +159,6 @@
             <button type="button" class="tab" role="tab" data-track="non_violent"
                     aria-selected="false">Non-violent</button>
           </div>
-        </div>
-      </div>
-
-      <!-- Address search in the city on screen. A match drops a pin and opens
-           its cell's popup; Directions then routes to it. Shown once
-           /directions/status answers (hidden while the server has directions
-           and address search switched off). -->
-      <div class="map-control map-search" id="search-field" role="search" hidden>
-        <label class="field-label" for="search-input">Find an address</label>
-        <div class="combo">
-          <input type="text" id="search-input" class="dir-input" role="combobox"
-                 aria-autocomplete="list" aria-expanded="false" aria-controls="search-list"
-                 placeholder="Address, place or lat, lng" spellcheck="false" autocomplete="off">
-          <ul class="combo-list" id="search-list" role="listbox" aria-label="Address suggestions" hidden></ul>
-        </div>
-        <p class="map-search-status" id="search-status" role="status" aria-live="polite"></p>
-        <div class="map-search-actions" id="search-actions" hidden>
-          <button type="button" class="btn" id="btn-directions" aria-expanded="false"
-                  aria-controls="dir-panel">Directions</button>
-          <button type="button" class="search-clear" id="search-clear">Clear</button>
         </div>
       </div>
 
