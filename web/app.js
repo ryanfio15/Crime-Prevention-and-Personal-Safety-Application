@@ -2246,26 +2246,32 @@ function flyAndSettle(center, zoom) {
   });
 }
 
-/** The city on screen, if `point` is in it; otherwise says so and gives null.
-    `what` names the point in the message ("That address"). */
-function cityOnScreen(point, what) {
+/** The city on screen, if `point` is in it. */
+function cityOnScreen(point) {
   const city = cityAt(point);
-  if (city && city.source_id === state.city) return city;
-  closeDirections();
-  setStatus("search-status", `${what} is outside ${state.cityRecord?.city_name ?? "this city"}.`, true);
+  return city && city.source_id === state.city ? city : null;
+}
+
+/** The cell `point` is in, if the city's data covers it. Inside the city's
+    box but past the edge of its data -- across the city line, or somewhere
+    the source publishes nothing -- there is none. */
+function coveredCell(point) {
+  const cell = h3.latLngToCell(point.lat, point.lng, state.res);
+  return state.featureIndex.has(cell) ? cell : null;
+}
+
+/** Why `point` cannot be used, or null if it can. `what` names it in the
+    message ("That address"). */
+function pointProblem(point, what) {
+  const city = cityOnScreen(point);
+  if (!city) return `${what} is outside ${state.cityRecord?.city_name ?? "this city"}.`;
+  if (!coveredCell(point)) return `${what} is just outside the area ${city.city_name}'s data covers.`;
   return null;
 }
 
-/** The cell `point` is in, if the city's data covers it; otherwise says so
-    and gives null. */
-function coveredCell(point, city, what) {
-  const cell = h3.latLngToCell(point.lat, point.lng, state.res);
-  if (state.featureIndex.has(cell)) return cell;
-  // Inside the city's box but past the edge of its data: across the city
-  // line, or somewhere the source publishes nothing.
+function refuseSearch(message) {
   closeDirections();
-  setStatus("search-status", `${what} is just outside the area ${city.city_name}'s data covers.`, true);
-  return null;
+  setStatus("search-status", message, true);
 }
 
 /** Pin `place`, fly to it and open its cell's popup -- if it is a cell of
@@ -2273,28 +2279,31 @@ function coveredCell(point, city, what) {
 async function showPlace(place) {
   const seq = ++search.seq;
   clearSearchPin();
-  const city = cityOnScreen(place, "That address");
-  if (!city) return;
+  // The cell is checked after the flight, at the cell size it lands on.
+  if (!cityOnScreen(place)) return refuseSearch(pointProblem(place, "That address"));
   setStatus("search-status", "");
   closeDetail();
   await flyAndSettle([place.lng, place.lat], Math.max(map.getZoom(), SEARCH_ZOOM));
   if (seq !== search.seq) return;
 
-  const cell = coveredCell(place, city, "That address");
-  if (cell) pinPlace(place, cell);
+  const cell = coveredCell(place);
+  if (!cell) return refuseSearch(pointProblem(place, "That address"));
+  pinPlace(place, cell);
 }
 
-/** Right-click on the map: pin that point where it is, with no camera move,
-    and fill the search box with the nearest address -- a way to find an
-    address by pointing at it. Directions then work as for a typed one. */
+/** Right-click on the map. With the directions panel open it sets the start
+    (pinClickedStart); otherwise it pins that point where it is, with no
+    camera move, and fills the search box with the nearest address -- a way
+    to find an address by pointing at it. Directions then work as for a typed
+    one. */
 async function pinClickedPoint(lngLat) {
   const point = { lat: lngLat.lat, lng: lngLat.lng };
+  if (dir.open) return pinClickedStart(point);
   const seq = ++search.seq;
   clearSearchPin();
-  const city = cityOnScreen(point, "That point");
-  if (!city) return;
-  const cell = coveredCell(point, city, "That point");
-  if (!cell) return;
+  const problem = pointProblem(point, "That point");
+  if (problem) return refuseSearch(problem);
+  const cell = coveredCell(point);
 
   // The pin goes down at once; the address follows it.
   closeDetail();
@@ -2307,6 +2316,32 @@ async function pinClickedPoint(lngLat) {
   setStatus("search-status", "");
   $("search-input").value = place.label;
   pinPlace(place, cell);
+}
+
+/** Right-click with the directions panel open: the same, for the start. Its
+    A pin goes down at once, the start box fills with the nearest address,
+    and the route is asked for. */
+async function pinClickedStart(point) {
+  const seq = ++dir.fromSeq;
+  const problem = pointProblem(point, "That start");
+  if (problem) return setStatus("dir-status", problem, true);
+
+  clearResult();
+  dir.markers.from?.remove();
+  dir.markers.from = endMarker("from").setLngLat([point.lng, point.lat]).addTo(map);
+  $("dir-from").value = "";
+  setStatus("dir-status", "Finding the nearest address…");
+  const { place } = await placeAt(point);
+  // Something newer was chosen while the lookup ran.
+  if (seq !== dir.fromSeq) return;
+  // The panel was closed, or a start typed, while it ran: drop the answer,
+  // and with it the pin, back to whatever start there was.
+  if (!dir.open || $("dir-from").value) {
+    setStatus("dir-status", "");
+    placeMarkers();
+    return;
+  }
+  setFrom(place);
 }
 
 /** Make `place` the searched address: its pin, its cell's popup, and the
