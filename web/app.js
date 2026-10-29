@@ -2456,6 +2456,7 @@ function openDirections({ focus = true } = {}) {
 }
 
 function closeDirections() {
+  endNavigation();
   if (!dir.open) return;
   dir.open = false;
   $("dir-panel").hidden = true;
@@ -2467,6 +2468,9 @@ function closeDirections() {
 }
 
 function clearResult() {
+  // A new start, mode or destination is a different trip; a reroute is the
+  // same one, from where the visitor now is.
+  if (nav.active && !nav.rerouting) endNavigation();
   dir.seq += 1;
   dir.abort?.abort();
   dir.result = null;
@@ -2622,6 +2626,11 @@ function showResult(result) {
   // The top card: the safest route where there is one.
   dir.selected = routeCardModel(result, state.track)[0].index;
   renderDirections();
+  // A reroute while navigating: follow the new route straight away.
+  if (nav.active) {
+    beginRoute(result.routes[dir.selected]);
+    renderNav();
+  }
   const bounds = routesBbox(result.routes);
   if (bounds) map.fitBounds(bounds, { padding: clearOfControls(), maxZoom: 16, duration: 700 });
   const n = result.routes.length;
@@ -2716,6 +2725,281 @@ function selectRoute(index) {
   });
   renderSteps();
   drawRoutes();
+}
+
+/* ---- turn-by-turn
+
+   Start follows the selected route live: the panel becomes the list of steps
+   still ahead, the visitor is an arrow on the map turned by the phone's
+   compass, and each GPS fix moves them along the route (navProgress,
+   directions.js), dropping the steps behind them. Everything stays on the
+   phone: fixes and headings never leave the page. */
+
+const nav = {
+  active: false,
+  route: null,
+  steps: [],
+  // Each step's length along its own line, for the distance left overall.
+  lengths: [],
+  index: 0,
+  // Distance left in the current step, null before the first fix.
+  remaining: null,
+  fix: null,
+  watch: null,
+  marker: null,
+  // The compass heading, and the GPS course for when there is no compass.
+  heading: null,
+  course: null,
+  orientEvent: null,
+  onOrient: null,
+  painting: false,
+  follow: true,
+  // Consecutive fixes off the route; a few in a row, not one stray fix.
+  off: 0,
+  rerouting: false,
+  wake: null,
+};
+// Off the route: beyond this, or the fix's own accuracy if that is worse.
+const NAV_OFF_ROUTE_M = 50;
+const NAV_OFF_FIXES = 3;
+// Close enough to read the next turn's street.
+const NAV_ZOOM = 17;
+
+function setNavNote(text) {
+  $("nav-note").textContent = text;
+}
+
+/** The arrow: a dot with a point, turned on the map's own north so it keeps
+    pointing the right way when the map is rotated. */
+function userArrow() {
+  const el = document.createElement("div");
+  el.className = "user-arrow";
+  el.setAttribute("aria-hidden", "true");
+  el.append(document.createElement("span"));
+  return new maplibregl.Marker({ element: el, rotationAlignment: "map", pitchAlignment: "map" });
+}
+
+/** Turn the arrow, at most once a frame -- a compass fires far faster. */
+function paintArrow() {
+  if (nav.painting || !nav.marker) return;
+  nav.painting = true;
+  requestAnimationFrame(() => {
+    nav.painting = false;
+    const heading = nav.heading ?? nav.course;
+    nav.marker?.getElement().classList.toggle("has-heading", heading !== null);
+    if (heading !== null) nav.marker?.setRotation(heading);
+  });
+}
+
+/** Listen to the compass. iOS asks permission, and only from a tap -- Start
+    is that tap -- so this runs before anything else awaits. */
+async function startHeading() {
+  if (nav.onOrient || !window.DeviceOrientationEvent) return;
+  const DOE = window.DeviceOrientationEvent;
+  try {
+    if (typeof DOE.requestPermission === "function" && (await DOE.requestPermission()) !== "granted") {
+      return;
+    }
+  } catch {
+    return;
+  }
+  nav.onOrient = (event) => {
+    const angle = screen.orientation?.angle ?? window.orientation ?? 0;
+    const heading = headingFromOrientation(event, angle);
+    if (heading === null) return;
+    nav.heading = heading;
+    paintArrow();
+  };
+  // The absolute event where the browser has one (Chrome on Android); iOS
+  // puts webkitCompassHeading on the plain one.
+  nav.orientEvent = "ondeviceorientationabsolute" in window ? "deviceorientationabsolute" : "deviceorientation";
+  window.addEventListener(nav.orientEvent, nav.onOrient);
+}
+
+function stopHeading() {
+  if (nav.onOrient) window.removeEventListener(nav.orientEvent, nav.onOrient);
+  nav.onOrient = null;
+  nav.heading = null;
+}
+
+/** Keep the screen on while navigating; the browser drops the lock when the
+    page is hidden, so it is taken again when it comes back. */
+async function holdScreenOn() {
+  if (!nav.active || nav.wake || !navigator.wakeLock) return;
+  try {
+    nav.wake = await navigator.wakeLock.request("screen");
+    nav.wake.addEventListener("release", () => { nav.wake = null; });
+  } catch {
+    nav.wake = null;
+  }
+}
+
+/** Follow a route: its steps, from the start. */
+function beginRoute(route) {
+  nav.route = route;
+  nav.steps = navSteps(route, dir.result?.timezone);
+  nav.lengths = nav.steps.map((step) => projectOnLine(step.points, {
+    lat: step.points[0]?.[1] ?? 0,
+    lng: step.points[0]?.[0] ?? 0,
+  })?.total ?? 0);
+  nav.index = 0;
+  nav.remaining = null;
+  nav.off = 0;
+  // A fix already in hand places the visitor on the new route at once.
+  if (nav.fix) advanceNav(nav.fix, null);
+}
+
+async function startNavigation() {
+  const route = dir.result?.routes[dir.selected];
+  if (!route) return;
+  if (!navigator.geolocation?.watchPosition) {
+    setStatus("dir-status", "This browser cannot share its location, so live directions are unavailable.", true);
+    return;
+  }
+  await startHeading();
+  nav.active = true;
+  nav.follow = true;
+  nav.fix = null;
+  beginRoute(route);
+  $("dir-panel").classList.add("is-navigating");
+  document.body.classList.add("navigating");
+  $("dir-nav").hidden = false;
+  $("nav-recenter").hidden = true;
+  closeDetail();
+  nav.watch = navigator.geolocation.watchPosition(onNavFix, onNavError, {
+    enableHighAccuracy: true,
+    maximumAge: 0,
+    timeout: 20000,
+  });
+  holdScreenOn();
+  renderNav();
+}
+
+function endNavigation() {
+  if (!nav.active) return;
+  nav.active = false;
+  nav.rerouting = false;
+  if (nav.watch !== null) navigator.geolocation.clearWatch(nav.watch);
+  nav.watch = null;
+  stopHeading();
+  nav.marker?.remove();
+  nav.marker = null;
+  nav.wake?.release().catch(() => {});
+  nav.wake = null;
+  $("dir-panel").classList.remove("is-navigating");
+  document.body.classList.remove("navigating");
+  $("dir-nav").hidden = true;
+}
+
+/** Move the visitor along the route for fix `p`; `accuracy` in metres. */
+function advanceNav(p, accuracy) {
+  const progress = navProgress(nav.steps, p, nav.index);
+  nav.index = progress.index;
+  nav.remaining = progress.remaining;
+  const tolerance = Math.max(NAV_OFF_ROUTE_M, accuracy ?? 0);
+  nav.off = progress.offRoute !== null && progress.offRoute > tolerance ? nav.off + 1 : 0;
+}
+
+function onNavFix(position) {
+  if (!nav.active) return;
+  const { latitude, longitude, accuracy, heading, speed } = position.coords;
+  const p = { lat: latitude, lng: longitude };
+  nav.fix = p;
+  // The compass, when there is one, says where the phone points; standing
+  // still, GPS has no course at all.
+  if (Number.isFinite(heading) && speed > 1) nav.course = heading;
+  state.userLocation = p;
+
+  if (!nav.marker) nav.marker = userArrow().setLngLat([longitude, latitude]).addTo(map);
+  else nav.marker.setLngLat([longitude, latitude]);
+  paintArrow();
+  if (nav.follow) {
+    // An offset rather than padding, as in flyAndSettle: clear of the panel.
+    const pad = clearOfControls();
+    map.easeTo({
+      center: [longitude, latitude],
+      zoom: Math.max(map.getZoom(), NAV_ZOOM),
+      offset: [(pad.left - pad.right) / 2, (pad.top - pad.bottom) / 2],
+      duration: 600,
+    });
+  }
+  if (!nav.rerouting) advanceNav(p, accuracy);
+  renderNav();
+}
+
+function onNavError(error) {
+  if (!nav.active) return;
+  setNavNote(
+    error.code === error.PERMISSION_DENIED
+      ? "Location is off for this site, so the directions cannot follow you. Allow it in the browser's settings."
+      : "Waiting for your location…"
+  );
+}
+
+/** Ask again from where the visitor is, and follow the new route. */
+async function rerouteFromHere() {
+  if (!nav.fix || nav.rerouting) return;
+  nav.rerouting = true;
+  renderNav();
+  dir.fromSeq += 1;
+  dir.from = { ...nav.fix, label: "Your location" };
+  $("dir-from").value = dir.from.label;
+  clearResult();
+  placeMarkers();
+  await submitDirections();
+  nav.rerouting = false;
+  if (!nav.active) return;
+  // showResult has already switched to the new route if one came back.
+  renderNav();
+  if (!dir.result) setNavNote("No new route could be found from here.");
+}
+
+/** The panel while navigating: what is left, and the steps still ahead. */
+function renderNav() {
+  if (!nav.active) return;
+  const route = nav.route;
+  const street = route.mode !== "transit";
+  const arrived = nav.index >= nav.steps.length;
+  const offRoute = !arrived && nav.off >= NAV_OFF_FIXES;
+
+  setNavNote(
+    nav.rerouting ? "Finding a new route from here…"
+      : arrived ? "You have arrived."
+      : offRoute ? "You are off the route."
+      : nav.fix ? ""
+      : "Finding your location…"
+  );
+  $("nav-reroute").hidden = !offRoute || nav.rerouting;
+
+  // Distance left: the rest of this step, and every step after it.
+  const rest = nav.lengths.slice(nav.index + 1).reduce((sum, m) => sum + m, 0);
+  const left = arrived ? 0 : (nav.remaining ?? nav.lengths[nav.index] ?? 0) + rest;
+  $("nav-left").textContent = arrived ? "Arrived" : formatDistance(left);
+  if (arrived) $("nav-eta").textContent = "";
+  else if (route.end_time) $("nav-eta").textContent = `· arrive ${clockIn(route.end_time, dir.result?.timezone)}`;
+  else {
+    const speed = route.duration_s > 0 ? route.distance_m / route.duration_s : 0;
+    $("nav-eta").textContent = speed > 0 ? `· ${formatDuration(left / speed)}` : "";
+  }
+
+  // A street step's instruction is done where it begins, so on step i the
+  // next thing to do is step i + 1's, in what is left of step i. A transit
+  // leg is the thing to do while it lasts.
+  const current = nav.steps[nav.index];
+  $("nav-on").textContent = !street || arrived || !current
+    ? ""
+    : nav.index === 0 ? current.text : current.street ? `On ${current.street}` : "";
+  const ahead = arrived ? [] : nav.steps.slice(street ? nav.index + 1 : nav.index);
+  const lead = nav.remaining === null ? ""
+    : street ? `In ${formatDistance(nav.remaining)}`
+    : current?.kind === "street" ? `${formatDistance(nav.remaining)} to go` : "";
+  $("nav-steps").innerHTML = html`${ahead.map((step, i) => html`<li class="nav-step${i === 0 ? " is-next" : ""}">
+    ${i === 0 && lead ? html`<span class="nav-lead">${lead}</span>` : ""}
+    <span class="nav-text">${step.chip
+      ? html`<span class="leg-chip" style="${step.chip.color ? `background:${step.chip.color};color:${step.chip.textColor}` : ""}">${step.chip.name}</span> `
+      : ""}${step.text}</span>
+    ${step.sub ? html`<span class="step-sub">${step.sub}</span>` : ""}
+  </li>`)}`;
 }
 
 /* ---- the route on the map */
@@ -2816,6 +3100,20 @@ function wireSearch() {
     $("search-input").focus();
   };
   $("btn-directions").onclick = () => (dir.open ? closeDirections() : openDirections());
+  $("dir-start").onclick = startNavigation;
+  $("nav-end").onclick = () => {
+    endNavigation();
+    $("dir-start").focus();
+  };
+  $("nav-reroute").onclick = rerouteFromHere;
+  $("nav-recenter").onclick = () => {
+    nav.follow = true;
+    $("nav-recenter").hidden = true;
+    if (nav.fix) map.easeTo({ center: [nav.fix.lng, nav.fix.lat], zoom: Math.max(map.getZoom(), NAV_ZOOM) });
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) holdScreenOn();
+  });
   $("dir-close").onclick = () => {
     closeDirections();
     $("btn-directions").focus();
@@ -2968,7 +3266,14 @@ async function initMap() {
   });
   // Only while address search is on: the box it fills is hidden otherwise.
   map.on("contextmenu", (event) => {
-    if (!$("search-field").hidden) pinClickedPoint(event.lngLat);
+    // Not while navigating: a new pin would end the trip being followed.
+    if (!$("search-field").hidden && !nav.active) pinClickedPoint(event.lngLat);
+  });
+  // Moving the map by hand stops it following the visitor, until Recenter.
+  map.on("dragstart", (event) => {
+    if (!nav.active || !event.originalEvent) return;
+    nav.follow = false;
+    $("nav-recenter").hidden = false;
   });
 
   // The compass reads from the map centre until a location is shared, and its

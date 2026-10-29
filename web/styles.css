@@ -949,6 +949,58 @@ body { grid-template-rows: minmax(0, 1fr); }
 .dir-from-actions { display: flex; gap: 8px; align-items: center; margin-top: 6px; font-size: 12px; color: var(--text-muted); }
 .dir-steps-block > summary { cursor: pointer; font-size: 12.5px; font-weight: 600; margin-bottom: 6px; }
 
+/* Start: under the route cards, the width of the panel. */
+.dir-start { width: 100%; margin: 4px 0 8px; }
+
+/* Turn-by-turn. While it runs the panel is only this (and the routing
+   attribution, which stays). */
+.dir-panel.is-navigating > :not(.dir-nav):not(.dir-attribution) { display: none; }
+.dir-nav[hidden] { display: none; }
+.nav-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.nav-summary { margin: 0; font-size: 15px; color: var(--text-primary); }
+.nav-summary span { color: var(--text-secondary); font-size: 13px; }
+.nav-note { margin: 6px 0 0; font-size: 13px; color: var(--text-secondary); }
+.nav-note:empty { display: none; }
+.nav-actions { display: flex; gap: 8px; margin-top: 6px; }
+.nav-actions:not(:has(.btn:not([hidden]))) { display: none; }
+.nav-on { margin: 10px 0 2px; font-size: 12.5px; color: var(--text-muted); }
+.nav-on:empty { display: none; }
+.nav-steps { list-style: none; margin: 6px 0 0; padding: 0; }
+.nav-step {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.nav-step:first-child { border-top: 0; }
+.nav-step.is-next { font-size: 16px; font-weight: 600; color: var(--text-primary); }
+.nav-lead { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--series-1); }
+
+/* The visitor while navigating: a dot, with a point once there is a
+   heading. The marker turns the whole element to it. */
+.user-arrow { width: 26px; height: 26px; }
+.user-arrow span {
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: var(--series-1);
+  border: 3px solid #ffffff;
+  box-shadow: 0 1px 5px rgba(11, 11, 11, 0.4);
+}
+.user-arrow.has-heading::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -10px;
+  transform: translateX(-50%);
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-bottom: 13px solid var(--series-1);
+}
+
 /* The searched address, until it is cleared or replaced. */
 .search-pin {
   width: 18px; height: 18px;
@@ -995,4 +1047,7 @@ body { grid-template-rows: minmax(0, 1fr); }
   .compass-readout { font-size: 11.5px; line-height: 1.3; margin-top: 4px; }
   .compass-readout b { font-size: 12.5px; }
   body.dir-open .compass { display: none; }
+
+  /* Navigating: a shorter sheet, so more of the map shows above it. */
+  .dir-panel.is-navigating { max-height: 40dvh; }
 }

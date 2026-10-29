@@ -14,6 +14,7 @@ const {
   formatDuration, formatDistance, activitySentence, pickReason, routeCardModel,
   safeHex, textOn, transitLegSummary, latLngFromString, routesBbox, segmentFeatures,
   routeLineFeatures, altFeatures, directionsKey, clockIn, debounce,
+  navSteps, projectOnLine, navProgress, headingFromOrientation,
 } = ctx;
 const plain = (v) => JSON.parse(JSON.stringify(v));
 
@@ -233,3 +234,99 @@ for (const c of cases) {
     else assert.ok(Math.abs(got - c.expected) < 1e-9, `${got} != ${c.expected}`);
   });
 }
+
+
+// ------------------------------------------------------------- navigation
+
+// A street running due east along lat 40 from lng -75.000 to -74.990
+// (~850 m), then north for ~555 m: two maneuvers and an arrival.
+const EAST = [[-75.0, 40.0], [-74.995, 40.0], [-74.99, 40.0]];
+const NORTH = [[-74.99, 40.0], [-74.99, 40.0025], [-74.99, 40.005]];
+const streetRoute = {
+  mode: "walk",
+  geometry: { type: "LineString", coordinates: [...EAST, ...NORTH.slice(1)] },
+  steps: [
+    { instruction: "Walk east on Main Street.", distance_m: 850, street_names: ["Main Street"], begin_index: 0, end_index: 2 },
+    { instruction: "Turn left onto Oak Avenue.", distance_m: 555, street_names: ["Oak Avenue"], begin_index: 2, end_index: 4 },
+    { instruction: "You have arrived.", distance_m: 0, street_names: [], begin_index: 4, end_index: 4 },
+  ],
+};
+
+test("navSteps gives each maneuver the stretch it covers", () => {
+  const steps = plain(navSteps(streetRoute, "America/New_York"));
+  assert.equal(steps.length, 3);
+  assert.deepEqual(steps[0].points, EAST);
+  assert.deepEqual(steps[1].points, NORTH);
+  assert.equal(steps[1].street, "Oak Avenue");
+  assert.equal(steps[2].points.length, 1);
+});
+
+test("navSteps turns transit legs into walk and ride steps", () => {
+  const route = {
+    mode: "transit",
+    geometry: { type: "LineString", coordinates: [] },
+    legs: [
+      { mode: "WALK", transit: false, duration_s: 240, distance_m: 300,
+        destination: { name: "Dupont Circle" }, geometry: { coordinates: EAST },
+        end_time: "2026-11-02T22:04:00Z" },
+      { mode: "SUBWAY", transit: true, duration_s: 600, route_name: "Red", headsign: "Glenmont",
+        origin: { name: "Dupont Circle" }, destination: { name: "Union Station" }, num_stops: 4,
+        start_time: "2026-11-02T22:06:00Z", end_time: "2026-11-02T22:16:00Z",
+        geometry: { coordinates: NORTH } },
+    ],
+  };
+  const [walk, ride] = plain(navSteps(route, "America/New_York"));
+  assert.equal(walk.text, "Walk to Dupont Circle");
+  assert.equal(walk.endsAt, Date.parse("2026-11-02T22:04:00Z"));
+  assert.equal(ride.text, "Take Red toward Glenmont");
+  assert.match(ride.sub, /Board at Dupont Circle · 5:06 PM · get off at Union Station · 10 min · 4 stops/);
+  assert.equal(ride.chip.name, "Red");
+});
+
+test("projectOnLine measures off-line and along-line distance", () => {
+  // 50 m south of the middle of the eastward street.
+  const at = projectOnLine(EAST, { lat: 40.0 - 50 / 111320, lng: -74.995 });
+  assert.ok(Math.abs(at.dist - 50) < 0.5, at.dist);
+  assert.ok(Math.abs(at.along - at.total / 2) < 1, at.along);
+  assert.equal(projectOnLine([], { lat: 40, lng: -75 }), null);
+});
+
+test("navProgress follows the route forward and never back", () => {
+  const steps = navSteps(streetRoute, "UTC");
+  // A third of the way along Main Street.
+  let p = navProgress(steps, { lat: 40.0, lng: -74.9967 });
+  assert.equal(p.index, 0);
+  assert.ok(p.offRoute < 1 && p.remaining > 500 && p.remaining < 600, p.remaining);
+  // Up Oak Avenue: the first step is behind.
+  p = navProgress(steps, { lat: 40.002, lng: -74.99 }, 0);
+  assert.equal(p.index, 1);
+  // Back on Main Street again: still on step 1, now well off it.
+  p = navProgress(steps, { lat: 40.0, lng: -74.9967 }, 1);
+  assert.equal(p.index, 1);
+  assert.ok(p.offRoute > 200);
+  // Within a few metres of the corner counts as having turned.
+  p = navProgress(steps, { lat: 40.0, lng: -74.99005 }, 0);
+  assert.equal(p.index, 1);
+  // At the end: arrived.
+  p = navProgress(steps, { lat: 40.005, lng: -74.99 }, 1);
+  assert.equal(p.index, steps.length);
+});
+
+test("navProgress passes a transit leg once its time is up", () => {
+  const steps = [
+    { points: EAST, endsAt: Date.parse("2026-11-02T22:04:00Z") },
+    { points: NORTH, endsAt: Date.parse("2026-11-02T22:16:00Z") },
+  ];
+  // Underground, with a stale fix back at the start of the walk.
+  const p = navProgress(steps, { lat: 40.0, lng: -75.0 }, 0, Date.parse("2026-11-02T22:10:00Z"));
+  assert.equal(p.index, 1);
+});
+
+test("headingFromOrientation reads iOS and absolute events", () => {
+  assert.equal(headingFromOrientation({ webkitCompassHeading: 90 }), 90);
+  assert.equal(headingFromOrientation({ absolute: true, alpha: 90 }), 270);
+  // Phone turned to landscape: the screen's own rotation is added back.
+  assert.equal(headingFromOrientation({ absolute: true, alpha: 90 }, 90), 0);
+  assert.equal(headingFromOrientation({ absolute: false, alpha: 90 }), null);
+  assert.equal(headingFromOrientation({}), null);
+});

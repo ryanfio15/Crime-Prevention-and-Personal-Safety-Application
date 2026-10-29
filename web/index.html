@@ -217,12 +217,31 @@
         <div class="dir-results" id="dir-results" hidden>
           <p class="dir-track" id="dir-track"></p>
           <ol class="route-cards" id="dir-cards"></ol>
+          <!-- Follows the selected card, live, on the visitor's location. -->
+          <button type="button" class="btn btn-primary dir-start" id="dir-start">Start</button>
           <p class="dir-why" id="dir-why"></p>
           <details class="dir-steps-block">
             <summary id="dir-steps-title">Steps</summary>
             <ol class="dir-steps" id="dir-steps"></ol>
           </details>
           <ul class="dir-caveats" id="dir-caveats"></ul>
+        </div>
+
+        <!-- Turn-by-turn: while it runs, everything else in the panel is hidden
+             (.is-navigating) and this list of the steps still ahead is all of
+             it. Steps drop off as they are passed. -->
+        <div class="dir-nav" id="dir-nav" hidden>
+          <div class="nav-head">
+            <p class="nav-summary"><strong id="nav-left"></strong> <span id="nav-eta"></span></p>
+            <button type="button" class="btn" id="nav-end">End</button>
+          </div>
+          <p class="nav-note" id="nav-note" role="status" aria-live="polite"></p>
+          <div class="nav-actions">
+            <button type="button" class="btn" id="nav-reroute" hidden>Reroute from here</button>
+            <button type="button" class="btn" id="nav-recenter" hidden>Recenter</button>
+          </div>
+          <p class="nav-on" id="nav-on"></p>
+          <ol class="nav-steps" id="nav-steps"></ol>
         </div>
 
         <p class="dir-attribution" id="dir-attribution"></p>

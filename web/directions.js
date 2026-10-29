@@ -279,3 +279,154 @@ function directionsKey(req) {
   const pt = (p) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`;
   return [pt(req.from), pt(req.to), req.mode, req.depart_at ?? "now", req.window ?? ""].join("|");
 }
+
+/* ---------------------------------------------------------------- navigation
+
+   Turn-by-turn on the phone: the chosen route as a list of steps, and where
+   the visitor is along it. Everything here is geometry on [lng, lat] pairs;
+   app.js feeds it GPS fixes and renders what comes back. */
+
+/* Metres per degree of latitude; a degree of longitude is this times cos(lat). */
+const M_PER_DEG = 111_320;
+
+/** The steps to follow, in order. A street route has one per maneuver, each
+    with the stretch of the route it covers; a transit route one per leg --
+    walk to the stop, ride to the stop to get off at -- each with its leg's
+    line and the time it ends. `points` are [lng, lat] pairs. */
+function navSteps(route, timeZone) {
+  const coords = route.geometry?.coordinates ?? [];
+  if (route.mode === "transit" && route.legs?.length) {
+    return route.legs.map((leg, i) => {
+      const s = transitLegSummary(leg);
+      const last = i === route.legs.length - 1;
+      const to = leg.destination?.name;
+      const ends = leg.end_time ? Date.parse(leg.end_time) : NaN;
+      const points = leg.geometry?.coordinates ?? [];
+      if (s.kind === "street") {
+        return {
+          kind: "street",
+          text: last || !to ? "Walk to your destination" : `Walk to ${to}`,
+          sub: s.text,
+          points,
+          endsAt: Number.isFinite(ends) ? ends : null,
+        };
+      }
+      const leaves = leg.start_time ? clockIn(leg.start_time, timeZone) : "";
+      return {
+        kind: "ride",
+        text: `Take ${s.name}${s.text ? ` ${s.text}` : ""}`,
+        sub: [
+          leg.origin?.name ? `Board at ${leg.origin.name}${leaves ? ` · ${leaves}` : ""}` : leaves,
+          to ? `get off at ${to}` : "",
+          s.detail,
+        ].filter(Boolean).join(" · "),
+        chip: { name: s.name, color: s.color, textColor: s.textColor },
+        points,
+        endsAt: Number.isFinite(ends) ? ends : null,
+      };
+    });
+  }
+  return (route.steps ?? []).map((step) => {
+    const end = Math.max(step.end_index, step.begin_index);
+    return {
+      kind: "street",
+      text: step.instruction,
+      sub: step.distance_m > 0 ? formatDistance(step.distance_m) : "",
+      street: step.street_names?.[0] ?? "",
+      points: coords.slice(step.begin_index, end + 1),
+      endsAt: null,
+    };
+  });
+}
+
+/** Where `p` ({lat, lng}) falls on the line `points`: its distance from the
+    line, how far along the line its nearest point is, and the line's length,
+    all in metres. A flat projection around `p` -- exact enough over a city
+    block, which is all one step spans. Null for an empty line. */
+function projectOnLine(points, p) {
+  if (!points?.length) return null;
+  const kx = M_PER_DEG * Math.cos((p.lat * Math.PI) / 180);
+  const xy = ([lng, lat]) => [(lng - p.lng) * kx, (lat - p.lat) * M_PER_DEG];
+  let best = { dist: Infinity, along: 0 };
+  let walked = 0;
+  let [ax, ay] = xy(points[0]);
+  if (points.length === 1) {
+    return { dist: Math.hypot(ax, ay), along: 0, total: 0 };
+  }
+  for (let i = 1; i < points.length; i++) {
+    const [bx, by] = xy(points[i]);
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len = Math.hypot(dx, dy);
+    // The visitor is the origin; t is how far along this segment the foot
+    // of the perpendicular falls, clamped to the segment.
+    const t = len ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / (len * len))) : 0;
+    const dist = Math.hypot(ax + t * dx, ay + t * dy);
+    if (dist < best.dist) best = { dist, along: walked + t * len };
+    walked += len;
+    [ax, ay] = [bx, by];
+  }
+  return { ...best, total: walked };
+}
+
+/* How close to a step's end counts as having reached it: inside a GPS fix's
+   usual error on a phone, so a turn is passed when the visitor is at it. */
+const NAV_STEP_DONE_M = 15;
+/* How far ahead to look for the step the visitor is on. Small, so a route
+   that doubles back past itself is not skipped ahead on. */
+const NAV_LOOKAHEAD = 3;
+
+/**
+ * Which step the visitor is on, from a fix `p` ({lat, lng}) and the step
+ * they were on (`from`). Never goes back: a step once passed stays passed.
+ *
+ * A step is passed when the visitor is on a later one, within
+ * NAV_STEP_DONE_M of its end, or -- for a transit leg, where a fix
+ * underground may be missing or wrong -- more than a minute past the time
+ * it ends. Returns the step index, the distance off the route, and the
+ * distance left in the step; index === steps.length means arrived.
+ */
+function navProgress(steps, p, from = 0, now = Date.now()) {
+  let index = Math.max(0, from);
+  // Timetable first: a leg that has ended is behind the visitor whatever the
+  // fix says.
+  while (index < steps.length - 1 && steps[index].endsAt && steps[index].endsAt + 60_000 < now) {
+    index += 1;
+  }
+  let best = null;
+  const last = Math.min(steps.length - 1, index + NAV_LOOKAHEAD);
+  for (let i = index; i <= last; i++) {
+    const at = projectOnLine(steps[i].points, p);
+    if (!at) continue;
+    // Strictly nearer, so the earlier of two equally near steps wins: where
+    // one ends the next begins, and the visitor is still at the turn.
+    if (!best || at.dist < best.at.dist - 1) best = { i, at };
+  }
+  if (!best) return { index, offRoute: null, remaining: null };
+  index = best.i;
+  let remaining = Math.max(0, best.at.total - best.at.along);
+  // At a step's end the next is the one to show -- and so on through a
+  // street route's zero-length "you have arrived", to arrival itself.
+  while (remaining < NAV_STEP_DONE_M) {
+    index += 1;
+    if (index >= steps.length) return { index: steps.length, offRoute: best.at.dist, remaining: 0 };
+    const next = projectOnLine(steps[index].points, p);
+    if (!next) break;
+    remaining = Math.max(0, next.total - next.along);
+  }
+  return { index, offRoute: best.at.dist, remaining };
+}
+
+/** Compass heading 0-360 (clockwise from north) from a deviceorientation
+    event, or null when it carries none. iOS gives webkitCompassHeading; the
+    absolute event elsewhere gives alpha, counter-clockwise from north, which
+    is turned round and corrected for the screen's own rotation. */
+function headingFromOrientation(event, screenAngle = 0) {
+  if (typeof event.webkitCompassHeading === "number" && Number.isFinite(event.webkitCompassHeading)) {
+    return ((event.webkitCompassHeading % 360) + 360) % 360;
+  }
+  if (event.absolute && typeof event.alpha === "number" && Number.isFinite(event.alpha)) {
+    return (((360 - event.alpha + screenAngle) % 360) + 360) % 360;
+  }
+  return null;
+}
