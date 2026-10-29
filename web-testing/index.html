@@ -113,19 +113,91 @@
          the page -- app.js reads and writes it -- but hidden by the overrides
          at the end of styles.css. -->
     <div class="map-controls">
-      <label class="field map-control" id="f-city-field" hidden>
-        <span class="field-label">City</span>
-        <select id="f-city"></select>
-      </label>
-      <!-- No visible heading, so the tablist names itself. -->
-      <div class="map-control" id="f-track-field">
-        <div class="tabs" role="tablist" aria-label="Offences ranked" id="f-track">
-          <button type="button" class="tab" role="tab" data-track="violent"
-                  aria-selected="true">Violent</button>
-          <button type="button" class="tab" role="tab" data-track="non_violent"
-                  aria-selected="false">Non-violent</button>
+      <div class="map-controls-row">
+        <label class="field map-control" id="f-city-field" hidden>
+          <span class="field-label">City</span>
+          <select id="f-city" aria-label="City"></select>
+        </label>
+        <!-- No visible heading, so the tablist names itself. -->
+        <div class="map-control" id="f-track-field">
+          <div class="tabs" role="tablist" aria-label="Offences ranked" id="f-track">
+            <button type="button" class="tab" role="tab" data-track="violent"
+                    aria-selected="true">Violent</button>
+            <button type="button" class="tab" role="tab" data-track="non_violent"
+                    aria-selected="false">Non-violent</button>
+          </div>
         </div>
       </div>
+
+      <!-- Address search in the city on screen. A match drops a pin and opens
+           its cell's popup; Directions then routes to it. Shown once
+           /directions/status answers (hidden while the server has directions
+           and address search switched off). -->
+      <div class="map-control map-search" id="search-field" role="search" hidden>
+        <label class="field-label" for="search-input">Find an address</label>
+        <div class="combo">
+          <input type="text" id="search-input" class="dir-input" role="combobox"
+                 aria-autocomplete="list" aria-expanded="false" aria-controls="search-list"
+                 placeholder="Address, place or lat, lng" spellcheck="false" autocomplete="off">
+          <ul class="combo-list" id="search-list" role="listbox" aria-label="Address suggestions" hidden></ul>
+        </div>
+        <p class="map-search-status" id="search-status" role="status" aria-live="polite"></p>
+        <div class="map-search-actions" id="search-actions" hidden>
+          <button type="button" class="btn" id="btn-directions" aria-expanded="false"
+                  aria-controls="dir-panel">Directions</button>
+          <button type="button" class="search-clear" id="search-clear">Clear</button>
+        </div>
+      </div>
+
+      <!-- Directions to the searched address, from the visitor's location or
+           a second address. -->
+      <section class="map-control dir-panel" id="dir-panel" aria-labelledby="dir-title" hidden>
+        <div class="dir-panel-head">
+          <h2 id="dir-title">Directions</h2>
+          <button type="button" class="dir-close" id="dir-close" aria-label="Close directions">&times;</button>
+        </div>
+
+        <div class="dir-row">
+          <span class="field-label">To</span>
+          <div class="dir-to-label" id="dir-to-label">&mdash;</div>
+        </div>
+
+        <div class="dir-row">
+          <label class="field-label" for="dir-from">From</label>
+          <div class="combo">
+            <input type="text" id="dir-from" class="dir-input" role="combobox"
+                   aria-autocomplete="list" aria-expanded="false" aria-controls="dir-from-list"
+                   placeholder="Type a start address" spellcheck="false" autocomplete="off">
+            <ul class="combo-list" id="dir-from-list" role="listbox" aria-label="Start suggestions" hidden></ul>
+          </div>
+          <div class="dir-from-actions">
+            <span>or</span>
+            <button type="button" class="btn" id="dir-from-here">Use my location</button>
+          </div>
+        </div>
+
+        <div class="tabs dir-modes" role="tablist" aria-label="Travel mode" id="dir-modes">
+          <button type="button" class="tab" role="tab" data-mode="drive" aria-selected="false">Drive</button>
+          <button type="button" class="tab" role="tab" data-mode="walk" aria-selected="true">Walk</button>
+          <button type="button" class="tab" role="tab" data-mode="bike" aria-selected="false">Bike</button>
+          <button type="button" class="tab" role="tab" data-mode="transit" aria-selected="false">Transit</button>
+        </div>
+
+        <p class="dir-status" id="dir-status" role="status" aria-live="polite"></p>
+
+        <div class="dir-results" id="dir-results" hidden>
+          <p class="dir-track" id="dir-track"></p>
+          <ol class="route-cards" id="dir-cards"></ol>
+          <p class="dir-why" id="dir-why"></p>
+          <details class="dir-steps-block">
+            <summary id="dir-steps-title">Steps</summary>
+            <ol class="dir-steps" id="dir-steps"></ol>
+          </details>
+          <ul class="dir-caveats" id="dir-caveats"></ul>
+        </div>
+
+        <p class="dir-attribution" id="dir-attribution"></p>
+      </section>
     </div>
 
     <!-- Which way the nearby cells get quieter, read from the layer on screen
@@ -292,6 +364,7 @@
 <script src="html.js"></script>
 <script src="windows.js"></script>
 <script src="hours.js"></script>
+<script src="directions.js"></script>
 <script src="app.js"></script>
 <script src="sw-register.js"></script>
 </body>

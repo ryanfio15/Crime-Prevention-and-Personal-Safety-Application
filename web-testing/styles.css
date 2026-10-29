@@ -371,6 +371,7 @@ select:disabled { opacity: 0.55; cursor: not-allowed; }
   color: var(--text-primary);
 }
 .compass-readout b { font-size: 14px; }
+.compass-detail { display: block; }
 
 .compass-foot {
   margin-top: 3px;
@@ -657,6 +658,171 @@ select:disabled { opacity: 0.55; cursor: not-allowed; }
 }
 
 
+/* ------------------------------------------------------------ directions ---
+   Ported from web/styles.css: the suggestion list, mode tabs, route cards,
+   steps and the trip's end pins. The testing UI lays them out in its own
+   floating panel (the overrides below). */
+
+.combo { position: relative; }
+.dir-input,
+.dir-when input[type="datetime-local"] {
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--page);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+}
+.dir-input:hover { border-color: rgba(11, 11, 11, 0.28); }
+.dir-input:focus-visible,
+.dir-when input:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
+
+.combo-list {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  left: 0; right: 0;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-1);
+  box-shadow: 0 6px 20px rgba(11, 11, 11, 0.12);
+}
+.combo-list [role="option"] {
+  display: flex;
+  flex-direction: column;
+  padding: 7px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  min-height: 44px;
+  justify-content: center;
+}
+.combo-list [role="option"]:hover,
+.combo-list [role="option"][aria-selected="true"] { background: rgba(11, 11, 11, 0.06); }
+.opt-title { font-size: 13px; }
+.opt-sub { font-size: 11.5px; color: var(--text-muted); }
+
+.dir-modes { margin-bottom: 10px; }
+.dir-modes .tab { flex: 1 1 0; }
+.dir-modes .tab:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.dir-when { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.dir-when input[type="datetime-local"] { width: auto; flex: 1 1 170px; }
+.btn-primary {
+  background: var(--series-1);
+  border-color: var(--series-1);
+  color: #ffffff;
+  margin-left: auto;
+}
+.btn-primary:hover { border-color: var(--seq-5); background: var(--seq-5); }
+.btn-primary:disabled { opacity: 0.6; cursor: progress; }
+
+.dir-status { min-height: 1.5em; margin: 0 0 8px; font-size: 12.5px; color: var(--text-secondary); }
+.dir-status.is-error { color: var(--danger); }
+.dir-hint { margin: 0 0 12px; font-size: 12px; color: var(--text-muted); }
+
+.dir-track { margin: 0 0 10px; font-size: 12px; color: var(--text-secondary); }
+
+.route-cards { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 8px; }
+.route-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--page);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.route-card:hover { border-color: rgba(11, 11, 11, 0.28); }
+.route-card:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
+.route-card[aria-pressed="true"] { border-color: var(--series-1); box-shadow: inset 3px 0 0 var(--series-1); }
+.route-role {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.route-extra { text-transform: none; letter-spacing: 0; color: var(--text-secondary); }
+.route-main { font-size: 13.5px; }
+.route-main strong { font-size: 16px; font-weight: 650; }
+.route-legs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.leg-chip {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--text-secondary);
+  color: #ffffff;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.leg-walk { font-size: 11.5px; color: var(--text-muted); }
+.route-activity { display: flex; align-items: center; gap: 7px; font-size: 12.5px; }
+.swatch {
+  flex: none;
+  width: 12px; height: 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(11, 11, 11, 0.15);
+}
+.route-detail { font-size: 11.5px; color: var(--text-muted); }
+
+.dir-why { margin: 0 0 10px; font-size: 12px; color: var(--text-secondary); }
+.dir-why:empty { display: none; }
+.dir-toggle { display: flex; gap: 8px; align-items: center; font-size: 12.5px; margin-bottom: 14px; min-height: 32px; }
+
+.dir-steps { margin: 0; padding: 0 0 0 18px; display: grid; gap: 6px; font-size: 12.5px; }
+.dir-steps .step { padding-left: 2px; }
+.dir-steps .step-sub { display: block; font-size: 11.5px; color: var(--text-muted); }
+.dir-steps .step-time {
+  display: inline-block;
+  min-width: 64px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.dir-steps .step-walk, .dir-steps .step-ride { list-style: none; margin-left: -18px; display: flex; gap: 6px; }
+
+.dir-caveats {
+  margin: 0 0 12px;
+  padding: 10px 12px 10px 28px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--page);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.dir-attribution { margin: 0; font-size: 11px; color: var(--text-muted); }
+.dir-attribution a { color: inherit; }
+
+/* The two ends of a trip on the map. */
+.route-pin-marker { width: 26px; height: 26px; }
+.route-pin {
+  width: 26px; height: 26px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  display: grid;
+  place-items: center;
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 4px rgba(11, 11, 11, 0.35);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+}
+.route-pin-from { background: #1f7a3a; }
+.route-pin-to   { background: var(--danger); }
+/* The letter stays upright inside the turned pin. */
+.route-pin span { display: block; transform: rotate(45deg); }
+
 /* ======================================================= testing UI overrides
    Map-only layout for /testing/: one floating city selector, the compass, and
    a popup per cell. The hidden blocks stay in the DOM because app.js still
@@ -724,4 +890,93 @@ body { grid-template-rows: minmax(0, 1fr); }
 
 @media (max-width: 900px) {
   .layout { grid-template-rows: minmax(0, 1fr); }
+}
+
+/* Address search, under the city selector, and the directions panel that
+   opens under it. One column down the map's left edge. */
+.map-controls { flex-direction: column; align-items: flex-start; width: 320px; max-height: calc(100% - 24px); }
+.map-controls-row { display: flex; align-items: flex-end; gap: 8px; }
+.map-search { width: 100%; }
+.map-search .combo-list { max-height: 240px; }
+.map-search-status { margin: 6px 2px 0; font-size: 12px; color: var(--text-secondary); }
+.map-search-status:empty { display: none; }
+.map-search-status.is-error { color: var(--danger); }
+.map-search-actions { display: flex; gap: 8px; margin-top: 8px; }
+.map-search-actions[hidden] { display: none; }
+.search-clear {
+  appearance: none;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.dir-panel {
+  width: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px 12px;
+}
+.dir-panel[hidden] { display: none; }
+.dir-panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.dir-panel h2 { margin: 0 0 8px; font-size: 14px; }
+.dir-close {
+  appearance: none;
+  border: 0;
+  background: none;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.dir-row { margin-bottom: 10px; }
+.dir-to-label { font-size: 13px; color: var(--text-primary); overflow-wrap: anywhere; }
+.dir-from-actions { display: flex; gap: 8px; align-items: center; margin-top: 6px; font-size: 12px; color: var(--text-muted); }
+.dir-steps-block > summary { cursor: pointer; font-size: 12.5px; font-weight: 600; margin-bottom: 6px; }
+
+/* The searched address, until it is cleared or replaced. */
+.search-pin {
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: var(--series-1);
+  border: 3px solid #ffffff;
+  box-shadow: 0 0 0 2px var(--series-1), 0 2px 6px rgba(11, 11, 11, 0.35);
+}
+
+@media (max-width: 600px) {
+  /* Clear of the zoom buttons on the right. City and the track toggle share
+     one row, the city's label left to the select's own name. */
+  .map-controls { left: 8px; right: 56px; top: 8px; width: auto; max-height: none; }
+  .map-controls-row { width: 100%; }
+  .map-controls-row .map-control { padding: 5px 6px; }
+  #f-city-field { flex: 1 1 auto; min-width: 0; }
+  #f-city-field .field-label { display: none; }
+  #f-city { width: 100%; }
+  .map-controls-row .tab { padding: 6px 9px; }
+  .map-search { padding: 8px 10px; }
+  .dir-input, .dir-modes .tab, .btn, #f-city, .map-controls-row .tab { min-height: 44px; }
+
+  /* Directions as a bottom sheet, so the route stays in view above it. */
+  .dir-panel {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    z-index: 4;
+    max-height: 52dvh;
+    border-radius: 14px 14px 0 0;
+    box-shadow: 0 -10px 30px rgba(11, 11, 11, 0.18);
+  }
+
+  /* The compass drops to the bottom-left corner, down to its dial and
+     headline, out of the controls' way; the sheet covers it while open. */
+  .compass { top: auto; right: auto; left: 8px; bottom: 28px; width: 104px; padding: 6px 8px; }
+  .compass-title, .compass-foot, .compass-detail { display: none; }
+  .compass-dial { width: 60px; height: 60px; }
+  .compass-cardinal { font-size: 10px; transform: rotate(var(--a)) translateY(-22px) rotate(calc(-1 * var(--a))); }
+  .compass-needle::before { left: -4px; top: -16px; border-left-width: 4px; border-right-width: 4px; border-bottom-width: 16px; }
+  .compass-readout { font-size: 11.5px; line-height: 1.3; margin-top: 4px; }
+  .compass-readout b { font-size: 12.5px; }
+  body.dir-open .compass { display: none; }
 }
