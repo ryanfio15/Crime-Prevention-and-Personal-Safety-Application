@@ -1,0 +1,30 @@
+# Amazon EKS. Before deploy.sh (docs/KUBERNETES.md, "AWS"):
+# - node groups labelled safety.io/tier=app and safety.io/tier=data (taint the
+#   data group dedicated=data:NoSchedule), e.g. m7i.2xlarge and r7i.xlarge;
+# - the EBS CSI driver add-on, metrics-server and the AWS Load Balancer
+#   Controller;
+# - Traefik: helm install traefik traefik/traefik -n traefik --create-namespace
+#   -f deploy/k8s/overlays/aws/traefik-values.yaml
+# Set FORWARDED_ALLOW_IPS below to your VPC CIDR: with the VPC CNI, pod
+# addresses -- Traefik's included -- come from it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - storageclass.yaml
+patches:
+  - target: {kind: ConfigMap, name: safety-config}
+    patch: |-
+      - op: replace
+        path: /data/FORWARDED_ALLOW_IPS
+        value: "10.0.0.0/16"
+  - target: {group: postgresql.cnpg.io, kind: Cluster, name: safety-db}
+    patch: |-
+      - op: add
+        path: /spec/storage/storageClass
+        value: safety-gp3
+  - target: {kind: PersistentVolumeClaim}
+    patch: |-
+      - op: add
+        path: /spec/storageClassName
+        value: safety-gp3

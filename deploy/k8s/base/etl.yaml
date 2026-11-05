@@ -1,0 +1,298 @@
+# The ETL, as CronJobs. Same commands and cadence as the home server's systemd
+# timers (deploy/systemd/), with the host's `flock data/.etl.lock` replaced by
+# a Postgres advisory lock (safety/joblock.py), because these pods may run on
+# different nodes and share nothing but the database.
+#
+# concurrencyPolicy Forbid stops a CronJob overlapping itself; the joblock
+# stops the three overlapping each other. A job that waits past its
+# JOBLOCK_WAIT_SECONDS exits 75 without running and the next tick tries again.
+#
+# Bronze (raw pulls, gzipped) lives on the `bronze` volume: only `reprocess`
+# and `census --replay` read it back, so it is audit and replay data, not
+# something the map needs. The volume is ReadWriteOnce; every ETL pod mounts
+# it, and the lock means only one is ever writing.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bronze
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+# Every 6 hours: pull what each due city published since its watermark (safety-etl@.timer).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etl-incremental
+spec:
+  schedule: "0 */6 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # No pod retries: the next tick is the retry, and safety.ops keeps its
+      # own backoff ledger (etl.ops_run).
+      backoffLimit: 0
+      activeDeadlineSeconds: 21600
+      ttlSecondsAfterFinished: 604800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: etl-incremental
+            app.kubernetes.io/component: etl
+            safety.io/db-client: "true"
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          tolerations:
+            - key: dedicated
+              operator: Equal
+              value: data
+              effect: NoSchedule
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: safety.io/tier
+                        operator: In
+                        values: ["data"]
+          containers:
+            - name: etl
+              image: safety-app
+              args: ["python", "-m", "safety.joblock", "--", "python", "-m", "safety.etl.run", "incremental", "--all", "--due-only", "--skip-hourly"]
+              envFrom:
+                - configMapRef:
+                    name: safety-config
+              env:
+                - name: JOBLOCK_WAIT_SECONDS
+                  value: "1800"
+                - name: POSTGRES_USER
+                  valueFrom:
+                    secretKeyRef: {name: safety-db-app, key: username}
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef: {name: safety-db-app, key: password}
+                - name: POSTGRES_DB
+                  valueFrom:
+                    secretKeyRef: {name: safety-db-app, key: dbname}
+                - name: SOCRATA_APP_TOKEN
+                  valueFrom:
+                    secretKeyRef: {name: safety-secrets, key: SOCRATA_APP_TOKEN, optional: true}
+              resources:
+                # Census loads hold a state's TIGER blocks in memory; California
+                # is the largest.
+                requests: {cpu: 500m, memory: 1Gi}
+                limits: {cpu: "2", memory: 6Gi}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - {name: bronze, mountPath: /data/bronze}
+                # Census shapefiles are unzipped into a temporary directory.
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: bronze
+              persistentVolumeClaim:
+                claimName: bronze
+            - name: tmp
+              emptyDir:
+                sizeLimit: 4Gi
+---
+# Sundays 04:00 UTC: rebuild the time-of-day layers (safety-etl-hourly@.timer).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etl-hourly
+spec:
+  schedule: "0 4 * * 0"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # No pod retries: the next tick is the retry, and safety.ops keeps its
+      # own backoff ledger (etl.ops_run).
+      backoffLimit: 0
+      activeDeadlineSeconds: 43200
+      ttlSecondsAfterFinished: 604800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: etl-hourly
+            app.kubernetes.io/component: etl
+            safety.io/db-client: "true"
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          tolerations:
+            - key: dedicated
+              operator: Equal
+              value: data
+              effect: NoSchedule
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: safety.io/tier
+                        operator: In
+                        values: ["data"]
+          containers:
+            - name: etl
+              image: safety-app
+              args: ["python", "-m", "safety.joblock", "--", "python", "-m", "safety.etl.run", "hourly", "--all"]
+              envFrom:
+                - configMapRef:
+                    name: safety-config
+              env:
+                - name: JOBLOCK_WAIT_SECONDS
+                  value: "21600"
+                - name: POSTGRES_USER
+                  valueFrom:
+                    secretKeyRef: {name: safety-db-app, key: username}
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef: {name: safety-db-app, key: password}
+                - name: POSTGRES_DB
+                  valueFrom:
+                    secretKeyRef: {name: safety-db-app, key: dbname}
+                - name: SOCRATA_APP_TOKEN
+                  valueFrom:
+                    secretKeyRef: {name: safety-secrets, key: SOCRATA_APP_TOKEN, optional: true}
+              resources:
+                # Census loads hold a state's TIGER blocks in memory; California
+                # is the largest.
+                requests: {cpu: 500m, memory: 1Gi}
+                limits: {cpu: "2", memory: 6Gi}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - {name: bronze, mountPath: /data/bronze}
+                # Census shapefiles are unzipped into a temporary directory.
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: bronze
+              persistentVolumeClaim:
+                claimName: bronze
+            - name: tmp
+              emptyDir:
+                sizeLimit: 4Gi
+---
+# Hourly: do whatever an enabled city is missing -- backfill, census, gold (safety-ops@.timer).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ops-converge
+spec:
+  schedule: "20 * * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # No pod retries: the next tick is the retry, and safety.ops keeps its
+      # own backoff ledger (etl.ops_run).
+      backoffLimit: 0
+      activeDeadlineSeconds: 21600
+      ttlSecondsAfterFinished: 604800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: ops-converge
+            app.kubernetes.io/component: etl
+            safety.io/db-client: "true"
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          tolerations:
+            - key: dedicated
+              operator: Equal
+              value: data
+              effect: NoSchedule
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: safety.io/tier
+                        operator: In
+                        values: ["data"]
+          containers:
+            - name: etl
+              image: safety-app
+              args: ["python", "-m", "safety.joblock", "--", "python", "-m", "safety.ops"]
+              envFrom:
+                - configMapRef:
+                    name: safety-config
+              env:
+                - name: JOBLOCK_WAIT_SECONDS
+                  value: "1800"
+                - name: POSTGRES_USER
+                  valueFrom:
+                    secretKeyRef: {name: safety-db-app, key: username}
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef: {name: safety-db-app, key: password}
+                - name: POSTGRES_DB
+                  valueFrom:
+                    secretKeyRef: {name: safety-db-app, key: dbname}
+                - name: SOCRATA_APP_TOKEN
+                  valueFrom:
+                    secretKeyRef: {name: safety-secrets, key: SOCRATA_APP_TOKEN, optional: true}
+              resources:
+                # Census loads hold a state's TIGER blocks in memory; California
+                # is the largest.
+                requests: {cpu: 500m, memory: 1Gi}
+                limits: {cpu: "2", memory: 6Gi}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - {name: bronze, mountPath: /data/bronze}
+                # Census shapefiles are unzipped into a temporary directory.
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: bronze
+              persistentVolumeClaim:
+                claimName: bronze
+            - name: tmp
+              emptyDir:
+                sizeLimit: 4Gi

@@ -1,0 +1,26 @@
+# k3s installs Traefik from its bundled Helm chart; a HelmChartConfig is how
+# its values are changed. Two replicas, so a rollout or a node drain never
+# leaves the site without an ingress.
+#
+# externalTrafficPolicy stays Cluster: on FABRIC every request arrives through
+# one SSH tunnel anyway, and Cluster lets the tunnel target any node's port 80
+# whichever node the Traefik pods landed on. The cloud overlays use Local, which
+# keeps the visitor's address for the rate limits.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    deployment:
+      replicas: 2
+    podDisruptionBudget:
+      enabled: true
+      maxUnavailable: 1
+    resources:
+      requests:
+        cpu: 200m
+        memory: 128Mi
+      limits:
+        memory: 512Mi

@@ -1,0 +1,80 @@
+# Schema migrations, once per release, before the new API pods roll out --
+# step 4 of the home server's install.sh. deploy.sh deletes the previous run
+# and creates this one, then waits for it. Advisory-locked
+# (safety/migrate.py), so a manual run racing it is harmless.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: safety-migrate
+  labels:
+    app.kubernetes.io/name: safety-migrate
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 1800
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: safety-migrate
+        safety.io/db-client: "true"
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: data
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: safety.io/tier
+                    operator: In
+                    values: ["data"]
+      containers:
+        - name: main
+          image: safety-app
+          args: ["python", "-m", "safety.migrate"]
+          envFrom:
+            - configMapRef:
+                name: safety-config
+          env:
+            # As install.sh: a migration waiting on a lock behind live reads
+            # gives up and retries rather than queueing every read behind it.
+            - name: PGOPTIONS
+              value: "-c lock_timeout=30s"
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: {name: safety-db-app, key: username}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: safety-db-app, key: password}
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef: {name: safety-db-app, key: dbname}
+            - name: SOCRATA_APP_TOKEN
+              valueFrom:
+                secretKeyRef: {name: safety-secrets, key: SOCRATA_APP_TOKEN, optional: true}
+          resources:
+            requests: {cpu: 500m, memory: 256Mi}
+            limits: {cpu: "2", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 4Gi

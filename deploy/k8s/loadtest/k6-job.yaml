@@ -1,0 +1,55 @@
+# The load generator. Created by run.sh (the script ConfigMap first); not part
+# of any overlay. Kept off the app nodes where it can, so it does not steal the
+# CPU it is measuring.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: safety-loadtest
+  namespace: safety
+  labels:
+    app.kubernetes.io/name: safety-loadtest
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: safety-loadtest
+    spec:
+      restartPolicy: Never
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: safety.io/tier
+                    operator: NotIn
+                    values: ["app"]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 12345
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: k6
+          image: grafana/k6:1.3.0
+          args: ["run", "--quiet", "/scripts/browse.js"]
+          env:
+            - name: VUS
+              value: "3000"
+            - name: BASE_URL
+              value: http://safety-api.safety.svc
+          resources:
+            requests: {cpu: "1", memory: 1Gi}
+            limits: {cpu: "3", memory: 4Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - {name: scripts, mountPath: /scripts}
+      volumes:
+        - name: scripts
+          configMap:
+            name: safety-loadtest-script

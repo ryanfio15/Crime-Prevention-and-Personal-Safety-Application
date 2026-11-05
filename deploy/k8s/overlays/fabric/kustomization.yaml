@@ -1,0 +1,29 @@
+# FABRIC testbed: k3s on the 5-VM slice that deploy/fabric/create_slice.py
+# builds -- cp1 (control plane, Traefik), data1/data2 (labelled
+# safety.io/tier=data and tainted dedicated=data:NoSchedule: the database and
+# the ETL), app1/app2 (safety.io/tier=app: the API and routing).
+#
+# Placement is *required* here, where the base only prefers it, because on this
+# slice the node roles are known to exist. Storage is k3s's built-in
+# local-path provisioner (the default StorageClass), so each volume lives on the
+# disk of the node its pod first ran on -- which is why the database runs two
+# instances on two nodes rather than relying on the volume.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - traefik-config.yaml
+patches:
+  - target: {kind: Deployment, name: safety-api}
+    path: require-app-tier.yaml
+  - target: {kind: Deployment, name: valhalla}
+    path: require-app-tier.yaml
+  - target: {group: postgresql.cnpg.io, kind: Cluster, name: safety-db}
+    patch: |-
+      - op: add
+        path: /spec/affinity/nodeSelector
+        value:
+          safety.io/tier: data
+      - op: replace
+        path: /spec/affinity/podAntiAffinityType
+        value: required

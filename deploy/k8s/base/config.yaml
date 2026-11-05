@@ -1,0 +1,67 @@
+# Non-secret settings for every pod (safety/config.py reads them as env vars).
+# Database credentials are not here: they come from the `safety-db-app` Secret
+# CloudNativePG generates for the owner role (db-cluster.yaml).
+#
+# Optional secret `safety-secrets` (not created by these manifests):
+#   kubectl -n safety create secret generic safety-secrets \
+#     --from-literal=SOCRATA_APP_TOKEN=<token>
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: safety-config
+data:
+  # CloudNativePG's read-write Service always points at the current primary,
+  # so a failover needs no configuration change.
+  POSTGRES_HOST: safety-db-rw
+  POSTGRES_PORT: "5432"
+
+  # First load and every later backfill: 12 months (docs/KUBERNETES.md,
+  # "First deploy"). The full-history load stays off (history_enabled false).
+  BACKFILL_MONTHS: "12"
+  BOOTSTRAP_CITIES: "phl,chi,sea,lax,dc,aus"
+  BRONZE_ROOT: /data/bronze
+
+  # --- serving ---
+  ENABLE_DOCS: "true"
+  ENABLE_RATE_LIMIT: "true"
+  EXTRA_FRONTENDS: "false"
+  CACHE_MAX_ENTRIES: "192"
+  CACHE_MAX_BYTES: "268435456"
+  # Trust a city's refresh stamp for 5 s, so a cache hit costs no database
+  # query; a new ETL snapshot reaches the map at most 5 s later.
+  CACHE_STAMP_TTL_SECONDS: "5"
+  CACHE_WARM_ON_START: "true"
+  # Per replica. 12 replicas x 8 = 96 of the cluster's 200 connections.
+  API_POOL_MAX_SIZE: "8"
+  API_STATEMENT_TIMEOUT_MS: "15000"
+  API_POOL_TIMEOUT_SECONDS: "10"
+  # Which peers uvicorn believes about X-Forwarded-For / -Proto: the ingress
+  # controller's pods. 10.42.0.0/16 is k3s's default pod CIDR; each cloud
+  # overlay sets its own. Never `*` here: clients could then choose their own
+  # rate-limit bucket (Dockerfile, the --forwarded-allow-ips comment).
+  FORWARDED_ALLOW_IPS: "10.42.0.0/16"
+  HSTS_MAX_AGE_SECONDS: "86400"
+
+  # --- directions ---
+  DIRECTIONS_ENABLED: "true"
+  VALHALLA_URL: http://valhalla:8002
+  # One counter per provider per UTC day for all replicas (migration 023).
+  ROUTING_BUDGET_BACKEND: db
+  # Transitous asks for under 720 plans a day from this project in total, and
+  # the home server's prod (500) and dev (100) already take 600 of them. A
+  # cluster running alongside gets the remainder; raise it only when the home
+  # server is retired.
+  TRANSIT_DAILY_BUDGET: "100"
+  GEOCODE_DAILY_BUDGET: "2000"
+  ROUTING_TIMEOUT_SECONDS: "8"
+
+  # Every pod's root filesystem is read-only; anything that writes a cache
+  # under $HOME (pyproj, httpx, pip) gets the writable /tmp volume instead.
+  HOME: /tmp
+
+  # --- ETL ---
+  WITHDRAWN_RECONCILE: report
+  OPS_RETRY_COOLDOWN_HOURS: "6"
+  OPS_HISTORY_MINUTES: "25"
+  # How long an ETL pod waits for another to finish (safety/joblock.py).
+  JOBLOCK_WAIT_SECONDS: "21600"

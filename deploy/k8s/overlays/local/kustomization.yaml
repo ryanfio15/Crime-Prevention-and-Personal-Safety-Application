@@ -1,0 +1,86 @@
+# One machine (k3d, kind, Docker Desktop, a single k3s VM) for trying the
+# manifests end to end, small enough for a laptop. One database instance,
+# one API pod, no routing tiles (drive/walk/bike report unavailable; transit
+# and the map work), and a bootstrap of Philadelphia over one month only.
+#
+#   k3d cluster create safety -p "8080:80@loadbalancer"
+#   deploy/k8s/deploy.sh local <image>
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - target: {kind: ConfigMap, name: safety-config}
+    patch: |-
+      - op: replace
+        path: /data/BOOTSTRAP_CITIES
+        value: "phl"
+      - op: replace
+        path: /data/BACKFILL_MONTHS
+        value: "1"
+      - op: replace
+        path: /data/CACHE_MAX_BYTES
+        value: "67108864"
+  - target: {group: postgresql.cnpg.io, kind: Cluster, name: safety-db}
+    patch: |-
+      - op: replace
+        path: /spec/instances
+        value: 1
+      - op: replace
+        path: /spec/storage/size
+        value: 10Gi
+      - op: replace
+        path: /spec/resources
+        value:
+          requests: {cpu: 250m, memory: 1Gi}
+          limits: {memory: 1Gi}
+      - op: replace
+        path: /spec/postgresql/parameters/shared_buffers
+        value: 256MB
+      - op: replace
+        path: /spec/postgresql/parameters/effective_cache_size
+        value: 768MB
+      - op: replace
+        path: /spec/postgresql/parameters/maintenance_work_mem
+        value: 128MB
+      - op: replace
+        path: /spec/postgresql/parameters/max_connections
+        value: "50"
+  - target: {kind: HorizontalPodAutoscaler, name: safety-api}
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+      - op: replace
+        path: /spec/maxReplicas
+        value: 2
+  - target: {kind: Deployment, name: safety-api}
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests
+        value: {cpu: 100m, memory: 256Mi}
+  - target: {kind: Deployment, name: valhalla}
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 0
+  - target: {kind: HorizontalPodAutoscaler, name: valhalla}
+    patch: |-
+      $patch: delete
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: valhalla
+  - target: {kind: PersistentVolumeClaim, name: bronze}
+    patch: |-
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 2Gi
+  - target: {kind: PersistentVolumeClaim, name: db-backups}
+    patch: |-
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 5Gi

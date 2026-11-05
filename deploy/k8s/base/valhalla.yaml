@@ -1,0 +1,168 @@
+# Street routing for directions (drive / walk / bike), the same pinned server
+# image and monthly tile build the home server uses (docker-compose.yml,
+# service `valhalla`; .github/workflows/valhalla-tiles.yml).
+#
+# Each pod fetches the tiles (~1.2 GB) into its own emptyDir in an init
+# container -- the application image running scripts/fetch_valhalla_tiles.py,
+# which applies deploy/valhalla/fetch.sh's trust rules and checksums -- then
+# serves them read-only. VALHALLA_TILES_TAG pins a build; `latest` takes the
+# newest. A pod restarted on a new month's build simply downloads it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valhalla
+  labels:
+    app.kubernetes.io/name: valhalla
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: valhalla
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: valhalla
+    spec:
+      # valhalla.json sets drain_seconds 28.
+      terminationGracePeriodSeconds: 35
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: safety.io/tier
+                    operator: In
+                    values: ["app"]
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: valhalla
+      initContainers:
+        - name: fetch-tiles
+          image: safety-app
+          args: ["python", "scripts/fetch_valhalla_tiles.py", "/data"]
+          env:
+            - name: VALHALLA_TILES_TAG
+              value: latest
+            - name: HOME
+              value: /tmp
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - {name: tiles, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+      containers:
+        - name: valhalla
+          # Pinned by digest, as in docker-compose.yml: the tiles are built by
+          # this same digest (deploy/valhalla/build.sh). Change them together.
+          image: ghcr.io/valhalla/valhalla:3.9.1@sha256:4fd114eb1d26b8fc2f43bcb3df234c1b63a0bf13c277405e5943d5361dc575de
+          command: ["valhalla_service", "/data/valhalla.json", "2"]
+          ports:
+            - name: http
+              containerPort: 8002
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            # ~300 MB resident serving six cities (docs/OPERATIONS.md).
+            requests: {cpu: 500m, memory: 512Mi}
+            limits: {cpu: 1500m, memory: 1536Mi}
+          readinessProbe:
+            httpGet: {path: /status, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet: {path: /status, port: http}
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet: {path: /status, port: http}
+            periodSeconds: 5
+            failureThreshold: 36
+          volumeMounts:
+            - {name: tiles, mountPath: /data, readOnly: true}
+            # ZeroMQ IPC sockets (ipc:///tmp/...).
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tiles
+          emptyDir:
+            sizeLimit: 3Gi
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valhalla
+  labels:
+    app.kubernetes.io/name: valhalla
+spec:
+  selector:
+    app.kubernetes.io/name: valhalla
+  ports:
+    - name: http
+      port: 8002
+      targetPort: http
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: valhalla
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: valhalla
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # A new pod downloads 1.2 GB before it serves; keep the ones we have.
+      stabilizationWindowSeconds: 600
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: valhalla
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: valhalla

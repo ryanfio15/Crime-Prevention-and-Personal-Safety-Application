@@ -1,0 +1,213 @@
+# The API and the static front end: one uvicorn process per pod, scaled by pod
+# count (docs/KUBERNETES.md, "Why one process per pod").
+#
+# State that is per pod, and why that is fine:
+# - the response cache: every lookup is validated against the city's refresh
+#   stamp, so no replica can serve a layer older than the database's; each
+#   just builds its own copy once (CACHE_WARM_ON_START does the default views
+#   before visitors ask);
+# - the in-app rate limiter: per pod, so N pods are N times looser. The
+#   ingress applies the same zones in front (ingress.yaml);
+# - the provider budgets are NOT per pod: ROUTING_BUDGET_BACKEND=db counts them
+#   in Postgres (migration 023).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: safety-api
+  labels:
+    app.kubernetes.io/name: safety-api
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: safety-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: safety-api
+        safety.io/db-client: "true"
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: safety.io/tier
+                    operator: In
+                    values: ["app"]
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: safety-api
+      initContainers:
+        # Hold a new pod until the migrate Job has applied every migration
+        # this image ships (safety/schemawait.py); the old pods keep serving.
+        - name: wait-for-schema
+          image: safety-app
+          args: ["python", "-m", "safety.schemawait", "--timeout", "1800"]
+          envFrom:
+            - configMapRef:
+                name: safety-config
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: {name: safety-db-app, key: username}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: safety-db-app, key: password}
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef: {name: safety-db-app, key: dbname}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: api
+          image: safety-app
+          # args, not command: the image's entrypoint stays in front (it execs
+          # straight through when already unprivileged), and CMD is uvicorn.
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: safety-config
+          env:
+            - name: PORT
+              value: "8000"
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: {name: safety-db-app, key: username}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: safety-db-app, key: password}
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef: {name: safety-db-app, key: dbname}
+            - name: SOCRATA_APP_TOKEN
+              valueFrom:
+                secretKeyRef: {name: safety-secrets, key: SOCRATA_APP_TOKEN, optional: true}
+          resources:
+            requests:
+              cpu: 500m
+              memory: 768Mi
+            limits:
+              # Python runs one core at a time per process; the headroom is for
+              # gzip and JSON encoding bursts. Memory: the 256 MiB cache budget
+              # plus the interpreter and in-flight layers.
+              cpu: 1500m
+              memory: 1536Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # Liveness on the static index: it touches no database, so a
+          # database outage makes pods unready (out of the Service) rather than
+          # restarting every one of them.
+          livenessProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Readiness on /health, which runs one query through the pool. Its
+          # timeout sits above the pool's 10 s wait-for-a-connection, so a busy
+          # pod reads as busy, not as dead.
+          readinessProbe:
+            httpGet: {path: /api/v1/health, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 12
+            failureThreshold: 3
+          startupProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          lifecycle:
+            # Let the endpoint removal reach the ingress before uvicorn stops
+            # accepting, so a rollout drops no requests.
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: safety-api
+  labels:
+    app.kubernetes.io/name: safety-api
+spec:
+  selector:
+    app.kubernetes.io/name: safety-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: safety-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: safety-api
+  minReplicas: 3
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 65
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+    scaleDown:
+      # Each new pod starts with a cold cache; do not shed pods on a lull.
+      stabilizationWindowSeconds: 300
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: safety-api
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: safety-api

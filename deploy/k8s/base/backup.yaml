@@ -1,0 +1,99 @@
+# Nightly logical backup: pg_dump of the application database onto its own
+# volume, keeping the newest seven -- the cluster-side twin of the home
+# server's safety-backup.timer (deploy/lib/backup.sh).
+#
+# Cloud overlays should prefer CloudNativePG's object-store backups (base
+# backup + WAL archive, point-in-time recovery) once a bucket exists; this one
+# needs nothing but a volume, so it works on FABRIC as it is. Copy a dump off
+# the cluster with:
+#   kubectl -n safety cp <pod>:/backups/<file> ./<file>
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: db-backups
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: db-backup
+spec:
+  schedule: "30 2 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 10800
+      ttlSecondsAfterFinished: 604800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: db-backup
+            safety.io/db-client: "true"
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            # The postgres account in the CloudNativePG image.
+            runAsUser: 26
+            runAsGroup: 26
+            fsGroup: 26
+            seccompProfile:
+              type: RuntimeDefault
+          tolerations:
+            - key: dedicated
+              operator: Equal
+              value: data
+              effect: NoSchedule
+          containers:
+            - name: pg-dump
+              # Same image as the database, so pg_dump matches the server.
+              image: ghcr.io/cloudnative-pg/postgis:17-3.5
+              command:
+                - /bin/bash
+                - -ec
+                - |
+                  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+                  out="/backups/safety-$stamp.dump"
+                  pg_dump -Fc -h safety-db-rw -U "$PGUSER" -d "$PGDATABASE" -f "$out.partial"
+                  mv "$out.partial" "$out"
+                  # The restore test the host's monthly verify does, cheaply:
+                  # the archive's table of contents must read back.
+                  pg_restore -l "$out" > /dev/null
+                  ls -1t /backups/safety-*.dump | tail -n +8 | xargs -r rm -f
+                  ls -lh /backups
+              env:
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef: {name: safety-db-app, key: username}
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef: {name: safety-db-app, key: password}
+                - name: PGDATABASE
+                  valueFrom:
+                    secretKeyRef: {name: safety-db-app, key: dbname}
+              resources:
+                requests: {cpu: 250m, memory: 256Mi}
+                limits: {cpu: "1", memory: 1Gi}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - {name: backups, mountPath: /backups}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: db-backups
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi

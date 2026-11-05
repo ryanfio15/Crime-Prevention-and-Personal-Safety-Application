@@ -1,0 +1,50 @@
+# Who may talk to what. Kubernetes always allows a node's own traffic to its
+# pods, so kubelet probes are unaffected.
+
+# The database: its own instances (replication), the CloudNativePG operator
+# (cnpg-system, status and control on 8000), and pods labelled
+# safety.io/db-client=true -- the API, the ETL, the jobs and the backup.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: safety-db
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: safety-db
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: safety-db
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cnpg-system
+    - from:
+        - podSelector:
+            matchLabels:
+              safety.io/db-client: "true"
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# Routing is called only by the API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: valhalla
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: valhalla
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: safety-api
+      ports:
+        - protocol: TCP
+          port: 8002

@@ -1,0 +1,90 @@
+# First load of a fresh deployment (safety/bootstrap.py): migrate, enable
+# BOOTSTRAP_CITIES (all six by default), then converge -- a BACKFILL_MONTHS
+# (12) backfill, census blocks, gold and the time-of-day layers, city by city.
+# Expect one to a few hours, mostly waiting on the city portals.
+#
+# deploy.sh creates it when it has never completed, and leaves a running or
+# completed one alone. Re-running is always safe. Pod retries pick up where the
+# last one stopped: OPS_RETRY_COOLDOWN_HOURS=0 means the `running` ledger row
+# a killed pod left is not mistaken for a live run, and the ETL lock is what
+# actually prevents overlap.
+#
+# Follow it with:  kubectl -n safety logs -f job/safety-bootstrap
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: safety-bootstrap
+  labels:
+    app.kubernetes.io/name: safety-bootstrap
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 64800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: safety-bootstrap
+        app.kubernetes.io/component: etl
+        safety.io/db-client: "true"
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: data
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: safety.io/tier
+                    operator: In
+                    values: ["data"]
+      containers:
+        - name: main
+          image: safety-app
+          args: ["python", "-m", "safety.bootstrap"]
+          envFrom:
+            - configMapRef:
+                name: safety-config
+          env:
+            - name: OPS_RETRY_COOLDOWN_HOURS
+              value: "0"
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: {name: safety-db-app, key: username}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: safety-db-app, key: password}
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef: {name: safety-db-app, key: dbname}
+            - name: SOCRATA_APP_TOKEN
+              valueFrom:
+                secretKeyRef: {name: safety-secrets, key: SOCRATA_APP_TOKEN, optional: true}
+          resources:
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {cpu: "2", memory: 6Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - {name: bronze, mountPath: /data/bronze}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: bronze
+          persistentVolumeClaim:
+            claimName: bronze
+        - name: tmp
+          emptyDir:
+            sizeLimit: 4Gi
