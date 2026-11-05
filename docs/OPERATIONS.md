@@ -181,7 +181,10 @@ to `report` first, or the next incremental deletes the rows again.
 | Unit timeouts | ETL / hourly / ops: **none** (a hung run holds the ETL lock and blocks deploys indefinitely); autodeploy 30 min; backup 3 h; verify 4 h | unit files |
 | Memory / CPU limits | No unit sets `MemoryMax` or `CPUQuota` | unit files |
 
-Scaling is vertical only. The cache and rate limiter are per process, and prod and dev share one Postgres cluster.
+On the home server, scaling is vertical only. The cache and rate limiter are per process, and prod and dev share one
+Postgres cluster. Horizontal scaling is the Kubernetes deployment ([KUBERNETES.md](KUBERNETES.md)): API replicas
+behind Traefik, shared provider budgets (`ROUTING_BUDGET_BACKEND=db`), and the ETL serialised by a Postgres advisory
+lock instead of the `flock`.
 
 ---
 

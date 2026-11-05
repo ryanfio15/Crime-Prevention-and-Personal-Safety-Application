@@ -11,6 +11,7 @@ incident-level open data for six US cities: Philadelphia, Chicago, Seattle, Los 
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, tech stack, request flows, data model, networking, security model |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Routine deploys, promotion, rollback, migrations, from-zero server setup, branch protection, deploy internals, database roles, OS users, container image. Replaces the old `docs/DEPLOY.md` |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Schedules, logs, health checks, alerts, backups and restore, limits, runbook |
+| [docs/KUBERNETES.md](docs/KUBERNETES.md) | The horizontally scaled Kubernetes deployment (FABRIC, AWS, Azure): layout, sizing, first deploy and 12-month bootstrap, runbook. FABRIC walkthrough: [deploy/fabric/README.md](deploy/fabric/README.md) |
 | [docs/DESIGN.md](docs/DESIGN.md) | The original system design document (target architecture, roadmap, contributors) |
 | [docs/PHASE1.md](docs/PHASE1.md), [docs/PHASE2.md](docs/PHASE2.md) | What each build phase delivered, per-city data notes |
 
@@ -411,7 +412,8 @@ Full table: [ARCHITECTURE.md → Security model](docs/ARCHITECTURE.md#security-m
 - **Metrics and tracing**: none.
 - **Alerts**: `OnFailure=` writes to the journal (`journalctl -t safety-notify -p err`) and to
   `/var/lib/safety-notify/alerts.log` **only**. Nobody is paged.
-- **Scaling**: one uvicorn process per instance, a pool of 8, a 256 MiB cache, and no memory or CPU limits.
+- **Scaling**: on the home server, one uvicorn process per instance, a pool of 8, a 256 MiB cache, and no memory or CPU
+  limits. The Kubernetes deployment scales out instead (docs/KUBERNETES.md).
 
 Runbook, schedules and the "site is down" checklist: [docs/OPERATIONS.md](docs/OPERATIONS.md).
 

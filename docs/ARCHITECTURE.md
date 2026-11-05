@@ -110,6 +110,9 @@ the same transaction as the gold rebuild. The API's cache checks that timestamp 
 | Pre-rendered vector tiles | Whole-city GeoJSON per request, gzip-cached in process |
 | Redis cache | In-process LRU with the same per-city invalidation (`safety/api/main.py:141-280`) |
 
+The Kubernetes deployment ([KUBERNETES.md](KUBERNETES.md)) runs this same code as several API replicas. The caches
+stay per pod, the provider budgets move into Postgres, and the ETL takes a Postgres advisory lock in place of `flock`.
+
 ---
 
 ## Request flows

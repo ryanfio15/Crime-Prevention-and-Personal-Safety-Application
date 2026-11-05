@@ -970,7 +970,10 @@ container hosts and local experiments; the home server does not use it.
 ## Container image (alternative target)
 
 The `Dockerfile` (`python:3.12-slim`) builds one image for both the API and ETL roles. The home server does **not**
-use it, and **CI never builds it**.
+use it. `.github/workflows/image.yml` builds it on every push to `main`, `testing` and `horizontal-scaling`, checks it,
+and publishes it to GHCR for the Kubernetes deployment, which supplies everything listed below
+([KUBERNETES.md](KUBERNETES.md)). The image runs as UID 10001 and records its commit in `DEPLOYED_COMMIT`
+(build arg `GIT_SHA`).
 
 ```bash
 docker build -t safety:<tag> .
@@ -994,7 +997,7 @@ The image does **not** provide any of the following; you must supply them yourse
 - a `BRONZE_ROOT` volume (the entrypoint chowns it and then drops to user `safety`).
 
 Leaving `FORWARDED_ALLOW_IPS` at its default of `*` lets clients spoof their IP to the rate limiter. `/api/v1/health` reports
-`commit: null`, because the image has no `DEPLOYED_COMMIT` file.
+`commit: null` for an image built without `--build-arg GIT_SHA=<sha>`.
 
 > ⚠️ UNVERIFIED: that the image builds and runs today. It was not built during this documentation work, because there
 > was no docker access and building on the production host is not allowed.
