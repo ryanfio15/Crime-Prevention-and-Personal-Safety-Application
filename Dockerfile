@@ -43,8 +43,22 @@ COPY . .
 # application touches it -- docker-entrypoint.sh does that and then drops to
 # this account for the process itself. Adding `USER safety` here would take away
 # the privilege needed to make the volume usable in the first place.
-RUN useradd --system --create-home --home-dir /home/safety safety \
+#
+# A fixed UID/GID (10001) so a Kubernetes pod can run as this account directly
+# (runAsUser/runAsGroup/fsGroup 10001, deploy/k8s/): fsGroup then makes mounted
+# volumes writable without the root chown below, and the entrypoint, finding
+# itself unprivileged, execs the command as it is.
+RUN groupadd --system --gid 10001 safety \
+    && useradd --system --uid 10001 --gid 10001 --create-home --home-dir /home/safety safety \
     && chown -R safety:safety /app
+
+# The commit this image was built from, for /api/v1/health's `commit` field
+# (safety/api/main.py reads REPO_ROOT/DEPLOYED_COMMIT) and so deploy/k8s/smoke.sh
+# can check the rollout serves the image it asked for. Passed by the image
+# workflow (.github/workflows/image.yml); a bare `docker build` leaves it empty
+# and health reports null, as before.
+ARG GIT_SHA=""
+RUN if [ -n "$GIT_SHA" ]; then printf '%s\n' "$GIT_SHA" > /app/DEPLOYED_COMMIT; fi
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

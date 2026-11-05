@@ -10,8 +10,9 @@ on:
     # remediation/** so review-loop branches are tested on every push, before
     # anything is fast-forwarded to testing (which deploys dev). The deployer
     # only reads check runs on the head of main/testing, so runs on other
-    # branches do not change what deploys.
-    branches: [main, testing, "remediation/**"]
+    # branches do not change what deploys. horizontal-scaling carries the
+    # Kubernetes deployment (docs/KUBERNETES.md) until it is merged.
+    branches: [main, testing, "remediation/**", horizontal-scaling]
   pull_request:
 
 permissions:
@@ -64,7 +65,7 @@ jobs:
       # Importing the entry points catches a missing dependency or a broken
       # module-level statement that compileall cannot see.
       - name: Import entry points
-        run: python -c "import safety.api.main, safety.migrate, safety.etl.run"
+        run: python -c "import safety.api.main, safety.migrate, safety.etl.run, safety.bootstrap, safety.joblock, safety.schemawait"
       - name: Unit tests (no database)
         run: python -m pytest -q -m "not db"
       # The shell expands the glob: Node 22's `node --test <dir>` treats a
@@ -82,9 +83,9 @@ jobs:
       # One file per bash -n: given several, it parses the first and treats the
       # rest as that script's arguments.
       - name: Deploy scripts parse
-        run: for f in deploy/*.sh deploy/lib/*.sh deploy/valhalla/*.sh deploy/git-hooks/*; do bash -n "$f"; done
+        run: for f in deploy/*.sh deploy/lib/*.sh deploy/valhalla/*.sh deploy/k8s/*.sh deploy/k8s/loadtest/*.sh deploy/git-hooks/*; do bash -n "$f"; done
       - name: Shellcheck deploy scripts
-        run: shellcheck deploy/*.sh deploy/lib/*.sh deploy/valhalla/*.sh deploy/git-hooks/*
+        run: shellcheck deploy/*.sh deploy/lib/*.sh deploy/valhalla/*.sh deploy/k8s/*.sh deploy/k8s/loadtest/*.sh deploy/git-hooks/*
       # As the superuser, and with main's own code: on the host every object
       # main's migrations created was created by `safety`, and the role switch
       # has to *transfer* them, so CI starts from exactly that shape. This

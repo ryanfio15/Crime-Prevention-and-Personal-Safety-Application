@@ -1,0 +1,121 @@
+# The container image and the Kubernetes manifests (docs/KUBERNETES.md).
+#
+# Separate from ci.yml on purpose: the home server's deployer reads only the
+# check run named `ci`, and nothing here may change that contract. The home
+# server does not use the image; Kubernetes clusters (deploy/k8s/deploy.sh)
+# pull it from GHCR.
+#
+# Tags published, for every push to a listed branch:
+#   :<full commit sha>   immutable; deploy.sh's smoke test checks /health
+#                        reports exactly this commit
+#   :<branch>            moving, e.g. :horizontal-scaling
+# The package is private when first created: make it public once (GitHub ->
+# Packages -> crime-prevention-and-personal-safety-application -> Package
+# settings -> Change visibility), or give the cluster an imagePullSecret.
+name: image
+
+on:
+  push:
+    branches: [main, testing, horizontal-scaling]
+  pull_request:
+    paths:
+      - Dockerfile
+      - docker-entrypoint.sh
+      - requirements.txt
+      - deploy/k8s/**
+      - .github/workflows/image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/ryanfio15/crime-prevention-and-personal-safety-application
+
+jobs:
+  manifests:
+    name: manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # kubectl ships on GitHub's Ubuntu runners; kubeconform does not.
+      - name: Install kubeconform
+        run: |
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz |
+            tar -xz -C "$RUNNER_TEMP" kubeconform
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      # Every overlay and the Job templates must render, and every object must
+      # match its schema: Kubernetes' own, and for the CRDs (CloudNativePG,
+      # Traefik, k3s's HelmChartConfig) the community CRD catalog where it has
+      # them.
+      - name: Render and validate
+        run: |
+          set -o pipefail
+          for dir in deploy/k8s/overlays/*/ deploy/k8s/jobs/; do
+            echo "::group::$dir"
+            kubectl kustomize "$dir" | kubeconform -strict -summary \
+              -kubernetes-version 1.34.0 \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+              -ignore-missing-schemas
+            echo "::endgroup::"
+          done
+          kubeconform -strict -summary -kubernetes-version 1.34.0 deploy/k8s/loadtest/k6-job.yaml
+
+  image:
+    name: image
+    runs-on: ubuntu-latest
+    needs: manifests
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,format=long,prefix=
+            type=ref,event=branch
+      # Built and loaded first, then checked, then pushed: an image whose
+      # paths are wrong builds cleanly and fails on the first request
+      # (.dockerignore), so it should never reach the registry.
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: safety:check
+          build-args: GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Check the image
+        run: |
+          docker run --rm safety:check python -c "
+          from safety.config import WEB_DIR, MIGRATIONS_DIR, CROSSWALK_DIR, REPO_ROOT
+          assert WEB_DIR.exists() and MIGRATIONS_DIR.exists() and CROSSWALK_DIR.exists()
+          assert (REPO_ROOT / 'scripts' / 'fetch_valhalla_tiles.py').exists()
+          import safety.api.main, safety.bootstrap, safety.joblock, safety.schemawait
+          print('paths ok')"
+          test "$(docker run --rm safety:check cat /app/DEPLOYED_COMMIT)" = "${{ github.sha }}"
+          test "$(docker run --rm safety:check id -u safety)" = 10001
+      - name: Push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
