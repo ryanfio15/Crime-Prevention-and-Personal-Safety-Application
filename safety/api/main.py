@@ -11,12 +11,15 @@ Run:  python -m uvicorn safety.api.main:app --reload
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import gzip
 import json
 import logging
 import math
+import os
 import threading
+import time
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
@@ -51,7 +54,7 @@ async def lifespan(app: FastAPI):
     pool = ConnectionPool(
         settings.dsn,
         min_size=1,
-        max_size=8,
+        max_size=settings.api_pool_max_size,
         # statement_timeout lives here, on the API's own connections, and never
         # on the role or the database (ALTER ROLE/DATABASE ... SET): the ETL and
         # migrate share both and legitimately run for minutes. A migration that
@@ -78,12 +81,49 @@ async def lifespan(app: FastAPI):
     # than re-handshaking TLS per geocode keystroke (safety/routing/).
     http = new_http_client()
     app.state.http = http
-    app.state.routing = Routing.build(http)
+    # The pool goes along so the provider budgets can be counted in the
+    # database when settings.routing_budget_backend is `db` (many replicas).
+    app.state.routing = Routing.build(http, pool=pool)
+    warm = None
+    if settings.cache_warm_on_start:
+        warm = asyncio.create_task(_warm_cache())
     try:
         yield
     finally:
+        if warm is not None and not warm.done():
+            warm.cancel()
         await http.aclose()
         pool.close()
+
+
+async def _warm_cache() -> None:
+    """Fill the response cache with what a first visitor asks for.
+
+    Over loopback HTTP rather than by calling the endpoint functions, so the
+    warm requests take exactly the path a real one does -- parameter defaults,
+    window resolution, cache keys -- and cannot drift from it. Best effort: a
+    failure is logged and the process serves normally, just cold.
+    """
+    import httpx
+
+    port = os.environ.get("PORT", "8000")
+    base = f"http://127.0.0.1:{port}{API}"
+    # Give uvicorn a moment to bind after lifespan startup returns.
+    await asyncio.sleep(2)
+    try:
+        async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
+            response = await client.get(f"{base}/cities")
+            response.raise_for_status()
+            cities = [c["source_id"] for c in response.json().get("cities", [])]
+            for city in cities:
+                await client.get(f"{base}/cells", params={"city": city})
+                # Under the /cells rate-limit zone (2 r/s) for 127.0.0.1.
+                await asyncio.sleep(0.6)
+        log.info("cache warmed for %d cities", len(cities))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # pragma: no cover - best effort
+        log.warning("cache warm-up failed: %s: %s", type(exc).__name__, exc)
 
 
 app = FastAPI(
@@ -197,6 +237,31 @@ def _refresh_stamp(conn, source_id: str | None = None) -> str | None:
     return None if refreshed is None else str(refreshed)
 
 
+# Stamp memo (settings.cache_stamp_ttl_seconds). With a TTL of 0 every cached
+# lookup asks the database for the city's stamp, which keeps a single process
+# exactly current. Many replicas serving thousands of visitors turn that one
+# query per hit into the bulk of the database's load, so a deployment can trust
+# a stamp for a few seconds: a new snapshot reaches the map that much later, and
+# a hit costs no query at all. Keyed by source_id (None = the aggregate).
+_stamp_memo: dict[str | None, tuple[float, str | None]] = {}
+_stamp_lock = threading.Lock()
+
+
+def _current_stamp(conn, source_id: str | None) -> str | None:
+    ttl = settings.cache_stamp_ttl_seconds
+    if ttl <= 0:
+        return _refresh_stamp(conn, source_id)
+    now = time.monotonic()
+    with _stamp_lock:
+        memo = _stamp_memo.get(source_id)
+    if memo is not None and memo[0] > now:
+        return memo[1]
+    stamp = _refresh_stamp(conn, source_id)
+    with _stamp_lock:
+        _stamp_memo[source_id] = (now + ttl, stamp)
+    return stamp
+
+
 # Thread safety. The endpoints are plain `def`s, so Starlette runs them on its
 # threadpool and several can be inside cached() at once. Every read or write of
 # _cache, _cache_stats and _inflight happens under _cache_lock; the producer --
@@ -258,7 +323,7 @@ def cached(
     """
     if not store:
         return producer()
-    stamp = _refresh_stamp(conn, source_id)
+    stamp = _current_stamp(conn, source_id)
     if stamp is None:
         return producer()
     flight_key = (key, stamp)

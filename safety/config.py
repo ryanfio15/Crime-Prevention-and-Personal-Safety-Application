@@ -90,6 +90,25 @@ class Settings(BaseSettings):
     # minutes and never get a statement timeout.
     api_statement_timeout_ms: int = 15000
     api_pool_timeout_seconds: float = 10.0
+    # Connections per API process. Eight suits the single home-server process;
+    # under Kubernetes the total is replicas x this, which has to stay under the
+    # cluster's max_connections with room for the ETL (docs/KUBERNETES.md).
+    api_pool_max_size: int = 8
+
+    # How long a city's refresh stamp is trusted before cached() asks the
+    # database again. 0 (the default) checks on every cached lookup, as the
+    # single home-server process always has. With many replicas behind a load
+    # balancer that check is the one database query a cache hit still costs, so
+    # Kubernetes sets a few seconds: a new ETL snapshot then reaches the map at
+    # most that much later, and a cache hit touches the database not at all.
+    cache_stamp_ttl_seconds: float = 0.0
+
+    # Warm the response cache when a process starts (safety/api/main.py
+    # _warm_cache): /api/v1/cities and each city's default /cells layer, fetched
+    # over loopback in the background so a freshly scheduled replica does not
+    # hand its first visitors a cold multi-second layer build. Off by default;
+    # the Kubernetes ConfigMap turns it on.
+    cache_warm_on_start: bool = False
 
     # Strict-Transport-Security max-age (safety/api/security.py), sent only on
     # https. One day to start (user decision 2026-10-07): long enough to matter,
@@ -216,6 +235,23 @@ class Settings(BaseSettings):
     # a malformed or hostile request still cannot ask Valhalla or Transitous
     # for a route hundreds of km long.
     route_max_km: float = 100.0
+    # Where the provider daily budgets above are counted (safety/routing/
+    # budget.py): `memory`, per process, which is right for the single home-
+    # server process; or `db`, one shared counter per provider per UTC day in
+    # public.provider_budget (migration 023). Any deployment with more than one
+    # API replica must use `db`, or the Transitous allowance is multiplied by
+    # the replica count and handed back fresh on every restart.
+    routing_budget_backend: str = "memory"
+
+    # --- Kubernetes jobs (safety/joblock.py, safety/bootstrap.py) -----------
+    #
+    # How long an ETL pod waits for the shared Postgres advisory lock before it
+    # gives up -- the in-cluster equivalent of the host units' `flock -w 21600`.
+    joblock_wait_seconds: float = 21600.0
+    # The cities `python -m safety.bootstrap` enables before converging, comma
+    # separated. Austin's reuse terms are a deployment decision
+    # (docs/DEPLOYMENT.md, "Enabling a city"); drop `aus` here to leave it off.
+    bootstrap_cities: str = "phl,chi,sea,lax,dc,aus"
 
     @property
     def dsn(self) -> str:
