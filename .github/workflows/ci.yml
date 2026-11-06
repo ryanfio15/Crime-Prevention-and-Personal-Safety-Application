@@ -65,7 +65,7 @@ jobs:
       # Importing the entry points catches a missing dependency or a broken
       # module-level statement that compileall cannot see.
       - name: Import entry points
-        run: python -c "import safety.api.main, safety.migrate, safety.etl.run, safety.bootstrap, safety.joblock, safety.schemawait"
+        run: python -c "import safety.api.main, safety.migrate, safety.etl.run, safety.bootstrap, safety.joblock, safety.schemawait, safety.shards"
       - name: Unit tests (no database)
         run: python -m pytest -q -m "not db"
       # The shell expands the glob: Node 22's `node --test <dir>` treats a

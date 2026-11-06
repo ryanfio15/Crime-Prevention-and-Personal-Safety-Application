@@ -33,7 +33,7 @@ from psycopg.errors import QueryCanceled
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
 
-from safety import PIPELINE_VERSION
+from safety import PIPELINE_VERSION, shards
 from safety.api import directions
 from safety.api import repository as repo
 from safety.api.ratelimit import RateLimitMiddleware
@@ -46,13 +46,17 @@ from safety.routing.service import Routing, new_http_client
 log = logging.getLogger(__name__)
 
 pool: ConnectionPool | None = None
+# With cities split across databases (settings.db_shards, safety/shards.py):
+# one pool per database, by host, and which host holds each city. Empty
+# otherwise, and then every request uses `pool`. With shards, `pool` is the
+# first database's -- where the provider budgets are counted.
+pools: dict[str, ConnectionPool] = {}
+_city_hosts: dict[str, str] = {}
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global pool
-    pool = ConnectionPool(
-        settings.dsn,
+def _open_pool(dsn: str) -> ConnectionPool:
+    return ConnectionPool(
+        dsn,
         min_size=1,
         max_size=settings.api_pool_max_size,
         # statement_timeout lives here, on the API's own connections, and never
@@ -74,8 +78,22 @@ async def lifespan(app: FastAPI):
         check=ConnectionPool.check_connection,
         open=True,
     )
-    pool.wait(timeout=30)
-    log.info("connection pool ready")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global pool
+    shard_list = shards.configured()
+    if shard_list:
+        for shard in shard_list:
+            pools[shard.host] = _open_pool(settings.dsn_for(shard.host))
+            _city_hosts.update({city: shard.host for city in shard.cities})
+        pool = pools[shard_list[0].host]
+    else:
+        pool = _open_pool(settings.dsn)
+    for each in all_pools():
+        each.wait(timeout=30)
+    log.info("connection pools ready: %d database(s)", len(all_pools()))
     # One outbound HTTP client for every routing provider, so connections to
     # Photon and Transitous are pooled and kept alive across requests rather
     # than re-handshaking TLS per geocode keystroke (safety/routing/).
@@ -93,7 +111,10 @@ async def lifespan(app: FastAPI):
         if warm is not None and not warm.done():
             warm.cancel()
         await http.aclose()
-        pool.close()
+        for each in all_pools():
+            each.close()
+        pools.clear()
+        _city_hosts.clear()
 
 
 async def _warm_cache() -> None:
@@ -186,9 +207,87 @@ async def _busy(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(_BUSY, status_code=503, headers={"Retry-After": "5"})
 
 
-def get_conn():
-    assert pool is not None, "connection pool not initialised"
-    with pool.connection() as conn:
+def all_pools() -> list[ConnectionPool]:
+    """Every database's pool: one, unless the cities are split (pools)."""
+    if pools:
+        return list(pools.values())
+    return [pool] if pool is not None else []
+
+
+def pool_for(city: str | None) -> ConnectionPool:
+    """The pool of the database holding `city`; the only pool without shards.
+
+    An unknown city goes to the first database, which answers it as one
+    database always has: no such city."""
+    chosen = pools.get(_city_hosts.get(city or "", ""), pool) if pools else pool
+    assert chosen is not None, "connection pool not initialised"
+    return chosen
+
+
+# The endpoints' own default when a request names no city.
+DEFAULT_CITY = "phl"
+
+# Which city each looked-up cell belongs to, so a cell's database is found
+# once (cell detail is a click, not the hot path). Bounded; cleared when full.
+_cell_city: dict[str, str] = {}
+_CELL_CITY_MAX = 50_000
+
+
+def _city_of_cell(cell: str) -> str | None:
+    """Ask each database whose cell this is (gold.cell_geometry is per city)."""
+    if not is_valid_cell(cell):
+        return None
+    known = _cell_city.get(cell)
+    if known is not None:
+        return known
+    for each in all_pools():
+        with each.connection() as conn:
+            city = repo.cell_source(conn, cell)
+        if city is not None:
+            if len(_cell_city) >= _CELL_CITY_MAX:
+                _cell_city.clear()
+            _cell_city[cell] = city
+            return city
+    return None
+
+
+def request_city(request: Request) -> str | None:
+    """The city a request is about, as its endpoint will read it."""
+    params, query = request.path_params, request.query_params
+    city = params.get("source_id") or query.get("city")
+    if city:
+        return city
+    cell = params.get("h3_index") or query.get("h3")
+    if cell is None and "lat" in query and "lng" in query:
+        try:
+            cell = cells_for_point(float(query["lat"]), float(query["lng"]))[8]
+        except (ValueError, KeyError):
+            cell = None
+    if cell:
+        return _city_of_cell(cell)
+    return DEFAULT_CITY
+
+
+def _spans_databases(request: Request) -> bool:
+    """An endpoint that, with shards, reads every database itself: it gets no
+    connection up front, so one database being down cannot fail it."""
+    path = request.url.path
+    if path in (f"{API}/health", f"{API}/cities"):
+        return True
+    return path == f"{API}/version" and not request.query_params.get("city")
+
+
+def get_conn(request: Request):
+    # Without shards there is one pool and nothing to work out.
+    if not pools:
+        assert pool is not None, "connection pool not initialised"
+        with pool.connection() as conn:
+            yield conn
+        return
+    if _spans_databases(request):
+        yield None
+        return
+    with pool_for(request_city(request)).connection() as conn:
         yield conn
 
 
@@ -401,11 +500,57 @@ def _cache_stats_snapshot() -> dict[str, int]:
         return dict(_cache_stats)
 
 
+def _merge_versions(versions: list[dict[str, Any]]) -> dict[str, Any]:
+    """serving_version() across databases: latest stamps, summed counts."""
+
+    def latest(key: str):
+        values = [v.get(key) for v in versions if v.get(key) is not None]
+        return max(values) if values else None
+
+    def total(key: str):
+        values = [v.get(key) for v in versions if v.get(key) is not None]
+        return sum(values) if values else None
+
+    return {
+        "last_refreshed_at": latest("last_refreshed_at"),
+        "data_as_of": latest("data_as_of"),
+        "incident_count": total("incident_count"),
+        "cities": total("cities") or 0,
+    }
+
+
+def _version_everywhere() -> tuple[dict[str, Any], dict[str, str]]:
+    """The aggregate serving_version over every database, and each one's state.
+
+    Raises only if no database answers: a site with one database down still
+    serves the other cities, so its pods should stay in the load balancer."""
+    versions, states = [], {}
+    last_error: Exception | None = None
+    for host, each in pools.items():
+        try:
+            with each.connection() as conn:
+                versions.append(repo.serving_version(conn))
+            states[host] = "ok"
+        except Exception as exc:  # noqa: BLE001 - reported per database
+            log.warning("database %s: %s: %s", host, type(exc).__name__, exc)
+            states[host] = "unavailable"
+            last_error = exc
+    if not versions and last_error is not None:
+        raise last_error
+    return _merge_versions(versions), states
+
+
 @app.get(f"{API}/health", tags=["meta"])
 def health(conn: Conn) -> dict[str, Any]:
-    version = repo.serving_version(conn)
+    databases: dict[str, str] | None = None
+    if pools:
+        version, databases = _version_everywhere()
+    else:
+        version = repo.serving_version(conn)
+    degraded = databases is not None and any(v != "ok" for v in databases.values())
     return {
-        "status": "ok",
+        "status": "degraded" if degraded else "ok",
+        **({"databases": databases} if databases is not None else {}),
         "commit": DEPLOYED_COMMIT,
         "pipeline_version": PIPELINE_VERSION,
         "data_as_of": version.get("data_as_of"),
@@ -423,6 +568,8 @@ def version(conn: Conn, city: str | None = None) -> dict[str, Any]:
     at a time: without it, a bi-weekly Los Angeles refresh would make every
     Philadelphia viewer reload a layer that had not changed.
     """
+    if pools and city is None:
+        return _version_everywhere()[0]
     return repo.serving_version(conn, city)
 
 
@@ -456,9 +603,46 @@ def _with_windows(conn, record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _from_every_database(read) -> list[dict[str, Any]]:
+    """`read(conn)`'s rows from each database, sorted by city_name.
+
+    A database that cannot answer drops out -- its cities go missing from the
+    list, the rest are served -- unless none answers, which raises (503)."""
+    rows: list[dict[str, Any]] = []
+    last_error: Exception | None = None
+    answered = False
+    for host, each in pools.items():
+        try:
+            with each.connection() as conn:
+                rows.extend(read(conn))
+            answered = True
+        except Exception as exc:  # noqa: BLE001 - one database down is not an outage
+            log.warning("cities from %s skipped: %s: %s", host, type(exc).__name__, exc)
+            last_error = exc
+    if not answered and last_error is not None:
+        raise last_error
+    rows.sort(key=lambda r: r["city_name"])
+    return rows
+
+
+def list_cities_all() -> list[dict[str, Any]]:
+    """repo.list_cities over every database (the one, without shards)."""
+    if not pools:
+        with pool_for(None).connection() as conn:
+            return repo.list_cities(conn)
+    return _from_every_database(repo.list_cities)
+
+
 @app.get(f"{API}/cities", tags=["cities"])
 def cities(conn: Conn) -> dict[str, Any]:
-    return {"cities": [_with_windows(conn, r) for r in repo.list_cities(conn)]}
+    if not pools:
+        return {"cities": [_with_windows(conn, r) for r in repo.list_cities(conn)]}
+    # Each city's windows and caveats come from its own database.
+    return {
+        "cities": _from_every_database(
+            lambda shard_conn: [_with_windows(shard_conn, r) for r in repo.list_cities(shard_conn)]
+        )
+    }
 
 
 @app.get(f"{API}/cities/{{source_id}}", tags=["cities"])

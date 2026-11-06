@@ -20,6 +20,12 @@ written down once:
    -- backfill (BACKFILL_MONTHS deep; the Kubernetes ConfigMap sets 12),
    census blocks, gold, the time-of-day layers, per city, in dependency order.
 
+With cities split across databases (settings.db_shards), the Job runs this
+once per database through `python -m safety.shards run`, which sets
+BOOTSTRAP_CITIES and SHARD_CITIES to that database's cities. Step 2 then also
+disables every other city there -- migrate leaves Philadelphia enabled on a
+fresh database, and two databases loading the same city would both serve it.
+
 Re-running it is always safe: migrate and enable are idempotent and ops does
 only what the data says is missing. The Job sets OPS_RETRY_COOLDOWN_HOURS=0 so
 a retried pod is not held off for six hours by the `running` ledger row its
@@ -49,6 +55,17 @@ def parse_cities(value: str) -> list[str]:
         if city and city not in seen:
             seen.append(city)
     return seen
+
+
+def enabled_cities() -> list[str]:
+    """The cities this database's registry has switched on."""
+    from safety.db import connect
+
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT source_id FROM reference.source_registry WHERE enabled ORDER BY source_id"
+        ).fetchall()
+    return [row["source_id"] for row in rows]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -103,6 +120,12 @@ def main(argv: list[str] | None = None) -> int:
                 not_ready.append(city)
         if not_ready:
             log.warning("left disabled (not ready): %s", ", ".join(not_ready))
+        own = parse_cities(settings.shard_cities)
+        if own:
+            for city in enabled_cities():
+                if city not in own:
+                    log.info("disabling %s: this database holds %s", city, ", ".join(own))
+                    run.main(["enable", "--city", city, "--off"])
 
     rc = 0
     if not args.skip_converge:

@@ -118,8 +118,10 @@ def _with_conn(fn: Callable[..., T], *args: Any) -> T:
     # Imported here, not at the top: main imports this module to mount it.
     from safety.api import main
 
-    assert main.pool is not None, "connection pool not initialised"
-    with main.pool.connection() as conn:
+    # Every per-city query here takes the source_id first; with the cities
+    # split across databases (safety/shards.py) that picks the database.
+    city = args[0] if args and isinstance(args[0], str) else None
+    with main.pool_for(city).connection() as conn:
         return fn(conn, *args)
 
 
@@ -148,7 +150,10 @@ async def served_cities(routing: Routing) -> dict[str, dict[str, Any]]:
     """Served cities by source_id, cached for a few minutes (service.py)."""
 
     async def load() -> dict[str, dict[str, Any]]:
-        rows = await db(repo.list_cities)
+        from safety.api import main
+
+        # Every database's cities, when they are split (main.list_cities_all).
+        rows = await run_in_threadpool(main.list_cities_all)
         return {row["source_id"]: {k: row.get(k) for k in _CITY_FIELDS} for row in rows}
 
     return await routing.cities.get_or_create("cities", load)

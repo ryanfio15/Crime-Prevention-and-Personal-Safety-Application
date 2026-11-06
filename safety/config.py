@@ -253,8 +253,27 @@ class Settings(BaseSettings):
     # (docs/DEPLOYMENT.md, "Enabling a city"); drop `aus` here to leave it off.
     bootstrap_cities: str = "phl,chi,sea,lax,dc,aus"
 
-    @property
-    def dsn(self) -> str:
+    # --- Cities split across databases (safety/shards.py) -------------------
+    #
+    # Empty (the default, and every deployment but one): one database holds
+    # every city. Otherwise `host=city,city;host=city,city`, e.g.
+    #   safety-db1-rw=lax,dc;safety-db2-rw=aus,phl;safety-db3-rw=chi,sea
+    # -- for hardware where no single disk holds all six cities (the FABRIC
+    # `sharded` profile, docs/KUBERNETES.md). Every database carries the full
+    # schema; the API routes each request to its city's database, and the
+    # jobs run once per database (`python -m safety.shards run -- <cmd>`).
+    db_shards: str = ""
+    # Set per database by `safety.shards run`, never by hand: the cities the
+    # database it points at holds. The bootstrap disables every other city
+    # there, so no two databases load the same one.
+    shard_cities: str = ""
+    # Where the ETL lock (safety/joblock.py) is taken. Empty: POSTGRES_HOST.
+    # With shards it names one database for all of them, so a job on one
+    # database and a job on another still never overlap -- they share one ETL
+    # node's memory and the city portals' patience.
+    joblock_host: str = ""
+
+    def dsn_for(self, host: str) -> str:
         if not self.postgres_password:
             raise RuntimeError(
                 "POSTGRES_PASSWORD is not set; put it in the instance .env (see .env.example)"
@@ -263,9 +282,13 @@ class Settings(BaseSettings):
         # connections (safety/db.py) and the API's pool (safety/api/main.py).
         return (
             f"postgresql://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+            f"@{host}:{self.postgres_port}/{self.postgres_db}"
             f"?connect_timeout={self.connect_timeout_seconds}"
         )
+
+    @property
+    def dsn(self) -> str:
+        return self.dsn_for(self.postgres_host)
 
 
 settings = Settings()

@@ -61,8 +61,10 @@ _PING_SECONDS = 60.0
 def _connect() -> psycopg.Connection:
     # Keepalives so a lock held through a multi-hour backfill is not silently
     # dropped by an idle-connection reaper between the pod and the database.
+    # joblock_host: with cities split across databases, one of them holds the
+    # lock for all (safety/config.py).
     return psycopg.connect(
-        settings.dsn,
+        settings.dsn_for(settings.joblock_host or settings.postgres_host),
         autocommit=True,
         keepalives=1,
         keepalives_idle=60,
