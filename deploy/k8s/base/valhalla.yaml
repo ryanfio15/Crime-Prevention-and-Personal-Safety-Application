@@ -16,6 +16,10 @@ metadata:
 spec:
   replicas: 2
   revisionHistoryLimit: 3
+  # A new pod downloads ~1.2 GB before it is ready; through a slow path
+  # (FABRIC's shared NAT64) that can take far longer than the default 10
+  # minutes, which would mark the rollout failed while it is still working.
+  progressDeadlineSeconds: 3600
   selector:
     matchLabels:
       app.kubernetes.io/name: valhalla

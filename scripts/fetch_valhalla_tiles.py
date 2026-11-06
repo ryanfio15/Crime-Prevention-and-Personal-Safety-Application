@@ -31,6 +31,7 @@ import argparse
 import hashlib
 import os
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -112,9 +113,21 @@ def download(client: httpx.Client, url: str, target: Path) -> None:
         try:
             with client.stream("GET", url) as response:
                 response.raise_for_status()
+                total = int(response.headers.get("content-length") or 0)
+                started = last = time.monotonic()
+                done = 0
                 with partial.open("wb") as handle:
                     for chunk in response.iter_bytes(1 << 20):
                         handle.write(chunk)
+                        done += len(chunk)
+                        now = time.monotonic()
+                        # Every 30 s: on a slow path (FABRIC's shared NAT64)
+                        # this is what tells slow from stuck.
+                        if now - last >= 30:
+                            last = now
+                            rate = done / (now - started) / 1e6
+                            of = f" of {total / 1e6:.0f}" if total else ""
+                            log(f"{target.name}: {done / 1e6:.0f}{of} MB, {rate:.1f} MB/s")
             partial.replace(target)
             target.chmod(0o644)
             return

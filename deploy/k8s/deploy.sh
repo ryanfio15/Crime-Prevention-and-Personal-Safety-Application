@@ -15,6 +15,7 @@
 #   SKIP_BOOTSTRAP=1     do not create the first-load Job
 #   RERUN_BOOTSTRAP=1    delete a completed bootstrap Job and run it again
 #   FOLLOW_BOOTSTRAP=1   stream the bootstrap's log until it finishes
+#   ROUTING_WAIT_SECONDS how long to wait for routing before going on (1800)
 #
 # In order, each step waiting for the last -- the cluster-side counterpart of
 # deploy/lib/install.sh:
@@ -23,12 +24,14 @@
 #      ingress, policies), with the image substituted;
 #   3. the database cluster(s) becoming ready (three with fabric-sharded);
 #   4. the migrate Job, run fresh for this release;
-#   5. the API and Valhalla rollouts (new API pods wait for step 4 by
-#      themselves: safety/schemawait.py);
+#   5. the API rollout (new API pods wait for step 4 by themselves:
+#      safety/schemawait.py);
 #   6. the bootstrap Job, if it has never completed: enable the cities and
 #      load BACKFILL_MONTHS of data. It runs on in the background; the site
 #      serves each city as soon as its own load is done;
-#   7. a smoke test through a port-forward (deploy/lib/smoke.sh).
+#   7. the Valhalla rollout -- after the bootstrap has started, and not fatal:
+#      each new pod downloads ~1.2 GB first, slowly on some networks;
+#   8. a smoke test through a port-forward (deploy/lib/smoke.sh).
 #
 # Idempotent: run it again for every new image.
 set -euo pipefail
@@ -142,11 +145,9 @@ printf '%s\n' "$jobs" | kubectl apply -f - -l app.kubernetes.io/name=safety-migr
 wait_job safety-migrate 1800
 kubectl -n "$ns" logs job/safety-migrate --tail=5 || true
 
-# --- 5. rollouts ------------------------------------------------------------
-log "rolling out the API and routing"
+# --- 5. the API -------------------------------------------------------------
+log "rolling out the API"
 kubectl -n "$ns" rollout status deploy/safety-api --timeout=900s
-# The first Valhalla pods download ~1.2 GB of tiles before they report ready.
-kubectl -n "$ns" rollout status deploy/valhalla --timeout=1800s
 
 # --- 6. bootstrap -----------------------------------------------------------
 if [ "${SKIP_BOOTSTRAP:-0}" != 1 ]; then
@@ -174,7 +175,20 @@ if [ "${SKIP_BOOTSTRAP:-0}" != 1 ]; then
     fi
 fi
 
-# --- 7. smoke ---------------------------------------------------------------
+# --- 7. routing --------------------------------------------------------------
+# After the bootstrap has started, and not fatal: the first Valhalla pods
+# download ~1.2 GB of tiles before they report ready, which on a slow path
+# (FABRIC's NAT64) can take a long while, and the map does not need them --
+# until they are up, drive/walk/bike directions report unavailable.
+log "rolling out routing (each new pod downloads ~1.2 GB of tiles first)"
+if ! kubectl -n "$ns" rollout status deploy/valhalla --timeout="${ROUTING_WAIT_SECONDS:-1800}s"; then
+    echo "routing is not ready yet; the site is deployed without it for now." >&2
+    kubectl -n "$ns" get pods -l app.kubernetes.io/name=valhalla -o wide || true
+    kubectl -n "$ns" logs -l app.kubernetes.io/name=valhalla -c fetch-tiles --prefix --tail=4 || true
+    echo "follow it: kubectl -n $ns logs -f -l app.kubernetes.io/name=valhalla -c fetch-tiles --prefix" >&2
+fi
+
+# --- 8. smoke ---------------------------------------------------------------
 log "smoke test"
 port=18080
 kubectl -n "$ns" port-forward svc/safety-api "$port:80" > /dev/null 2>&1 &
