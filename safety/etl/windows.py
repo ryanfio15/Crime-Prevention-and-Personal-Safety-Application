@@ -38,6 +38,20 @@ def months_before(now: datetime, months: int) -> datetime:
     return datetime(year, month, 1, tzinfo=timezone.utc)
 
 
+def retention_floor(config: "SourceConfig | None" = None, now: datetime | None = None) -> datetime:
+    """The earliest instant worth fetching: the retention cutoff, less a day.
+
+    The cutoff is a local date; the extra day covers the UTC offset. Promotion
+    drops anything still older (safety.etl.transform.promote_to_silver).
+    """
+    from safety.etl import retention
+
+    keep_from = retention.cutoff(getattr(config, "timezone", None), now)
+    return datetime(keep_from.year, keep_from.month, keep_from.day, tzinfo=timezone.utc) - timedelta(
+        days=1
+    )
+
+
 def backfill_window(
     months: int, config: "SourceConfig | None" = None
 ) -> tuple[datetime, datetime]:
@@ -57,6 +71,10 @@ def backfill_window(
     now = datetime.now(timezone.utc)
     until = now + timedelta(days=1)
     since = months_before(now, months) - timedelta(days=1)
+
+    # Never further back than the retention cutoff (safety.etl.retention): the
+    # city keeps one rolling year, so fetching more would only be deleted again.
+    since = max(since, retention_floor(config, now))
 
     floor = getattr(config, "backfill_start_date", None)
     if floor is not None:

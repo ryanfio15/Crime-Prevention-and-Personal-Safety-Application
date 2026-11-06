@@ -130,19 +130,37 @@ class WashingtonDcEsriAdapter(SourceAdapter):
             )
         return layers
 
-    def fetch_incidents(self, since: datetime, until: datetime) -> Iterator[RawChunk]:
+    @staticmethod
+    def _where(since: datetime, until: datetime) -> tuple[datetime, datetime, str]:
         lo = since - timedelta(days=1)
         hi = until + timedelta(days=1)
+        where = (
+            f"REPORT_DAT >= TIMESTAMP '{lo.astimezone(timezone.utc):%Y-%m-%d %H:%M:%S}' "
+            f"AND REPORT_DAT < TIMESTAMP '{hi.astimezone(timezone.utc):%Y-%m-%d %H:%M:%S}'"
+        )
+        return lo, hi, where
+
+    def expected_chunks(self, since: datetime, until: datetime) -> int | None:
+        """Pages across the year layers the window touches, from a count query each."""
+        lo, hi, where = self._where(since, until)
+        layers = self._year_layers()
+        pages = 0
+        for year in (y for y in sorted(layers) if lo.year <= y <= hi.year):
+            body = self._get(
+                f"{self.config.base_url}/{layers[year]}/query",
+                {"where": where, "returnCountOnly": "true", "f": "json"},
+            )
+            pages += max(1, -(-int(body.get("count", 0)) // _PAGE_SIZE))
+        return pages or None
+
+    def fetch_incidents(self, since: datetime, until: datetime) -> Iterator[RawChunk]:
+        lo, hi, where = self._where(since, until)
         layers = self._year_layers()
         years = [y for y in sorted(layers) if lo.year <= y <= hi.year]
         missing = [y for y in range(max(lo.year, min(layers)), hi.year + 1) if y not in layers]
         if missing:
             log.warning("dc: no layer published for year(s) %s", missing)
 
-        where = (
-            f"REPORT_DAT >= TIMESTAMP '{lo.astimezone(timezone.utc):%Y-%m-%d %H:%M:%S}' "
-            f"AND REPORT_DAT < TIMESTAMP '{hi.astimezone(timezone.utc):%Y-%m-%d %H:%M:%S}'"
-        )
         for year in years:
             url = f"{self.config.base_url}/{layers[year]}/query"
             offset = 0

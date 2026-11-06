@@ -11,9 +11,10 @@ do not configure (the Docker image, below), or if a request reaches uvicorn
 without passing through nginx's zones.
 
 The response cache in front of `/cells` (`cached()` in main.py, an LRU bounded
-by entry count and a byte budget) absorbs repeated *identical* requests, but
-`bbox` and `min_count` are free-form query parameters, so walking them still
-reaches the database. The limit is what bounds that.
+by entry count and a byte budget) absorbs repeated *identical* requests; a
+layer is only ever one city, one of two cell sizes, an hour and a weekday, so
+there are few distinct ones, but a cold layer still costs a query. The limit is
+what bounds a client asking for many of them at once.
 
 Four zones, because the endpoints are not equally expensive:
 
@@ -36,9 +37,10 @@ single client must not be able to spend the whole day's budget
 address and picking one; burst 6 on directions covers trying every mode for one
 trip.
 
-The frontend refetches the layer only on a window, category or resolution change
-and never on pan or zoom, so a person working the controls cannot reach the
-tight ceiling; burst 10 covers clicking through every category in one go.
+The frontend loads every city's layer when it opens -- six requests, inside the
+burst, three at a time -- and after that only a city whose cell size changes as
+it comes into view zoomed in, or whose hour rolls over, so a person moving the
+map does not reach the tight ceiling.
 Static assets and `/docs` are not limited at all.
 
 Who the client is. Buckets are keyed on `scope["client"]`, the address uvicorn

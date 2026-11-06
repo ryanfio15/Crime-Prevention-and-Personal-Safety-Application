@@ -45,7 +45,7 @@ import re
 import sys
 import time
 from collections.abc import Callable
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import psycopg
@@ -53,17 +53,15 @@ import psycopg
 from safety import PIPELINE_VERSION
 from safety.db import connect, wait_for_db
 from safety.etl import boundary as boundary_loader
-from safety.etl import census, gold, pending, transform, validate, withdrawn
+from safety.etl import census, gold, pending, progress, retention, transform, validate, withdrawn
 from safety.etl.adapters import (
     ADAPTERS,
-    HISTORY_DATASETS,
-    PRIMARY_HISTORY_START,
     SourceConfig,
     get_adapter,
 )
 from safety.etl.adapters.base import NormalizedIncident, RawChunk, SourceAdapter
 from safety.etl.bronze import LocalBronzeStore, build_manifest
-from safety.etl.windows import backfill_window, months_before
+from safety.etl.windows import backfill_window, retention_floor
 from safety.config import settings
 
 log = logging.getLogger("safety.etl")
@@ -372,8 +370,12 @@ def _ingest(
     since: datetime,
     until: datetime,
     reconcile: bool = False,
+    track_progress: bool = False,
 ) -> dict[str, Any]:
     """Fetch, validate and promote one pull.
+
+    `track_progress` (a city's first load) records how far the fetch has got in
+    etl.load_progress, for the progress bar on the live site.
 
     `reconcile` (incrementals with a watermark only, never a backfill or a bronze
     replay) also compares the revision window with silver and handles records
@@ -408,9 +410,13 @@ def _ingest(
         pull = store.open_pull(config.source_id, config.incident_dataset, pull_id)
         chunks: list[RawChunk] = []
         chunk_counts: dict[str, int] = {}
+        if track_progress:
+            progress.begin(config.source_id, _expected_chunks(adapter, since, until))
         for chunk in adapter.fetch_incidents(since, until):
             pull.write_chunk(chunk)
             chunk_counts[chunk.name] = chunk.record_count or 0
+            if track_progress:
+                progress.step(conn, config.source_id, len(chunks) + 1)
             # Keep the payload only long enough to parse it; the durable copy
             # is already on disk.
             chunks.append(chunk)
@@ -439,6 +445,8 @@ def _ingest(
                     records.append(normalized)
         fetched = len(records)
         log.info("pull %s: normalized %s records", pull_id, fetched)
+        if track_progress:
+            progress.phase(conn, config.source_id, "promote")
 
         if fetched == 0:
             _finish_pull(
@@ -558,9 +566,20 @@ def _ingest(
 
     except Exception as exc:
         conn.rollback()
+        if track_progress:
+            progress.fail(config.source_id)
         _finish_pull(conn, pull_id, status="failed", started=started, error=repr(exc))
         _mark_source_failure(conn, config.source_id, "failed", repr(exc))
         raise
+
+
+def _expected_chunks(adapter: SourceAdapter, since: datetime, until: datetime) -> int | None:
+    """How many chunks the fetch will yield, if the adapter can say; never raises."""
+    try:
+        return adapter.expected_chunks(since, until)
+    except Exception as exc:
+        log.info("%s: could not size the fetch in advance: %s", adapter.source_id, exc)
+        return None
 
 
 def _reconcile_safely(
@@ -817,8 +836,10 @@ def cmd_backfill(args: argparse.Namespace) -> int:
         config = SourceConfig.load(conn, args.city)
         _require_enabled(config)
         since, until = backfill_window(months, config)
-        outcome = _ingest(conn, config, mode="backfill", since=since, until=until)
-        if outcome["status"] == "succeeded":
+        outcome = _ingest(
+            conn, config, mode="backfill", since=since, until=until, track_progress=True
+        )
+        if outcome["status"] == "succeeded" and not args.skip_gold:
             stats = gold.refresh_all(
                 conn,
                 config.source_id,
@@ -842,8 +863,9 @@ def cmd_incremental(args: argparse.Namespace) -> int:
         else:
             # S8.3: re-read behind the watermark and upsert, because these
             # agencies revise and reclassify after initial publication.
-            since = config.last_success_watermark - timedelta(
-                days=config.revision_lookback_days
+            since = max(
+                config.last_success_watermark - timedelta(days=config.revision_lookback_days),
+                retention_floor(config),
             )
 
         outcome = _ingest(
@@ -852,11 +874,17 @@ def cmd_incremental(args: argparse.Namespace) -> int:
             mode="incremental",
             since=since,
             until=until,
-            # Not on the backfill fallback: a 24-month re-read is not a revision window.
+            # Not on the backfill fallback: a full re-read is not a revision window.
             reconcile=config.last_success_watermark is not None,
+            # The fallback is a city's first load, and gets the progress bar.
+            track_progress=config.last_success_watermark is None,
         )
         # Every run, whatever the outcome and the mode (F13 retention, 90 days).
         _prune_safely(conn, config.source_id, settings.withdrawn_retention_days)
+        # One rolling year (safety/etl/retention.py): anything 366+ days old goes,
+        # in silver and in bronze. Marks gold for a full rebuild when it deletes,
+        # which the refresh below then does.
+        retention.apply(conn, config.source_id)
         # Not only after a succeeded pull: a pull with nothing new still leaves
         # gold behind if an earlier refresh failed after its pull committed, and
         # refresh_all is a no-op when nothing is pending (safety.etl.pending).
@@ -871,212 +899,6 @@ def cmd_incremental(args: argparse.Namespace) -> int:
             outcome.update(stats)
     print(json.dumps(outcome, indent=2, default=str))
     return 0
-
-
-# ---------------------------------------------------------------------------
-# History: a city's full published record, a slice at a time
-# ---------------------------------------------------------------------------
-#
-# The backfill loads a trailing 24 months; `history` walks back from the oldest
-# date already covered to registry.history_start_date (migration 018), one
-# slice per pull. Slices keep memory bounded -- _ingest holds a whole pull in
-# memory before validating it -- and make the load resumable for free: coverage
-# is read back from etl.pull_run each run, so a failed or interrupted slice is
-# simply the next one tried. A slice that finds nothing (`no_new_data`, a year
-# the dataset does not reach) still counts as covered.
-#
-# History pulls never touch the watermark (_mark_source_success takes the max),
-# never reconcile withdrawn records, and are their own mode, so they neither
-# count as the cadence's "last looked" nor skew a backfill's volume median.
-
-# Months per slice. Chicago publishes up to ~46,000 incidents a month in the
-# early 2000s; three months of that is ~140,000 records in memory at once.
-HISTORY_SLICE_MONTHS = {"chi": 3}
-DEFAULT_HISTORY_SLICE_MONTHS = 6
-
-_HISTORY_MODES = ("backfill", "incremental", "history")
-
-_COVERED_FROM_SQL = """
-SELECT min(window_start) AS covered_from
-FROM etl.pull_run
-WHERE source_id = %s
-  AND mode   = ANY(%s)
-  AND status = ANY(%s)
-  AND window_start IS NOT NULL
-  AND (%s::text IS NULL OR dataset = %s)
-  AND NOT (dataset = ANY(%s))
-"""
-
-
-def history_covered_from(
-    conn: psycopg.Connection,
-    source_id: str,
-    *,
-    dataset: str | None = None,
-    exclude: tuple[str, ...] = (),
-) -> datetime | None:
-    """The oldest date any completed incident or history pull asked for.
-
-    `dataset` narrows it to one dataset and `exclude` leaves some out: a city
-    with older datasets (HISTORY_DATASETS) tracks how far each one has got
-    separately from its current dataset.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            _COVERED_FROM_SQL,
-            (
-                source_id,
-                list(_HISTORY_MODES),
-                list(_COMPLETED_STATUSES),
-                dataset,
-                dataset,
-                list(exclude),
-            ),
-        )
-        row = cur.fetchone()
-    return row["covered_from"] if row else None
-
-
-def history_slices(
-    covered_from: datetime, floor: date, slice_months: int
-) -> list[tuple[datetime, datetime]]:
-    """Fetch windows from `covered_from` back to `floor`, newest first.
-
-    Newest first so the city's window list grows a year at a time as the load
-    proceeds, rather than with a hole in the middle. Padded a day each side,
-    as backfill_window is: chunk boundaries are UTC and the sources report
-    local dates, and re-reading a day is an upsert.
-    """
-    floor_ts = datetime(floor.year, floor.month, floor.day, tzinfo=timezone.utc)
-    slices = []
-    cursor = covered_from
-    while cursor > floor_ts:
-        # cursor + 1 day: after the padding the cursor sits on the last day of a
-        # month, and months_before counts that month as one of the n, which
-        # would quietly stretch every slice after the first by a month.
-        start = months_before(cursor + timedelta(days=1), slice_months)
-        since = max(floor_ts, start - timedelta(days=1))
-        slices.append((since, cursor + timedelta(days=1)))
-        cursor = since
-    return slices
-
-
-def history_remaining(
-    conn: psycopg.Connection, config: SourceConfig, slice_months: int | None = None
-) -> list[tuple[str, datetime, datetime]]:
-    """(dataset, since, until) for every slice still to load, newest first.
-
-    The city's current dataset first, back to its own start; then each older
-    dataset in HISTORY_DATASETS from its last day back to its first. Each part
-    resumes from its own completed pulls. None of it reaches past the city's
-    history_start_date.
-    """
-    floor = config.history_start_date
-    if floor is None:
-        return []
-    older = HISTORY_DATASETS.get(config.source_id, ())
-    covered = history_covered_from(
-        conn, config.source_id, exclude=tuple(d for d, _, _ in older)
-    )
-    if covered is None:
-        return []
-    months = slice_months or HISTORY_SLICE_MONTHS.get(
-        config.source_id, DEFAULT_HISTORY_SLICE_MONTHS
-    )
-    primary_floor = max(floor, PRIMARY_HISTORY_START.get(config.source_id, floor))
-    remaining = [
-        (config.incident_dataset, since, until)
-        for since, until in history_slices(covered, primary_floor, months)
-    ]
-    for dataset, start, end in older:
-        if end <= floor:
-            continue
-        # Never read: start from its last day, which history_slices pads by one.
-        cursor = history_covered_from(conn, config.source_id, dataset=dataset) or (
-            datetime(end.year, end.month, end.day, tzinfo=timezone.utc) - timedelta(days=1)
-        )
-        remaining.extend(
-            (dataset, since, until)
-            for since, until in history_slices(cursor, max(start, floor), months)
-        )
-    return remaining
-
-
-def cmd_history(args: argparse.Namespace) -> int:
-    """Load older slices of a city's published history until a budget runs out.
-
-    Refuses unless the registry says this instance may (history_enabled), so a
-    deploy or a stray `--all` cannot start a twenty-year load on its own. Gold is
-    rebuilt once at the end, and only if this run finished the city's history:
-    until then the six-hourly incremental's own refresh picks up each new year,
-    and rebuilding thirty windows after every slice would be most of the cost.
-    """
-    with connect() as conn:
-        config = SourceConfig.load(conn, args.city)
-        _require_enabled(config)
-        if not config.history_enabled and not args.force:
-            print(
-                f"history is not enabled for {config.source_id} on this instance. "
-                "Turn it on with:\n"
-                f"  python -m safety.etl.run enable --city {config.source_id} --history\n"
-                "or pass --force for a one-off run.",
-                file=sys.stderr,
-            )
-            return 1
-        if history_covered_from(conn, config.source_id) is None:
-            print(
-                f"{config.source_id} has no completed backfill yet; run "
-                f"`backfill --city {config.source_id}` first.",
-                file=sys.stderr,
-            )
-            return 1
-
-        remaining = history_remaining(conn, config, args.slice_months)
-        deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes else None
-        outcomes: list[dict[str, Any]] = []
-        for dataset, since, until in remaining[: args.max_slices or None]:
-            if deadline is not None and outcomes and time.monotonic() > deadline:
-                break
-            if outcomes and args.pause_seconds:
-                time.sleep(args.pause_seconds)
-            outcome = _ingest(
-                conn,
-                dataclasses.replace(config, incident_dataset=dataset),
-                mode="history",
-                since=since,
-                until=until,
-            )
-            outcomes.append(
-                {
-                    "dataset": dataset,
-                    "since": since.date().isoformat(),
-                    "until": until.date().isoformat(),
-                    "status": outcome["status"],
-                    "upserted": outcome.get("upserted", 0),
-                }
-            )
-            if outcome["status"] not in _COMPLETED_STATUSES:
-                # A blocked slice is a data problem worth a human; do not walk
-                # past it into older years and leave a hole behind.
-                break
-
-        left = history_remaining(conn, config, args.slice_months)
-        summary: dict[str, Any] = {
-            "city": config.source_id,
-            "history_start_date": str(config.history_start_date),
-            "slices_run": outcomes,
-            "slices_left": len(left),
-            "covered_from": str(history_covered_from(conn, config.source_id)),
-        }
-        if not left and outcomes and not args.no_gold:
-            summary.update(
-                gold.refresh_all(
-                    conn, config.source_id, PIPELINE_VERSION, include_hourly=False
-                )
-            )
-    print(json.dumps(summary, indent=2, default=str))
-    blocked = [o for o in outcomes if o["status"] not in _COMPLETED_STATUSES]
-    return 1 if blocked else 0
 
 
 def cmd_reprocess(args: argparse.Namespace) -> int:
@@ -1116,7 +938,7 @@ def cmd_reprocess(args: argparse.Namespace) -> int:
             target = args.pull_id if args.pull_id is not None else "any pull"
             print(f"No stored bronze snapshot for {target}", file=sys.stderr)
             return 1
-        # A history pull may come from an older dataset with its own reader.
+        # The pull may have come from another dataset with its own reader.
         config = dataclasses.replace(config, incident_dataset=original["dataset"])
         adapter = get_adapter(config)
         log.info(
@@ -1211,6 +1033,7 @@ def cmd_census(args: argparse.Namespace) -> int:
         ensure_boundary(conn, get_adapter(config), config)
         store = LocalBronzeStore()
         loaded: dict[str, int] = {}
+        progress.phase(conn, config.source_id, "census", total=2)
 
         for dataset, fetch, load in (
             (
@@ -1261,6 +1084,7 @@ def cmd_census(args: argparse.Namespace) -> int:
 
                 rows = load(payload)
                 loaded[dataset] = rows
+                progress.step(conn, config.source_id, len(loaded))
                 _finish_pull(
                     conn,
                     pull_id,
@@ -1279,13 +1103,27 @@ def cmd_census(args: argparse.Namespace) -> int:
                 raise
 
         # The cell universe has to exist before anything can be apportioned into
-        # it. On a first run it will not, and that is a `gold` refresh away --
-        # which itself calls back into this, so the ordering resolves either way.
+        # it. On a first load it does not -- the backfill skips gold until census
+        # is in (safety.ops) -- and the gold refresh that follows builds the
+        # exposure layer itself, so there is nothing to do here yet.
         #
         # rebuild=True because the blocks were just reloaded: a gold refresh only
         # tops up the cells that have no figure yet, which is the right default
         # when the denominator has not moved and the wrong one here.
-        cells = gold.refresh_cell_exposure(conn, config.source_id, rebuild=True)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM gold.cell_geometry WHERE source_id = %s) AS built",
+                (config.source_id,),
+            )
+            has_cells = cur.fetchone()["built"]
+        if has_cells:
+            cells = gold.refresh_cell_exposure(conn, config.source_id, rebuild=True)
+        else:
+            log.info(
+                "%s has no cells yet; the next gold refresh apportions the population",
+                config.source_id,
+            )
+            cells = {}
         # The rankings divide by this, and none of it is a date range: the next
         # incremental rebuilds this city's gold in full rather than skipping it.
         pending.mark(conn, config.source_id, None)
@@ -1384,6 +1222,27 @@ def _replay_reference(
     return chunks[0][1], row["bronze_uri"], row["bronze_bytes"] or 0
 
 
+def cmd_prune(args: argparse.Namespace) -> int:
+    """Delete everything older than the retention cutoff, then rebuild gold.
+
+    The incremental does this on every run; this is the same thing on demand,
+    and what safety.ops plans after a deploy onto older data.
+    """
+    with connect() as conn:
+        outcome = retention.apply(conn, args.city)
+        if outcome.get("error"):
+            print(json.dumps({"city": args.city, **outcome}, indent=2, default=str))
+            return 1
+        if outcome["partitions_dropped"] or outcome["rows_deleted"]:
+            outcome.update(
+                gold.refresh_all(
+                    conn, args.city, PIPELINE_VERSION, include_hourly=not args.skip_hourly
+                )
+            )
+    print(json.dumps({"city": args.city, **outcome}, indent=2, default=str))
+    return 0
+
+
 def cmd_gold(args: argparse.Namespace) -> int:
     with connect() as conn:
         stats = gold.refresh_all(
@@ -1406,11 +1265,7 @@ def cmd_safety(args: argparse.Namespace) -> int:
             raise LookupError(f"no silver rows for '{args.city}'; nothing to rank")
         windows = gold.city_windows(conn, args.city, anchor)
         rows, coverage = gold.refresh_safety_layer(conn, args.city, windows, args.scheme)
-        gold.write_legacy_windows(conn, args.city, ("cell_safety",))
         gold.refresh_city_snapshot(conn, args.city, PIPELINE_VERSION, coverage)
-        # The daily rollup carries the active scheme's weights, so a retuned
-        # scheme has to reach the custom date ranges too.
-        gold.refresh_cell_daily(conn, args.city, windows)
         conn.commit()
 
     print(
@@ -1443,7 +1298,6 @@ def cmd_hourly(args: argparse.Namespace) -> int:
         rows, profile_rows, share = gold.refresh_hourly_layer(
             conn, args.city, windows, args.scheme
         )
-        gold.write_legacy_windows(conn, args.city, gold.HOURLY_TABLES)
         gold.refresh_city_snapshot(
             conn, args.city, PIPELINE_VERSION, hour_coverage_share=share
         )
@@ -1654,32 +1508,6 @@ def cmd_enable(args: argparse.Namespace) -> int:
         config = SourceConfig.load(conn, args.city)
         target = not args.off
 
-        if args.history:
-            # Per instance, since prod and dev keep separate registries: dev
-            # loads and measures first (docs/OPERATIONS.md).
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE reference.source_registry
-                       SET history_enabled = %s, updated_at = now()
-                     WHERE source_id = %s
-                    """,
-                    (target, config.source_id),
-                )
-            conn.commit()
-            state = "on" if target else "off"
-            print(
-                f"history load {state} for {config.source_id} ({config.city_name}), back to "
-                f"{config.history_start_date or 'its backfill floor'}."
-            )
-            if target:
-                print(
-                    "safety.ops loads it in time-boxed runs (the hourly safety-ops@ timer, or "
-                    "after a deploy), or now with:\n"
-                    f"  python -m safety.etl.run history --city {config.source_id}"
-                )
-            return 0
-
         if target and not args.force:
             problems = _readiness(conn, config)
             if problems:
@@ -1888,12 +1716,9 @@ def _require_enabled(config: SourceConfig) -> None:
 
 
 def _window_name(value: str) -> str:
-    """argparse type for a gold window name; legacy names map to the new ones."""
-    value = gold.LEGACY_WINDOWS.get(value, value)
+    """argparse type for a gold window name."""
     if not gold.WINDOW_PATTERN.match(value):
-        raise argparse.ArgumentTypeError(
-            f"'{value}' is not a window: use last_3m, last_6m, last_9m or last_<N>y"
-        )
+        raise argparse.ArgumentTypeError(f"'{value}' is not a window: the only one is {gold.WINDOW}")
     return value
 
 
@@ -1942,6 +1767,12 @@ def build_parser() -> argparse.ArgumentParser:
     backfill = sub.add_parser("backfill", help="full trailing-window load")
     backfill.add_argument("--city", default="phl")
     backfill.add_argument("--months", type=int, default=None)
+    backfill.add_argument(
+        "--skip-gold",
+        action="store_true",
+        help="load silver only; safety.ops passes this when census still has to be "
+        "loaded, so gold is built once, after the population denominator",
+    )
     _add_all_flag(backfill)
     _add_skip_hourly_flag(backfill)
     backfill.set_defaults(func=_fannable(cmd_backfill))
@@ -1994,6 +1825,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_skip_hourly_flag(gold_cmd)
     gold_cmd.set_defaults(func=_fannable(cmd_gold))
 
+    prune_cmd = sub.add_parser(
+        "prune",
+        help=f"delete incidents and raw pulls older than the retention cutoff "
+        f"({settings.retention_days} days), then rebuild gold",
+    )
+    prune_cmd.add_argument("--city", default="phl")
+    _add_all_flag(prune_cmd)
+    _add_skip_hourly_flag(prune_cmd)
+    prune_cmd.set_defaults(func=_fannable(cmd_prune))
+
     safety_cmd = sub.add_parser("safety", help="rebuild the safety ranking only")
     safety_cmd.add_argument("--city", default="phl")
     safety_cmd.add_argument(
@@ -2012,37 +1853,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_all_flag(hourly_cmd)
     hourly_cmd.set_defaults(func=_fannable(cmd_hourly))
 
-    history_cmd = sub.add_parser(
-        "history",
-        help="load older slices of a city's published history (registry history_start_date)",
-    )
-    history_cmd.add_argument("--city", required=True)
-    history_cmd.add_argument(
-        "--slice-months",
-        type=int,
-        default=None,
-        help=f"months per pull (default {DEFAULT_HISTORY_SLICE_MONTHS}; chi 3)",
-    )
-    history_cmd.add_argument(
-        "--max-slices", type=int, default=None, help="stop after this many pulls"
-    )
-    history_cmd.add_argument(
-        "--max-minutes",
-        type=float,
-        default=None,
-        help="start no new pull after this long (the one running finishes)",
-    )
-    history_cmd.add_argument(
-        "--pause-seconds", type=float, default=5.0, help="between pulls, for the portal's sake"
-    )
-    history_cmd.add_argument(
-        "--no-gold", action="store_true", help="never rebuild gold, even when the history is complete"
-    )
-    history_cmd.add_argument(
-        "--force", action="store_true", help="run even though history_enabled is false"
-    )
-    history_cmd.set_defaults(func=cmd_history)
-
     compare_cmd = sub.add_parser(
         "safety-compare", help="diff two severity schemes on the same data"
     )
@@ -2054,7 +1864,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--window",
         default="last_1y",
         type=_window_name,
-        help="last_3m, last_6m, last_9m or last_<N>y",
+        help=f"the window to compare over (only {gold.WINDOW} is built)",
     )
     compare_cmd.add_argument("--track", default="violent", choices=gold.TRACKS)
     compare_cmd.set_defaults(func=cmd_safety_compare)
@@ -2065,11 +1875,6 @@ def build_parser() -> argparse.ArgumentParser:
     enable_cmd.add_argument("--city", required=True)
     enable_cmd.add_argument(
         "--off", action="store_true", help="disable instead of enabling"
-    )
-    enable_cmd.add_argument(
-        "--history",
-        action="store_true",
-        help="switch the full-history load on (or with --off, off) instead of the city",
     )
     enable_cmd.add_argument(
         "--force",

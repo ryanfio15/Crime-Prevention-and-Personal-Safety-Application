@@ -130,8 +130,8 @@ def main(argv: list[str] | None = None) -> int:
     rc = 0
     if not args.skip_converge:
         log.info(
-            "step 3/3: converge (backfill %s months, census, gold, time of day)",
-            settings.backfill_months,
+            "step 3/3: converge (backfill %s days, census, gold, time of day)",
+            settings.retention_days,
         )
         try:
             with etl_lock(args.lock_wait_seconds):

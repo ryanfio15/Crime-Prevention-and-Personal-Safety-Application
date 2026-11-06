@@ -101,6 +101,10 @@ class SocrataAdapter(SourceAdapter):
             yield cursor, min(nxt, until)
             cursor = nxt
 
+    def expected_chunks(self, since: datetime, until: datetime) -> int | None:
+        """One chunk per calendar month."""
+        return sum(1 for _ in self._month_starts(since, until))
+
     def fetch_incidents(self, since: datetime, until: datetime) -> Iterator[RawChunk]:
         """One chunk per calendar month, filtered on the occurrence field.
 

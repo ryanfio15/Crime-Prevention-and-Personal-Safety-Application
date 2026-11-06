@@ -189,13 +189,30 @@ class AustinEsriAdapter(SourceAdapter):
             ("legacy", LEGACY_URL, _LEGACY_LAYERS, _LEGACY_FIELDS),
         ]
 
-    def fetch_incidents(self, since: datetime, until: datetime) -> Iterator[RawChunk]:
+    @staticmethod
+    def _where(since: datetime, until: datetime) -> str:
         lo = since - timedelta(days=1)
         hi = until + timedelta(days=1)
-        where = (
+        return (
             f"OCCURRENCE_DATE >= TIMESTAMP '{lo.astimezone(timezone.utc):%Y-%m-%d %H:%M:%S}' "
             f"AND OCCURRENCE_DATE < TIMESTAMP '{hi.astimezone(timezone.utc):%Y-%m-%d %H:%M:%S}'"
         )
+
+    def expected_chunks(self, since: datetime, until: datetime) -> int | None:
+        """Pages across every layer of both services, from a count query each."""
+        where = self._where(since, until)
+        pages = 0
+        for _prefix, service_url, wanted, _fields in self._services():
+            for layer_id in self._layer_ids(service_url, wanted).values():
+                body = self._get(
+                    f"{service_url}/{layer_id}/query",
+                    {"where": where, "returnCountOnly": "true", "f": "json"},
+                )
+                pages += max(1, -(-int(body.get("count", 0)) // _PAGE_SIZE))
+        return pages or None
+
+    def fetch_incidents(self, since: datetime, until: datetime) -> Iterator[RawChunk]:
+        where = self._where(since, until)
         for prefix, service_url, wanted, fields in self._services():
             for name, layer_id in self._layer_ids(service_url, wanted).items():
                 url = f"{service_url}/{layer_id}/query"

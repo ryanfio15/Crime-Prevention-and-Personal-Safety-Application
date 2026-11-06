@@ -11,11 +11,6 @@ MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 CROSSWALK_DIR = REPO_ROOT / "reference" / "crosswalk"
 SEVERITY_DIR = REPO_ROOT / "reference" / "severity"
 WEB_DIR = REPO_ROOT / "web"
-# Dev-only alternative front end, served under /<name>/ when `extra_frontends`
-# is on: a frozen copy of the main site before the map-only redesign (the
-# ui-dev tag; scripts/pin-frontend.sh, tests/test_dev_frontend.py). It calls
-# the same /api/v1 as the main one.
-EXTRA_WEB_DIRS = {"dev": REPO_ROOT / "web-dev"}
 
 
 class Settings(BaseSettings):
@@ -44,8 +39,16 @@ class Settings(BaseSettings):
     # Local stand-in for the S3-compatible bronze bucket (design doc S9.2).
     bronze_root: Path = REPO_ROOT / "data" / "bronze"
 
-    # Trailing window the Phase 1 backfill loads (design doc S15).
-    backfill_months: int = 24
+    # How many days of incidents each city keeps (safety/etl/retention.py).
+    # Anything older -- 366 days or more before the city's local today -- is
+    # deleted from silver and never loaded again, and raw bronze pulls older
+    # than this are removed from disk. The product serves exactly one rolling
+    # year; nothing reads further back.
+    retention_days: int = 365
+
+    # Trailing window the backfill asks the source for, in months. The fetch is
+    # clamped to the retention cutoff anyway, so twelve is enough to cover it.
+    backfill_months: int = 12
 
     # Swagger UI / ReDoc / openapi.json. On by default: the frontend is served
     # from the same origin and names every endpoint in plain JavaScript
@@ -61,10 +64,6 @@ class Settings(BaseSettings):
     # development and for load testing your own instance; on anything publicly
     # reachable it is the control doing the real work.
     enable_rate_limit: bool = True
-
-    # Serve the alternative front end in EXTRA_WEB_DIRS at /dev/. Off by
-    # default so prod never grows it by merge; dev turns it on in its .env.
-    extra_frontends: bool = False
 
     # Serving-layer cache bounds (safety/api/main.py), the Redis stand-in from
     # S9.5. Settings rather than constants because the right size depends on how
@@ -148,11 +147,6 @@ class Settings(BaseSettings):
     # attempt on every unrelated code change. Six hours is below the ETL's own
     # six-hourly tick, so a genuine outage is still retried promptly.
     ops_retry_cooldown_hours: float = 6.0
-    # How long one `safety.ops` run spends loading city history (the `history`
-    # step) before it stops starting new slices. Keeps the ETL lock short enough
-    # that the six-hourly pull and deploys are never held up for long; the
-    # hourly safety-ops@.timer picks up where the last run stopped.
-    ops_history_minutes: float = 25.0
 
     # Bound on a single connection attempt. Without it libpq waits out the OS
     # TCP timeout, which only matters when a host accepts the packets and never
@@ -180,17 +174,6 @@ class Settings(BaseSettings):
     withdrawn_reconcile: str = "report"
     # How long deleted rows stay in etl.withdrawn_incident for exact recovery.
     withdrawn_retention_days: int = 90
-
-    # Gold time windows (safety/etl/gold.py, migration 018). While on, every
-    # refresh also writes last_3m / last_1y / last_2y under the names the
-    # previous release reads (last_90d / last_12m / last_24m), so rolling back
-    # still finds a map. Off by default now that no deployed release reads the
-    # old names (the API aliases them); a refresh with it off deletes the copies.
-    gold_legacy_windows: bool = False
-    # Fallback if the long windows do not fit: windows longer than this many
-    # years keep their incident counts but are built without the safety
-    # ranking. Unset builds the ranking for every window.
-    safety_max_window_years: int | None = None
 
     # --- directions (safety/routing/, docs/DESIGN.md S13) -----------------
     #

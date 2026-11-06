@@ -65,10 +65,9 @@ import psycopg
 from safety import PIPELINE_VERSION
 from safety.config import settings
 from safety.db import connect, wait_for_db
-from safety.etl import gold
+from safety.etl import gold, retention
 from safety.etl.run import (
     _COMPLETED_STATUSES,
-    _HISTORY_MODES,
     _INCIDENT_MODES,
     build_parser,
     enabled_sources,
@@ -162,17 +161,15 @@ SELECT
     ) AS has_clock_hours,
     g.last_refreshed_at AS gold_refreshed_at,
     g.pipeline_version  AS gold_pipeline_version,
-    -- The history load (safety.etl.run history, migration 018): how far back
-    -- completed pulls reach, against how far back this instance should.
-    r.history_enabled,
-    r.history_start_date,
+    -- Retention (safety/etl/retention.py): the oldest incident still kept, and
+    -- the city's zone, so the planner can tell whether anything has aged past
+    -- the one rolling year.
+    r.timezone,
     (
-        SELECT min(p.window_start)
-        FROM etl.pull_run p
-        WHERE p.source_id = %(source_id)s
-          AND p.mode   = ANY(%(history_modes)s)
-          AND p.status = ANY(%(statuses)s)
-    ) AS covered_from
+        SELECT min(i.occurred_local_date)
+        FROM silver.incident i
+        WHERE i.source_id = %(source_id)s
+    ) AS oldest_incident
 FROM (SELECT 1) _
 LEFT JOIN gold.city_snapshot g ON g.source_id = %(source_id)s
 LEFT JOIN reference.source_registry r ON r.source_id = %(source_id)s
@@ -188,7 +185,6 @@ def _city_state(conn: psycopg.Connection, source_id: str) -> dict:
                 "modes": list(_INCIDENT_MODES),
                 "statuses": list(_COMPLETED_STATUSES),
                 "hourly_windows": list(gold.HOURLY_WINDOWS),
-                "history_modes": list(_HISTORY_MODES),
             },
         )
         return cur.fetchone()
@@ -271,7 +267,11 @@ def plan_from_state(state: dict, source_id: str) -> list[Step]:
 
     if needs_backfill:
         argv = ["backfill", "--city", source_id]
-        if fold_hourly_into != "backfill":
+        if needs_census:
+            # Gold is built once, by the gold step after census: built here it
+            # would rank against no population and be thrown away minutes later.
+            argv.append("--skip-gold")
+        elif fold_hourly_into != "backfill":
             argv.append("--skip-hourly")
         steps.append(
             Step(
@@ -314,37 +314,28 @@ def plan_from_state(state: dict, source_id: str) -> list[Step]:
             )
         )
 
-    # Last, and never in the run that does the first backfill: history extends
-    # back from what that backfill covered, so it needs it on record first.
-    if (reason := _history_reason(state)) and not needs_backfill:
+    # Retention: one rolling year per city. Planned when anything has aged
+    # past it, which on an instance upgraded from a multi-year history is the
+    # first converge run after the deploy.
+    if (reason := _retain_reason(state)) and not needs_backfill:
         steps.append(
-            Step(
-                task="history",
-                city=source_id,
-                reason=reason,
-                argv=(
-                    "history",
-                    "--city",
-                    source_id,
-                    "--max-minutes",
-                    f"{settings.ops_history_minutes:g}",
-                ),
-            )
+            Step(task="retain", city=source_id, reason=reason, argv=("prune", "--city", source_id))
         )
 
     return steps
 
 
-def _history_reason(state: dict) -> str | None:
-    """Why this city's history load has more to do, or None."""
-    if not state.get("history_enabled") or state.get("history_start_date") is None:
+def _retain_reason(state: dict, now=None) -> str | None:
+    """Why this city has incidents to delete, or None."""
+    oldest = state.get("oldest_incident")
+    if oldest is None:
         return None
-    covered = state.get("covered_from")
-    if covered is None or covered.date() <= state["history_start_date"]:
+    keep_from = retention.cutoff(state.get("timezone"), now)
+    if oldest >= keep_from:
         return None
     return (
-        f"history is loaded back to {covered:%Y-%m-%d}; this instance keeps it "
-        f"from {state['history_start_date']:%Y-%m-%d}"
+        f"incidents reach back to {oldest:%Y-%m-%d}; this instance keeps "
+        f"{settings.retention_days} days, from {keep_from:%Y-%m-%d}"
     )
 
 
@@ -453,11 +444,9 @@ def _cooldown_block(conn: psycopg.Connection, step: Step, cooldown_hours: float)
             f"has not elapsed ({first}); --force or OPS_FORCE=1 to retry now"
         )
 
-    # The history load is planned until it reaches its start date and each run
-    # stops on a time budget, so "succeeded and still needed" is its normal
-    # state between runs rather than a sign it is stuck: it moved the coverage
-    # date, and the next run carries on from there.
-    if step.task == "history" and last["status"] == "succeeded":
+    # Retention is planned again every day the year rolls forward, so a success
+    # yesterday is not a loop: the cutoff moved.
+    if step.task == "retain" and last["status"] == "succeeded":
         return None
 
     # A success under an older pipeline says nothing about this one. Two
