@@ -39,7 +39,7 @@ Everything lives in the `safety` namespace, from `deploy/k8s/`:
 |---|---|
 | `base/` | The cloud-neutral manifests: config, database cluster, API, Valhalla, ETL CronJobs, backups, ingress, network policies |
 | `jobs/` | The migrate and bootstrap Jobs (rendered per release by `deploy.sh`, because Jobs are immutable) |
-| `overlays/fabric`, `fabric-small`, `fabric-minimal`, `fabric-sharded` | k3s on a FABRIC slice (`deploy/fabric/create_slice.py`). `fabric-minimal` and `fabric-sharded` fit the default per-VM caps of a project without the VM.NoLimit tag: the first with Philadelphia only, one month and no routing; the second with everything, the cities split across three databases ("City-sharded databases") |
+| `overlays/fabric`, `fabric-small`, `fabric-ram-capped`, `fabric-minimal`, `fabric-sharded` | k3s on a FABRIC slice (`deploy/fabric/create_slice.py`). `fabric-ram-capped` is the standard shape on 10 GB-RAM VMs (VM.NoLimitCPU and VM.NoLimitDisk without VM.NoLimitRAM), with the ETL on its own node ("Node layout"). `fabric-minimal` and `fabric-sharded` fit the default per-VM caps of a project without the VM.NoLimit tag: the first with Philadelphia only, one month and no routing; the second with everything, the cities split across three databases ("City-sharded databases") |
 | `overlays/aws`, `overlays/azure` | EKS and AKS: storage classes, pod CIDR, Traefik values |
 | `overlays/local` | One machine (k3d, kind): one of everything, Philadelphia only, one month |
 | `deploy.sh` | Operator, overlay, database, migrate, rollouts, bootstrap, smoke, in order |
@@ -134,6 +134,17 @@ Data nodes are tainted so a burst of API pods can never take the database's memo
 the ETL are the only things that tolerate the taint. App nodes have the CPU, which is what the API
 and routing need. With two of each, losing any one VM leaves the site up: the standby is promoted,
 and the API and Valhalla each keep at least one pod.
+
+With RAM capped at 10 GB per VM and cores and disk not (profile `ram-capped`, overlay
+`fabric-ram-capped`), the shape stays the same with one change: the ETL moves off the database
+nodes. A 7 GiB database and a census load of up to 6 GiB can't share 10 GB.
+
+| VM | Size | Role | Runs |
+|---|---|---|---|
+| `cp1` | 4 / 8 / 40 | k3s server | control plane, Traefik, operator |
+| `db1`, `db2` | 8 / 10 / 100 | `safety.io/tier=db`, taint `dedicated=db:NoSchedule` | database primary and standby only |
+| `etl1` | 4 / 10 / 80 | `safety.io/tier=data`, taint `dedicated=data:NoSchedule` | ETL, bootstrap, bronze, backups |
+| `app1`, `app2` | 8 / 10 / 60 | `safety.io/tier=app` | API pods (3–10), Valhalla (2–4) |
 
 The same labels and taint are how node pools are laid out on EKS and AKS. The base manifests only
 *prefer* the labels, so an unlabelled cluster still schedules everything. The FABRIC overlay

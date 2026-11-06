@@ -17,9 +17,35 @@ Five Ubuntu VMs at one FABRIC site on a private L2 network (10.20.0.0/24):
 That is 36 cores, 104 GB RAM and 520 GB disk. If your project's allocation is smaller,
 `--profile small` builds three VMs (cp1, data1, app1: 20 cores, 56 GB) with one database instance.
 
+### With VM.NoLimitCPU and VM.NoLimitDisk, but not VM.NoLimitRAM
+
+FABRIC grants the three limits separately. If your project has unlimited cores and disk but still
+stops at 10 GB of RAM per VM (the project's tags are listed on its page in the FABRIC portal), use:
+
+```bash
+python create_slice.py up --profile ram-capped --site MAX
+```
+
+| VM | Cores / RAM / disk | Runs |
+|---|---|---|
+| `cp1` | 4 / 8 GB / 40 GB | k3s server, Traefik (and the egress proxy at an IPv6-only site) |
+| `db1`, `db2` | 8 / 10 GB / 100 GB | database primary + standby, nothing else |
+| `etl1` | 4 / 10 GB / 80 GB | data loads and updates, bronze, nightly backups |
+| `app1`, `app2` | 8 / 10 GB / 60 GB | API pods (3–10) and routing (2–4) |
+
+That is 40 cores, 58 GB RAM and 440 GB disk. It is the standard layout with RAM as the only
+constraint:
+- one database of all six cities with a year of data;
+- a standby on the other database node and automatic failover;
+- nightly backups;
+- routing on both app nodes.
+
+The one structural change is that the data loads get their own VM. On 10 GB nodes, a 7 GB database
+and a census load of up to 6 GB (California's blocks) can't safely share one.
+
 ### Without the VM.NoLimit tag
 
-Both profiles above need VMs larger than FABRIC allows by default. A project without the
+The profiles above need VMs larger than FABRIC allows by default. A project without the
 **VM.NoLimit** tag is capped at 2 cores, 10 GB RAM and 10 GB disk per VM. A slice request beyond
 that is refused with `Your project is lacking VM.NoLimitRAM or VM.NoLimit tag`, and nothing is
 created.

@@ -80,6 +80,22 @@ jobs:
           hosts = [part.split("=")[0] for part in shards.split(";")]
           assert hosts == [name + "-rw" for _, name in clusters], hosts
           '
+      # And the ram-capped overlay keeps one database, primary + standby, on
+      # the tier=db nodes only (nothing else tolerates their taint).
+      - name: Check the ram-capped overlay
+        run: |
+          set -o pipefail
+          kubectl kustomize deploy/k8s/overlays/fabric-ram-capped | python3 -c '
+          import sys, yaml
+          docs = [d for d in yaml.safe_load_all(sys.stdin) if d]
+          clusters = [d for d in docs if d["kind"] == "Cluster"]
+          assert [c["metadata"]["name"] for c in clusters] == ["safety-db"], clusters
+          spec = clusters[0]["spec"]
+          print("instances:", spec["instances"], "affinity:", spec["affinity"])
+          assert spec["instances"] == 2
+          assert spec["affinity"]["nodeSelector"] == {"safety.io/tier": "db"}
+          assert [t["value"] for t in spec["affinity"]["tolerations"]] == ["db"]
+          '
 
   image:
     name: image

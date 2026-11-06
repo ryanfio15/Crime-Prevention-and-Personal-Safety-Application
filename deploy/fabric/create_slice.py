@@ -29,6 +29,18 @@ disk. `--profile minimal` fits those caps -- cp1, data1, app1, app2 at
 pipeline, but Philadelphia over one month and no routing pods, since the disk
 holds little more than the OS and the images.
 
+`--profile ram-capped` is for a project with VM.NoLimitCPU and VM.NoLimitDisk
+but not VM.NoLimitRAM: cores and disk as needed, 10 GB of RAM per VM. The
+standard layout's shape -- one database, a standby, failover, backups -- on
+six VMs (the `fabric-ram-capped` overlay):
+
+    cp1         4 cores /  8 GB /  40 GB   control plane, Traefik
+    db1, db2    8 cores / 10 GB / 100 GB   database primary + standby
+                                           tier=db, taint dedicated=db
+    etl1        4 cores / 10 GB /  80 GB   ETL jobs, bronze, backups
+                                           tier=data, taint dedicated=data
+    app1, app2  8 cores / 10 GB /  60 GB   API pods, Valhalla; tier=app
+
 `--profile sharded` also fits the caps and keeps everything: all six cities
 with a year of data, and routing. No 10 GB disk holds the whole database, so
 the cities are split across three database VMs, two each, and the API sends
@@ -101,6 +113,16 @@ PROFILES = {
         "app1": (2, 8, 10, "app"),
         "app2": (2, 8, 10, "app"),
     },
+    # VM.NoLimitCPU and VM.NoLimitDisk but not VM.NoLimitRAM: only memory
+    # stops at 10 GB, so the database and the ETL each get their own VMs.
+    "ram-capped": {
+        "cp1": (4, 8, 40, "control"),
+        "db1": (8, 10, 100, "db"),
+        "db2": (8, 10, 100, "db"),
+        "etl1": (4, 10, 80, "data"),
+        "app1": (8, 10, 60, "app"),
+        "app2": (8, 10, 60, "app"),
+    },
     # Also inside the caps (RAM is capped at "more than 10 GB", so 10 is
     # allowed; the databases and the ETL get it).
     "sharded": {
@@ -119,6 +141,7 @@ OVERLAY = {
     "small": "fabric-small",
     "minimal": "fabric-minimal",
     "sharded": "fabric-sharded",
+    "ram-capped": "fabric-ram-capped",
 }
 # Profiles whose VMs have 10 GB disks: the OS is trimmed before k3s goes on,
 # and the kubelet is told to evict only when a disk is nearly full -- its
@@ -203,7 +226,8 @@ def create(fablib, args) -> None:
         sys.exit(
             f"FABRIC refused the slice: {_policy_detail(exc)}\n\n"
             "Your project caps each VM at 2 cores, 10 GB RAM and 10 GB disk until it is "
-            "granted the VM.NoLimit tag. Either\n"
+            "granted the VM.NoLimit tag (or the CPU/RAM/Disk ones separately). With "
+            "VM.NoLimitCPU and VM.NoLimitDisk but not RAM, use --profile ram-capped. Else\n"
             "  * ask the project owner (your PI or instructor) to request VM.NoLimit for the "
             "project in the FABRIC portal, then rerun this command; or\n"
             "  * run within the caps: python create_slice.py up --profile sharded "
@@ -377,9 +401,11 @@ def install_k3s(slice_, profile, ips: dict[str, str]) -> None:
         if role == "data":
             extra += " --node-taint dedicated=data:NoSchedule"
         elif role == "db":
-            # db1 -> shard 1: the fabric-sharded overlay pins each database here.
-            shard = "".join(ch for ch in name if ch.isdigit())
-            extra += f" --node-label safety.io/db-shard={shard} --node-taint dedicated=db:NoSchedule"
+            extra += " --node-taint dedicated=db:NoSchedule"
+            if profile_name(profile) == "sharded":
+                # db1 -> shard 1: the fabric-sharded overlay pins each database here.
+                shard = "".join(ch for ch in name if ch.isdigit())
+                extra += f" --node-label safety.io/db-shard={shard}"
         elif role == "route":
             extra += " --node-taint dedicated=route:NoSchedule"
         if capped:
