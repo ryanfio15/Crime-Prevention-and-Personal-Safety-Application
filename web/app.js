@@ -1,5 +1,8 @@
 /* ---------------------------------------------------------------------------
-   Temporary Phase 1 front end.
+   The map: every covered city at once, over the last year, coloured by each
+   cell's relative risk against the rest of its own city at the hour and day it
+   is now there. The only controls are Show tiles and the violent / non-violent
+   toggle; there is no other data to choose.
 
    Reads only the precomputed gold-layer endpoints -- it never asks the server
    to aggregate anything (design doc S9.3). The one computation it does locally
@@ -9,9 +12,8 @@
 
 const API = "/api/v1";
 
-/* The city to open on, when the URL does not say. Not "the only city": the
-   picker is populated from /api/v1/cities, and this is only the fallback if that
-   city is among them. Otherwise the first one served wins. */
+/* The city the map opens framed on, when the visitor's own location is not
+   known. Every city is loaded either way; this only picks where to look first. */
 const DEFAULT_CITY = "phl";
 
 /* A distinct state, not the bottom of the ramp: nothing was reported here. */
@@ -111,7 +113,7 @@ function valueRampStops(colors) {
 }
 
 /**
- * City average of `prop` across the cells this view actually paints.
+ * One city's average of `prop` across the cells of it that take a colour.
  *
  * Computed here rather than served, for the same reason the hourly count rank
  * is: the features are already in the browser, and the alternative is another
@@ -121,16 +123,16 @@ function valueRampStops(colors) {
  *
  * A rate per person is averaged per person, weighted by each cell's exposure,
  * so the average is the city's rate and not the mean of its cells' rates -- the
- * same sense `cityExposureRate` gives the panel's percentage. A count has no
+ * same sense the ranking itself has. A count has no
  * denominator to weight by, and neither does a layer ranked by area, so those
  * take a plain mean.
  */
-function valueDomain(prop, isPainted, perPerson) {
+function valueDomain(features, prop, isPainted, perPerson) {
   let sum = 0;
   let painted = 0;
   let weighted = 0;
   let people = 0;
-  for (const feature of state.features) {
+  for (const feature of features) {
     const p = feature.properties;
     if (!isPainted(p)) continue;
     const value = p[prop];
@@ -147,82 +149,11 @@ function valueDomain(prop, isPainted, perPerson) {
   return average > 0 ? { average, painted } : null;
 }
 
-/**
- * Citywide severity-weighted offence per ambient person on one safety track,
- * for the layer on screen. Per track, like the ranking: a violent and a
- * non-violent offence are never added together.
- *
- * Summed here rather than served for the same reason `valueDomain` is: the
- * features are already in the browser, and the alternative is another
- * precomputed figure existing only to fill one line of one panel. The activity
- * layer is dense and the client fetches it unfiltered, so this is the whole city
- * and not a sample of it.
- *
- * Numerator and denominator are accumulated over the same cells -- the ones
- * carrying a population figure. Counting incidents from a cell whose exposure is
- * unknown would add to the top of the fraction without adding to the bottom, and
- * make the city look worse than it is.
- */
-function cityExposureRate(weightedProp) {
-  let weighted = 0;
-  let people = 0;
-  for (const feature of state.features) {
-    const p = feature.properties;
-    if (typeof p.exposure !== "number" || p.exposure <= 0) continue;
-    weighted += p[weightedProp] ?? 0;
-    people += p.exposure;
-  }
-  return people > 0 ? { weighted, people, rate: weighted / people } : null;
-}
-
-/* Below this many ambient people, a rate per person is two small numbers
-   divided: a cell with nine people and three offences comes out at twenty-four
-   times the city average, which is arithmetic rather than a finding. */
-const RELATIVE_MIN_EXPOSURE = 100;
-
-/**
- * One cell's severity-weighted offence per person on the selected track,
- * against the city's own on that track.
- *
- * Read out of `state.features` rather than out of the detail payload, because
- * the feature is what is on screen. Both sides of the ratio then come from one
- * layer and share a denominator definition -- the same ambient
- * residents-and-jobs figure the safety ranking itself divides by.
- *
- * Returns a `reason` instead of a ratio wherever the division would mislead;
- * `relativeStat` turns each of those into its own sentence.
- */
-function relativeRate(h3) {
-  const feature = state.features.find((f) => f.properties.h3 === h3);
-  if (!feature) return { reason: "unavailable" };
-
-  // Not one cell in this layer carries a population denominator: either the
-  // active severity scheme ranks by area, in which case cell_safety.exposure is
-  // NULL by construction, or the exposure layer was never built. There is
-  // nothing to be relative to, so the headline falls back to the count -- the
-  // same fallback syncSafetyAvailability makes for the ramp.
-  const { weighted: weightedProp } = TRACK_PROPS[state.track];
-  const city = cityExposureRate(weightedProp);
-  if (!city || city.rate <= 0) return { reason: "no_city_exposure" };
-
-  const p = feature.properties;
-  const weighted = p[weightedProp] ?? 0;
-  const exposure = typeof p.exposure === "number" ? p.exposure : null;
-
-  if (exposure === null || exposure <= 0) return { reason: "no_exposure", weighted };
-  if (weighted === 0) return { reason: "no_incidents", weighted, exposure, city };
-  if (exposure < RELATIVE_MIN_EXPOSURE) {
-    return { reason: "thin_exposure", weighted, exposure, city };
-  }
-  const rate = weighted / exposure;
-  return { ratio: rate / city.rate, rate, weighted, exposure, city };
-}
-
 /** The ratio in whichever form reads as a quantity: 1,400% has to be decoded,
     14.0x does not.
 
-    The bottom end is named rather than rounded, the same way `safetyLabel`
-    names its extremes: a big quiet cell -- one report among twenty thousand
+    The bottom end is named rather than rounded, rather than
+    shown as zero: a big quiet cell -- one report among twenty thousand
     people -- rounds to 0%, and 0% is the one thing this figure must not say
     about a cell where something was reported. */
 function formatRatio(ratio) {
@@ -231,88 +162,6 @@ function formatRatio(ratio) {
   return `${Math.round(ratio * 100)}%`;
 }
 
-/* Per 1,000 people, matching every other exposure-denominated figure here. */
-const per1k = (rate) => (rate * 1000).toFixed(1);
-
-/**
- * The safety view's headline figure, in words.
- *
- * A percentage of the city's rate, never a bare one: above 100% is the
- * concerning direction, which is the opposite of what a number under a heading
- * reading "safety" would be assumed to mean, so the sense is always spelled out
- * beside it. The two rates it came from go underneath, because a derived
- * figure is only checkable if the numbers behind it are visible.
- */
-function relativeStat(rel, windowLabel) {
-  const track = TRACK_LABELS[state.track];
-  switch (rel.reason) {
-    case "no_incidents":
-      return {
-        value: "—",
-        label: `no ${track} offences reported here · ${windowLabel}`,
-        note:
-          `0 ${track} offences among ${nf.format(rel.exposure)} people. An absence ` +
-          `of reports is not evidence of safety.`,
-      };
-    case "thin_exposure":
-      return {
-        value: "—",
-        label: `too few people here to compare · ${windowLabel}`,
-        note:
-          `${nf.format(Math.round(rel.weighted))} weighted ${track} offence among ` +
-          `${nf.format(rel.exposure)} people — a rate per person on a denominator ` +
-          `this small would swing on a single report.`,
-      };
-    case "no_exposure":
-      return {
-        value: "—",
-        label: "no population figure for this cell",
-        note:
-          `${nf.format(Math.round(rel.weighted))} weighted ${track} offence. The ` +
-          `comparison divides by ambient population, which this cell has none ` +
-          `apportioned to it.`,
-      };
-    case "unavailable":
-      return {
-        value: "—",
-        label: "not comparable in this layer",
-        note: "",
-      };
-  }
-
-  // A ±5% deadband: inside it, the honest reading is "no different", not a
-  // number to two figures.
-  const sense =
-    rel.ratio > 1.05 ? "higher than the city average"
-    : rel.ratio < 0.95 ? "lower than the city average"
-    : "about the city average";
-
-  return {
-    value: formatRatio(rel.ratio),
-    label: `of the city-average ${track} offence rate per person — ${sense} · ${windowLabel}`,
-    note:
-      `Severity-weighted · ${per1k(rel.rate)} vs ${per1k(rel.city.rate)} per 1,000 ` +
-      `people citywide`,
-  };
-}
-
-const TIER_LABELS = {
-  0: "No reported incidents",
-  1: "Lowest fifth",
-  2: "Lower-middle fifth",
-  3: "Middle fifth",
-  4: "Upper-middle fifth",
-  5: "Highest fifth",
-};
-
-const SAFETY_TIER_LABELS = {
-  0: "No reported incidents",
-  1: "Least safe quarter",
-  2: "Lower-middle quarter",
-  3: "Upper-middle quarter",
-  4: "Safest quarter",
-};
-
 const TRACK_LABELS = {
   violent: "violent",
   non_violent: "non-violent",
@@ -320,9 +169,8 @@ const TRACK_LABELS = {
 
 /* Feature property names per track, so the map reads whichever is selected
    without refetching -- both ship on every feature. The h* pair is the same
-   measure inside the selected hour block, and is null unless one was asked for.
-   Switching track stays a repaint; switching hour is a refetch, because
-   carrying all 24 blocks on every feature would multiply the payload by 24. */
+   measure at the hour and weekday the layer was fetched for (the city's now).
+   Switching track stays a repaint. */
 const TRACK_PROPS = {
   violent: {
     pct: "safety_violent", tier: "stier_violent",
@@ -338,131 +186,55 @@ const TRACK_PROPS = {
   },
 };
 
-/* Mirrors safety.etl.gold.HOURLY_RESOLUTIONS. The API rejects anything outside
-   this with a reason; the client knows the same bounds so it can disable the
-   control up front rather than let a request fail. Which *windows* carry the
-   hourly layer comes with each city's window list (windows.js). */
-const HOURLY_RESOLUTIONS = [8, 9];
-
-/* Mirrors safety.etl.gold.SAFETY_RESOLUTIONS. The safety ranking divides by
-   ambient population apportioned from census blocks, and a res-10 cell is
-   smaller than a census block -- there is no population figure at that size
-   that is not interpolation. Counts are still served there, so the map falls
-   back to the count ramp rather than going blank. */
-const SAFETY_RESOLUTIONS = [8, 9];
-
-/* Mirrors safety.etl.gold.ACTIVITY_CATEGORIES. The activity layer is dense --
-   one row per cell per window per category, since a cell with no reported
-   incidents is still part of the distribution it is ranked against -- so
-   resolution 10 is built for the combined category only, and for the one- and
-   two-year windows (each window's `res10` flag). At ~0.015 km² a single
-   category over 30 days leaves nearly every cell on zero, tied with every
-   other, and a percentile over a field of ties is not a reading. Same bounds on
-   the server, which answers the rest with the reason; the client knows them so
-   the controls can say so first. */
-const ACTIVITY_CATEGORIES = { 10: ["all"] };
-
-const activityCategories = (res) => ACTIVITY_CATEGORIES[res] ?? null;
-
-/** The stored window the selected dates are exactly, or null for a custom
-    range (and before the city record loads). */
-const currentPreset = () =>
-  presetFor(state.range, state.cityRecord?.windows, state.cityRecord?.coverage_end);
-
-const todayIso = () => localIso(new Date());
-
-/** ?from=&to= from a shared link, or null. */
-function initialRange() {
-  const params = new URLSearchParams(location.search);
-  const iso = /^\d{4}-\d{2}-\d{2}$/;
-  const from = params.get("from");
-  const to = params.get("to");
-  return iso.test(from ?? "") && iso.test(to ?? "") ? clampRange({ from, to }) : null;
-}
-
-/** The request's period. A preset goes by its window id, so it is served from
-    the stored build (hourly layer and all); anything else goes as the dates. */
-function periodParams() {
-  const preset = currentPreset();
-  return preset ? { window: preset.id } : { from: state.range.from, to: state.range.to };
-}
-
-/** "20:00–21:00". The last block reads 23:00–24:00, not 23:00–00:00. */
-const hourLabel = (hour) =>
-  `${String(hour).padStart(2, "0")}:00–${String(hour + 1).padStart(2, "0")}:00`;
-
-/** "Saturday 20:00–21:00", "Saturday" or "20:00–21:00": the time the h*
-    ratings are for, or null for all hours on all days. */
-function timedLabel() {
-  const parts = [];
-  if (state.day !== null) parts.push(dayName(state.day));
-  if (state.hour !== null) parts.push(hourLabel(state.hour));
-  return parts.length ? parts.join(" ") : null;
-}
-
-const CATEGORY_LABELS = {
-  violent: "Violent",
-  property: "Property",
-  quality_of_life: "Quality of life",
-  other: "Other",
-};
+/* Where each track's multiple of its city average is stored on a feature,
+   once rateCity has worked it out (-1: the neutral fill). */
+const RATIO_PROPS = { violent: "ratio_violent", non_violent: "ratio_nonviolent" };
 
 const state = {
-  /* Set during boot from ?city=, the visitor's city, or the served list; never assumed. */
-  city: null,
-  /* Every served city's record from /api/v1/cities, bounding boxes included,
-     so "which city am I in" needs no request of its own. */
+  /* Every served city's record from /api/v1/cities, bounding boxes included.
+     All of them are on the map at once. */
   cities: [],
-  /* The selected city's snapshot row, so the header, the frame and the
-     methodology sheet all read from one place. */
+  /* The city under the middle of the map (updateFocus): the one address search,
+     directions and the compass work in. Not a filter -- every city's cells are
+     drawn whichever this is. */
+  city: null,
   cityRecord: null,
-  /* The two dates the map shows, {from, to} as ISO strings (windows.js).
-     ?from=&to= win on first load; otherwise renderRangeControls fills it in
-     once the city record arrives -- from a legacy ?window= link if there is
-     one, else the year up to today. */
-  range: initialRange(),
-  pendingWindow: new URLSearchParams(location.search).get("window"),
-  // Set across a city switch when the dates were a preset (selectCity).
-  carryPreset: null,
-  category: "all",
+  /* city id -> { res, hour, day, features, seq, abort }: each city's own layer,
+     fetched for its own clock (cityNow) and rated against itself (rateCity). */
+  layers: new Map(),
+  /* The cell size the zoom calls for (resForZoom). Cities off screen stay at 8. */
   res: 8,
-  scale: "safety",
   track: "violent",
   // Show tiles: off paints the cells invisible (cellsOpacity), but they stay
   // on the map, so hovering and clicking one still opens its popup.
   tiles: true,
-  // The selected hour block 0-23 on the city's clock, or null for all hours.
-  // Picked in the time-of-day control; cleared by syncHourAvailability where
-  // the window or cell size has no hourly layer.
-  hour: null,
-  // The selected weekday 0-6 (0 = Monday) on the city's calendar, or null for
-  // all days. Scales the rating by each cell's day factor (022); available
-  // and cleared where the hour is.
-  day: null,
   selected: null,
   hovered: null,
-  meta: null,
+  // Every loaded city's features, merged, and h3 -> properties over them.
   features: [],
-  // h3 -> properties for the layer on screen, for the compass's ring lookups.
   featureIndex: new Map(),
   // {lat, lng} once the visitor shares a location; the compass reads from it.
   userLocation: null,
   // The open cell's detail payload, so a track switch re-reads rather than refetches.
   detail: null,
-  // City average the ramp is currently pinned to, so the compass reads cells
-  // on the same scale the fill paints them with.
-  rampDomain: null,
   refreshStamp: null,
   framed: false,
-  // Layer requests are numbered and the previous one aborted, so a slow
-  // response for controls the user has since changed can never overwrite the
-  // layer they now describe.
-  layerSeq: 0,
-  layerAbort: null,
 };
 
 const nf = new Intl.NumberFormat("en-US");
 const $ = (id) => document.getElementById(id);
+
+const cityById = (id) => state.cities.find((c) => c.source_id === id) ?? null;
+
+/** The hour block and weekday it is now in a city: what its cells are coloured
+    for. On the city's own clock (web/hours.js), never the browser's. */
+const cityNow = (city) => ({ hour: cityHour(city?.timezone), day: cityDay(city?.timezone) });
+
+/** The city a cell on the map belongs to. */
+const cellCity = (h3Index) => cityById(state.featureIndex.get(h3Index)?.city) ?? state.cityRecord;
+
+/** The cell size a city's loaded layer is at, or the zoom's while it loads. */
+const layerRes = (cityId) => state.layers.get(cityId)?.res ?? state.res;
 
 /* ------------------------------------------------------------------ basemap */
 
@@ -501,74 +273,43 @@ let map;
 /* ------------------------------------------------------------- colour scale */
 
 /**
- * Paint expression for both modes, on a value scale pinned to the city average.
+ * What a cell is coloured by, on one track: the smoothed severity-weighted rate
+ * at the city's current hour and weekday (the h* properties, ranked by the
+ * server), and which cells take a colour from the ramp at all.
  *
- * Both modes now run the ramp low-value-green to high-value-red, so red is the
- * concerning end in either and switching between them is a change of measure
- * rather than a change of vocabulary. The safety mode's value is the smoothed
- * severity-weighted rate -- the quantity its ranking is built on, so colour and
- * percentile order cells identically even though only one of them is a rank.
- *
- * Every cell is coloured by its multiple of the city average rather than by the
- * raw value, so a cell borrowing its all-hours standing (see `paintedMeasure`)
- * sits on the same bar as the cells rated at this hour.
- *
- * The chosen domain is stashed on `state` for the compass, so it can never
- * read a cell on a different scale from the one the fill uses.
+ * `fallback` is the all-hours rate, for a cell with nothing of this track
+ * reported at this hour. The hourly rate is the all-hours one times an hour
+ * factor, so its tier 0 is the all-hours tier 0: a cell with nothing reported at
+ * any hour. Its rate is still a ranking, built from its neighbours and the city
+ * baseline, so it takes that smoothed rate rather than going grey -- as does a
+ * cell with no hourly row at all (a city whose time-of-day layer is not built
+ * yet). Only a cell with no rate anywhere stays in the neutral fill.
  */
-/** The property the map is coloured by right now, and which cells take a
-    colour from the ramp. Shared by the fill and the compass, so the compass
-    can never point along a different measure from the one on screen.
-
-    `fallback` is the all-hours measure the safety view falls back to for a
-    cell with nothing of this track reported. The hourly rate is the all-hours
-    one times an hour factor, so its tier 0 is the all-hours tier 0: a cell with
-    nothing reported at any hour. Its rate is still a ranking, built from its
-    neighbours and the city baseline, so it takes that smoothed rate rather than
-    going grey -- as does a cell with no hourly row at all. Only a cell with no
-    rate anywhere stays in the neutral fill. */
-function paintedMeasure() {
-  const props = TRACK_PROPS[state.track];
-  // An hour, a day or both: the h* properties then hold the rating for that
-  // time, ranked by the server (the `timed` layer).
-  const hourly = state.hour !== null || state.day !== null;
-
-  const valueProp = state.scale === "safety"
-    ? (hourly ? props.hrate : props.rate)
-    : (hourly ? "hcount" : "count");
-  const tier = hourly ? props.htier : props.tier;
-  const isPainted = state.scale === "safety"
+function paintedMeasure(track = state.track) {
+  const props = TRACK_PROPS[track];
+  return {
+    valueProp: props.hrate,
+    tier: props.htier,
     // Nothing of this kind reported is a separate state, not the safe end of
     // the scale: an absence of reports is not evidence of safety.
-    ? (p) => (p[tier] ?? 0) !== 0
-    : (p) => (p[valueProp] ?? 0) > 0;
-  const fallback = state.scale === "safety"
-    ? { valueProp: props.rate, tier: props.tier }
-    : null;
-  return { valueProp, tier, isPainted, fallback };
+    isPainted: (p) => (p[props.htier] ?? 0) !== 0,
+    fallback: { valueProp: props.rate, tier: props.tier },
+  };
 }
 
-/** City averages for a measure and its fallback, plus how many cells borrow. */
-function measureDomain(measure) {
+/** One city's averages for a measure and its fallback. */
+function measureDomain(measure, features) {
   const { valueProp, isPainted, fallback } = measure;
-  const own = valueDomain(valueProp, isPainted, state.scale === "safety");
-  if (!fallback) return own && { own, overall: null, borrowed: 0 };
-
+  const own = valueDomain(features, valueProp, isPainted, true);
   // The average is taken over cells with reports of their own, so borrowing
   // cells are placed on the scale without moving it.
   const ranked = (p) => (p[fallback.tier] ?? 0) !== 0;
-  const overall = valueDomain(fallback.valueProp, ranked, true);
+  const overall = valueDomain(features, fallback.valueProp, ranked, true);
   if (!own && !overall) return null;
-  const borrowed = overall
-    ? state.features.filter(
-        (f) => !isPainted(f.properties) && typeof f.properties[fallback.valueProp] === "number"
-      ).length
-    : 0;
-  return { own, overall, borrowed };
+  return { own, overall };
 }
 
-/** A cell's multiple of its city average, or null for the neutral fill. The
-    JS twin of the ratio in `fillColorExpression`, for the compass. */
+/** A cell's multiple of its city average, or null for the neutral fill. */
 function cellRatio(p, measure, domain) {
   if (!domain) return null;
   const { valueProp, isPainted, fallback } = measure;
@@ -579,39 +320,45 @@ function cellRatio(p, measure, domain) {
   return null;
 }
 
+/**
+ * Rate one city's cells against that city alone, on both tracks, and store the
+ * result on each feature (RATIO_PROPS).
+ *
+ * Done per city, before the cities are merged into one source, because a
+ * colour means "this many times the average of the city it is in". Reporting
+ * practice differs too much between police departments for one city's cells to
+ * be measured against another's. Both tracks are rated up front, so switching
+ * track stays a repaint.
+ */
+function rateCity(features) {
+  for (const track of Object.keys(TRACK_PROPS)) {
+    const measure = paintedMeasure(track);
+    const domain = measureDomain(measure, features);
+    const prop = RATIO_PROPS[track];
+    for (const feature of features) {
+      const ratio = cellRatio(feature.properties, measure, domain);
+      feature.properties[prop] = ratio === null ? -1 : ratio;
+    }
+  }
+}
+
+/** The selected track's ratio for a cell's properties, or null for the neutral fill. */
+function ratioNow(p) {
+  const ratio = p?.[RATIO_PROPS[state.track]];
+  return typeof ratio === "number" && ratio >= 0 ? ratio : null;
+}
+
+/**
+ * Paint expression: each cell's multiple of its own city's average, on the
+ * hinged ramp (valueRampStops) -- green up to one and a half times, yellow
+ * there, orange by double, red from triple. -1 marks the neutral fill.
+ */
 function fillColorExpression() {
-  const measure = paintedMeasure();
-  const { valueProp, tier, fallback } = measure;
-
-  const domain = measureDomain(measure);
-  state.rampDomain = domain;
-
-  if (!domain) return ZERO_FILL;
-
-  const get = (prop) => ["coalesce", ["get", prop], 0];
-  // Mirrors cellRatio: -1 marks the neutral fill, since a real ratio is never negative.
-  const ratio = ["case"];
-  if (domain.own) {
-    ratio.push(
-      state.scale === "safety" ? ["!=", get(tier), 0] : [">", get(valueProp), 0],
-      ["/", get(valueProp), domain.own.average],
-    );
-  }
-  if (domain.overall) {
-    ratio.push(
-      ["==", ["typeof", ["get", fallback.valueProp]], "number"],
-      ["/", get(fallback.valueProp), domain.overall.average],
-    );
-  }
-  ratio.push(-1);
-
+  const ratio = ["coalesce", ["get", RATIO_PROPS[state.track]], -1];
   return [
-    "let", "ratio", ratio,
-    [
-      "case",
-      ["<", ["var", "ratio"], 0], ZERO_FILL,
-      ["interpolate", ["linear"], ["var", "ratio"], ...valueRampStops(VALUE_RAMP)],
-    ],
+    "case",
+    ["<", ratio, 0], ZERO_FILL,
+    ["interpolate", ["linear"], ratio, ...valueRampStops(VALUE_RAMP)],
   ];
 }
 
@@ -640,7 +387,6 @@ const COMPASS_MIN_CELLS = 2;
  * the compass wedges and the hexagons under them agree.
  */
 function rampColorAt(value) {
-  if (!state.rampDomain) return ZERO_FILL;
   const stops = valueRampStops(VALUE_RAMP);
   if (value <= stops[0]) return stops[1];
   for (let i = 2; i < stops.length; i += 2) {
@@ -658,8 +404,9 @@ function rampColorAt(value) {
     needle stuck on "no data" for a place a thousand miles away. */
 function compassOrigin() {
   const here = state.userLocation;
-  const city = state.cities.find((c) => c.source_id === state.city);
-  if (here && city && inBbox(city, here)) return { ...here, from: "your location" };
+  const city = cityAt(here ?? { lat: NaN, lng: NaN });
+  // Wherever the visitor is, as long as they are on screen in a covered city.
+  if (here && city && cityInView(city)) return { ...here, from: "your location" };
   const { lng, lat } = map.getCenter();
   return {
     lat, lng,
@@ -679,21 +426,24 @@ function compassOrigin() {
  * skipped rather than read as zero: no data is not low crime.
  */
 function compassSectors(origin) {
-  const measure = paintedMeasure();
-  const ratioOf = (p) => cellRatio(p, measure, state.rampDomain) ?? 0;
+  const ratioOf = (p) => ratioNow(p) ?? 0;
   const byCell = state.featureIndex;
-  const home = h3.latLngToCell(origin.lat, origin.lng, state.res);
+  const city = cityAt(origin);
+  if (!city) return null;
+  const res = layerRes(city.source_id);
+  const home = h3.latLngToCell(origin.lat, origin.lng, res);
   const homeProps = byCell.get(home);
   if (!homeProps) return null;
 
   const cosLat = Math.cos((origin.lat * Math.PI) / 180);
   const sectors = COMPASS_POINTS.map(() => ({ sum: 0, weight: 0, cells: 0 }));
 
-  for (const [ring, cells] of h3.gridDiskDistances(home, COMPASS_RINGS[state.res] ?? 2).entries()) {
+  for (const [ring, cells] of h3.gridDiskDistances(home, COMPASS_RINGS[res] ?? 2).entries()) {
     if (ring === 0) continue;
     for (const cell of cells) {
       const p = byCell.get(cell);
-      if (!p) continue;
+      // Only the origin's own city: two cities' ratios are not on one scale.
+      if (!p || p.city !== city.source_id) continue;
       const [lat, lng] = h3.cellToLatLng(cell);
       const bearing =
         (Math.atan2((lng - origin.lng) * cosLat, lat - origin.lat) * 180) / Math.PI;
@@ -754,7 +504,7 @@ function renderCompass() {
     renderCompassWedges(null);
     readout.textContent = origin.from === "your location"
       ? "You are just outside this city's data."
-      : "Move the map over the city.";
+      : "Move the map over a city.";
     return;
   }
 
@@ -789,384 +539,404 @@ function renderCompass() {
 
 /* --------------------------------------------------------------- data fetch */
 
-async function loadLayer({ quiet = false } = {}) {
-  // A background refresh that lands while a visible load (or its error) is on
-  // screen takes that load over, so it must own the indicator too: the aborted
-  // load returns silently, and a quiet failure here would leave "Loading…" up (P3).
-  if (quiet && !$("loading").hidden) quiet = false;
-  const seq = ++state.layerSeq;
-  state.layerAbort?.abort();
-  const controller = (state.layerAbort = new AbortController());
+/* Every city is on the map at once, over the last year -- the only data there
+   is. Each city's layer is its own request: one city, the cell size the zoom
+   calls for, and the hour and weekday it is now *there*. Its colours are worked
+   out against that city alone (rateCity) before the layers are merged into the
+   one `cells` source. */
 
+/* At most this many /cells requests in flight. The API allows a burst per
+   client; a refresh of every city is several requests at once, and spreading
+   them keeps a zoom in the middle of one from tripping the limit. */
+const LAYER_CONCURRENCY = 3;
+
+/** Whether a city's box overlaps the map on screen. */
+function cityInView(city) {
+  if (!map || !Number.isFinite(city.bbox_west)) return false;
+  const b = map.getBounds();
+  return !(
+    city.bbox_east < b.getWest() || city.bbox_west > b.getEast() ||
+    city.bbox_north < b.getSouth() || city.bbox_south > b.getNorth()
+  );
+}
+
+/** The cell size a city's layer should be at: the zoom's while the city is on
+    screen, the coarse one while it is not -- a zoomed-in view of one city does
+    not fetch the fine cells of five others. */
+function wantedRes(city) {
+  return state.res !== 8 && cityInView(city) ? state.res : 8;
+}
+
+function showLoading(text = "Loading…", isError = false) {
+  $("loading").textContent = text;
+  $("loading").classList.toggle("is-error", isError);
+  $("loading").hidden = false;
+}
+
+function hideLoading() {
+  $("loading").hidden = true;
+  $("loading").textContent = "Loading…";
+  $("loading").classList.remove("is-error");
+}
+
+/** Fetch one city's layer as it should be now. True if it was stored; false if
+    a newer request for the same city overtook it. */
+async function loadCityLayer(city) {
+  const id = city.source_id;
+  const layer = state.layers.get(id) ?? { features: null, seq: 0, abort: null };
+  state.layers.set(id, layer);
+  const res = wantedRes(city);
+  const { hour, day } = cityNow(city);
+  const seq = ++layer.seq;
+  layer.abort?.abort();
+  const controller = (layer.abort = new AbortController());
+
+  const params = new URLSearchParams({
+    city: id, res: String(res), hour: String(hour), day: String(day),
+  });
+  const response = await fetch(`${API}/cells?${params}`, { signal: controller.signal });
+  if (!response.ok) {
+    throw Object.assign(new Error(`cells request failed: ${response.status}`), {
+      status: response.status,
+    });
+  }
+  const collection = await response.json();
+  // A newer request for this city has been issued since; its result wins.
+  if (seq !== layer.seq) return false;
+  for (const feature of collection.features) feature.properties.city = id;
+  rateCity(collection.features);
+  Object.assign(layer, { res, hour, day, features: collection.features, meta: collection.metadata });
+  return true;
+}
+
+/** Whether a city's layer is missing, at the wrong cell size, or coloured for
+    an hour or weekday that has passed there. */
+function layerStale(city) {
+  const layer = state.layers.get(city.source_id);
+  if (!layer?.features) return true;
+  const { hour, day } = cityNow(city);
+  return layer.res !== wantedRes(city) || layer.hour !== hour || layer.day !== day;
+}
+
+/**
+ * Bring every city's layer up to date and repaint once.
+ *
+ * Only the cities that need it are fetched (layerStale), unless `force` -- a
+ * pipeline refresh, when every city reloads. `quiet` keeps the loading pill
+ * down: the hourly roll-over and the refresh poll should not flash it.
+ */
+let layersRun = Promise.resolve();
+function refreshLayers(options = {}) {
+  // One pass at a time: a zoom during a refresh queues behind it rather than
+  // racing it, and each pass re-reads what is stale when it starts.
+  layersRun = layersRun.then(() => refreshLayersNow(options), () => refreshLayersNow(options));
+  return layersRun;
+}
+
+async function refreshLayersNow({ force = false, quiet = false } = {}) {
+  const todo = state.cities.filter((city) => force || layerStale(city));
+  if (!todo.length) return;
+  // The visible ones first, so what is on screen paints soonest.
+  todo.sort((a, b) => Number(cityInView(b)) - Number(cityInView(a)));
   if (!quiet) {
     $("map").classList.add("is-refetching");
-    // Reset first: a previous failure's message must not sit under the
-    // "loading" state of the request that may fix it.
-    $("loading").textContent = "Loading…";
-    $("loading").classList.remove("is-error");
-    $("loading").hidden = false;
+    showLoading();
   }
 
+  const failures = [];
+  let changed = false;
+  const queue = [...todo];
+  const worker = async () => {
+    while (queue.length) {
+      const city = queue.shift();
+      try {
+        if (await loadCityLayer(city)) {
+          changed = true;
+          // Paint as each city arrives rather than after the slowest.
+          mergeLayers();
+        }
+      } catch (error) {
+        if (error.name !== "AbortError") failures.push(error);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(LAYER_CONCURRENCY, todo.length) }, worker));
+
+  $("map").classList.remove("is-refetching");
+  if (failures.length && !quiet) {
+    console.error(failures);
+    showLoading(
+      failures.some((e) => e.status === 429)
+        ? "Too many requests — wait a moment, then move the map to retry."
+        : "Could not load some of the map. Try again shortly.",
+      true
+    );
+  } else if (!quiet || $("loading").classList.contains("is-error")) {
+    hideLoading();
+  }
+  if (!changed) return;
+  keepSelection();
+}
+
+/** Every city's features into the one source, and the fill and compass with them. */
+function mergeLayers() {
   // The pointer can sit still across a layer swap, so mouseleave never fires
   // and the hover highlight would stay on a cell from the previous layer.
   if (state.hovered) {
     map.setFeatureState({ source: "cells", id: state.hovered }, { hover: false });
     state.hovered = null;
   }
-
-  const params = new URLSearchParams({
-    city: state.city,
-    res: String(state.res),
-    ...periodParams(),
-    category: state.category,
-  });
-  if (state.hour !== null) params.set("hour", String(state.hour));
-  if (state.day !== null) params.set("day", String(state.day));
-
-  try {
-    const response = await fetch(`${API}/cells?${params}`, { signal: controller.signal });
-    if (!response.ok) {
-      throw Object.assign(new Error(`cells request failed: ${response.status}`), {
-        status: response.status,
-      });
-    }
-    const collection = await response.json();
-    // A newer request has been issued since; its result is the one the controls describe.
-    if (seq !== state.layerSeq) return;
-
-    state.meta = collection.metadata;
-    state.features = collection.features;
-    state.featureIndex = new Map(collection.features.map((f) => [f.properties.h3, f.properties]));
-
-    const source = map.getSource("cells");
-    if (source) source.setData(collection);
-
-    map.setPaintProperty("cells-fill", "fill-color", fillColorExpression());
-    renderCompass();
-    renderTable();
-    // The city rate the safety headline is a share of has just moved, and so has
-    // the selected cell's own count if the category changed -- that control
-    // reloads the layer without reopening the panel.
-    if (state.detail) renderHeadlineStat(state.detail);
-    // Only now is it known whether the hourly layer exists at all.
-    syncHourAvailability();
-    $("loading").hidden = true;
-    $("loading").textContent = "Loading…";
-    $("loading").classList.remove("is-error");
-  } catch (error) {
-    // Superseded or aborted: the newer request owns the screen.
-    if (error.name === "AbortError" || seq !== state.layerSeq) return;
-    // A failed background refresh (the 60 s poll) keeps the layer on screen,
-    // which is still valid; it is not worth an alarm.
-    if (quiet) {
-      console.error(error);
-      return;
-    }
-    console.error(error);
-    // Left on screen until the next successful load replaces it -- hiding it in
-    // `finally` was what made every failure look like a frozen map.
-    $("loading").textContent =
-      error.status === 429
-        ? "Too many requests — wait a moment, then change a control to retry."
-        : "Could not load cell data. Try again shortly.";
-    $("loading").classList.add("is-error");
-    $("loading").hidden = false;
-  } finally {
-    if (seq === state.layerSeq) $("map").classList.remove("is-refetching");
+  const features = [];
+  for (const city of state.cities) {
+    const layer = state.layers.get(city.source_id);
+    if (layer?.features) features.push(...layer.features);
   }
+  state.features = features;
+  state.featureIndex = new Map(features.map((f) => [f.properties.h3, f.properties]));
+  map.getSource("cells")?.setData({ type: "FeatureCollection", features });
+  map.setPaintProperty("cells-fill", "fill-color", fillColorExpression());
+  if (state.selected && state.featureIndex.has(state.selected)) {
+    map.setFeatureState({ source: "cells", id: state.selected }, { selected: true });
+  }
+  renderCompass();
 }
 
-async function loadFreshness({ refit = false } = {}) {
-  const response = await fetch(`${API}/cities/${encodeURIComponent(state.city)}`);
-  if (!response.ok) return;
-  const city = await response.json();
-  // A preset carries over as a preset, read against the outgoing record: after
-  // a refresh "last 12 months" ends on a newer day, and another city's ends on
-  // its own, so the old dates would match none of the new windows.
-  // renderRangeControls finds the nearest (pickWindow). Custom dates carry over
-  // as dates, clamped to what the city holds.
-  const preset = currentPreset();
-  state.carryPreset = preset ? { id: preset.id, span: preset.span_days } : null;
-  state.cityRecord = city;
-  renderRangeControls();
-
-  // Frame the city from its own stored bounding box rather than a hardcoded
-  // centre, so a second city needs no client change (design doc S11). `refit`
-  // is what makes that true on a *switch* and not just on first load: without
-  // it the map would stay over whichever city opened first.
-  if ((refit || !state.framed) && Number.isFinite(city.bbox_west)) {
-    map.fitBounds(
-      [
-        [city.bbox_west, city.bbox_south],
-        [city.bbox_east, city.bbox_north],
-      ],
-      {
-        padding: { top: 28, bottom: 28, left: 28, right: 28 },
-        // Animate a deliberate switch, so it reads as travel rather than a cut;
-        // the first frame should just be there.
-        duration: state.framed && refit ? 700 : 0,
-      }
-    );
-    state.framed = true;
+/** After a reload: the open cell stays open, or moves to the cell at the same
+    spot when its city changed cell size under it. */
+function keepSelection() {
+  const h3Index = state.selected;
+  if (!h3Index) return;
+  if (state.featureIndex.has(h3Index)) {
+    selectCell(h3Index);
+    return;
   }
-
-  document.title = `${city.city_name} reported-incident activity`;
-  $("city-heading").textContent = `${city.city_name} — reported incident activity`;
-  $("map").setAttribute(
-    "aria-label",
-    `Map of ${city.city_name} with hexagonal cells shaded by reported incident count`
-  );
-
-  // Design doc S12(b): "data as of" is a visible, first-class element.
-  const asOf = new Date(city.data_as_of);
-  $("data-as-of").textContent = asOf.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-  $("freshness-meta").textContent =
-    `· ${nf.format(city.incident_count)} incidents · updated ${city.expected_cadence}`;
+  const [lat, lng] = h3.cellToLatLng(h3Index);
+  closeDetail();
+  const city = cityAt({ lat, lng });
+  if (!city) return;
+  const cell = h3.latLngToCell(lat, lng, layerRes(city.source_id));
+  if (state.featureIndex.has(cell)) selectCell(cell);
 }
 
-/**
- * Populate the city picker from what the API actually serves.
- *
- * Only cities with a gold.city_snapshot row come back, which is the right set:
- * a city whose adapter exists but whose pipeline has not run has nothing to
- * show, and offering it would produce an empty map with no explanation.
- *
- * Returns the chosen source_id. `?city=` wins if it is served, then the city
- * the visitor is standing in (only where they have already granted location --
- * see cityFromGrantedLocation), then DEFAULT_CITY, then whatever is first.
- */
+/** The served cities, from /api/v1/cities. Empty while no city has finished its
+    first load -- the progress bar says why. */
 async function loadCities() {
   const response = await fetch(`${API}/cities`);
   if (!response.ok) throw new Error(`cities request failed: ${response.status}`);
   const { cities } = await response.json();
-  if (!cities.length) throw new Error("no city has serving data yet");
   state.cities = cities;
+  renderCityMarkers();
+  return cities;
+}
 
-  const select = $("f-city");
-  select.replaceChildren(
-    ...cities.map((city) => {
-      const option = document.createElement("option");
-      option.value = city.source_id;
-      option.textContent = city.city_name;
-      return option;
-    })
+/** Frame one city from its own stored bounding box. */
+function frameCity(city, { animate = false } = {}) {
+  if (!Number.isFinite(city?.bbox_west)) return;
+  map.fitBounds(
+    [
+      [city.bbox_west, city.bbox_south],
+      [city.bbox_east, city.bbox_north],
+    ],
+    { padding: { top: 28, bottom: 28, left: 28, right: 28 }, duration: animate ? 700 : 0 }
   );
-  // One city is not a choice; hiding the control is more honest than offering a
-  // dropdown that cannot do anything.
-  $("f-city-field").hidden = cities.length < 2;
-
-  const requested = new URLSearchParams(location.search).get("city");
-  const served = new Set(cities.map((c) => c.source_id));
-  const chosen =
-    (requested && served.has(requested) && requested) ||
-    (requested ? null : await cityFromGrantedLocation()) ||
-    (served.has(DEFAULT_CITY) && DEFAULT_CITY) ||
-    cities[0].source_id;
-  select.value = chosen;
-  return chosen;
+  state.framed = true;
 }
 
 /**
- * Switch cities.
+ * The city the page is "in": under the middle of the map, else the nearest.
  *
- * Everything keyed to a place is dropped rather than carried across: an H3 index
- * belongs to exactly one city, so a selected cell, a hovered cell and a cached
- * ramp domain are all meaningless the moment the city changes. The filters --
- * dates, category, cell size, hour -- are not place-specific and do carry over,
- * which is what someone comparing two cities on the same terms would want.
- *
- * What deliberately does *not* happen is any comparison between the two. Every
- * percentile is computed against its own city's distribution (design doc S3.3),
- * so a figure from one city and a figure from another are not on the same scale
- * and the UI never places them side by side.
+ * It scopes the things that work inside one city -- address search, directions
+ * and the compass -- and names the page. It never filters the map: every
+ * city's cells are drawn whichever this is.
  */
-async function selectCity(sourceId) {
-  if (sourceId === state.city) return;
-  state.city = sourceId;
-  closeDetail();
-  // An address, a start or a route in the old city means nothing in the new.
-  resetSearch();
-  // The stamp is per city now, so carrying the old one across would read as "the
-  // pipeline just ran" on the next poll and trigger a pointless reload. Null
-  // makes the next tick record rather than compare.
-  state.refreshStamp = null;
-
-  const url = new URL(location.href);
-  url.searchParams.set("city", sourceId);
-  history.replaceState(null, "", url);
-
-  await loadFreshness({ refit: true });
-  syncActivityScope();
-  syncHourAvailability();
-  await loadLayer();
+function updateFocus() {
+  if (!map || !state.cities.length) return;
+  const { lng, lat } = map.getCenter();
+  const point = { lat, lng };
+  const city = cityAt(point) ?? nearestCity(point)?.city ?? null;
+  if (!city || city.source_id === state.city) return;
+  state.city = city.source_id;
+  state.cityRecord = city;
+  document.title = `${city.city_name} — reported-incident risk`;
+  $("map").setAttribute(
+    "aria-label",
+    `Map of every covered city, hexagonal cells shaded by relative risk; centred on ${city.city_name}`
+  );
 }
 
-/* --------------------------------------------------------------- cell panel */
+/* ---- city markers: where the cities are, when zoomed out too far to see cells */
+
+/** Below this zoom a cell is a speck, so each city is marked by name instead. */
+const CITY_MARKER_MAX_ZOOM = 8;
+
+function cityMarkerData() {
+  return {
+    type: "FeatureCollection",
+    features: state.cities
+      .filter((c) => Number.isFinite(c.center_lng) && Number.isFinite(c.center_lat))
+      .map((c) => ({
+        type: "Feature",
+        id: c.source_id,
+        geometry: { type: "Point", coordinates: [c.center_lng, c.center_lat] },
+        properties: { id: c.source_id, name: c.city_name },
+      })),
+  };
+}
+
+function initCityMarkers() {
+  map.addSource("cities", { type: "geojson", data: cityMarkerData() });
+  map.addLayer({
+    id: "city-dots",
+    type: "circle",
+    source: "cities",
+    maxzoom: CITY_MARKER_MAX_ZOOM,
+    paint: {
+      "circle-radius": 7,
+      "circle-color": SERIES_1,
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 2,
+    },
+  });
+  map.addLayer({
+    id: "city-labels",
+    type: "symbol",
+    source: "cities",
+    maxzoom: CITY_MARKER_MAX_ZOOM,
+    layout: {
+      "text-field": ["get", "name"],
+      "text-offset": [0, 1.2],
+      "text-anchor": "top",
+      "text-size": 13,
+      // The basemap's own font stack; the raster fallback has none and simply
+      // shows the dots.
+      "text-font": ["Montserrat Medium", "Open Sans Regular"],
+    },
+    paint: { "text-color": INK_SECONDARY, "text-halo-color": "#ffffff", "text-halo-width": 1.5 },
+  });
+  map.on("click", "city-dots", (event) => {
+    const id = event.features?.[0]?.properties?.id;
+    if (id) switchCity(id);
+  });
+  map.on("mouseenter", "city-dots", () => { map.getCanvas().style.cursor = "pointer"; });
+  map.on("mouseleave", "city-dots", () => { map.getCanvas().style.cursor = ""; });
+}
+
+function renderCityMarkers() {
+  map?.getSource("cities")?.setData(cityMarkerData());
+}
+
+/* ---- the first load's progress bar (GET /api/v1/progress, web/progress.js) */
+
+const PROGRESS_POLL_MS = 10_000;
+let progressTimer = null;
+
+function renderProgress(body) {
+  const view = progressView(body);
+  const box = $("load-progress");
+  box.hidden = !view.show;
+  if (!view.show) return;
+  $("lp-text").textContent = view.text;
+  $("lp-detail").textContent = view.detail;
+  $("lp-fill").style.width = `${view.percent}%`;
+  const bar = $("lp-bar");
+  bar.setAttribute("aria-valuenow", String(Math.round(view.percent)));
+  bar.setAttribute("aria-valuetext", view.text);
+}
 
 /**
- * The panel's one big number, which measures whatever the map is coloured by.
- *
- * Under the count ramp that is the count itself. Under the safety ramp a bare
- * count is the wrong headline: the ramp is ranking cells per head of ambient
- * population, and a cell with forty incidents among twelve thousand people is
- * the quieter of two cells the count alone would order the other way. So the
- * safety view leads with the comparison the ramp is making -- this cell's
- * severity-weighted offence per person on the selected track, as a share of the
- * city's.
+ * Poll the load's progress while one runs, and pick up each city as it becomes
+ * ready. Stops when nothing is loading; the minute tick (watchForRefresh) starts
+ * it again if a later deploy begins another load.
  */
-function renderHeadlineStat(detail) {
-  const value = $("d-count");
-  const label = $("d-count-label");
-  // "last 12 months" reads in a sentence; "1 Mar 2025 – 9 Oct 2025" keeps its capitals.
-  const windowLabel = detail.range ? detail.window_label : detail.window_label.toLowerCase();
+async function pollProgress() {
+  clearTimeout(progressTimer);
+  progressTimer = null;
+  let body = null;
+  try {
+    const response = await fetch(`${API}/progress`, { cache: "no-store" });
+    if (response.ok) body = await response.json();
+  } catch {
+    /* transient: try again on the next poll */
+  }
+  if (body) {
+    renderProgress(body);
+    const served = new Set(state.cities.map((c) => c.source_id));
+    const arrived = body.cities.some((c) => c.ready && !served.has(c.id));
+    if (arrived) await onCitiesChanged();
+  }
+  if (!body || body.active) progressTimer = setTimeout(pollProgress, PROGRESS_POLL_MS);
+}
 
-  const rel = state.scale === "safety" ? relativeRate(state.selected) : null;
-
-  if (rel === null || rel.reason === "no_city_exposure") {
-    const headline = detail.headline ?? { incident_count: 0 };
-    value.textContent = nf.format(headline.incident_count ?? 0);
-    label.textContent = `reported incidents · ${windowLabel}`;
+/** A city finished loading (or the list otherwise changed): show it. */
+async function onCitiesChanged() {
+  const before = state.cities.length;
+  try {
+    await loadCities();
+  } catch (error) {
+    console.error(error);
     return;
   }
-
-  const stat = relativeStat(rel, windowLabel);
-  value.textContent = stat.value;
-  // stat.label/note carry the server's window_label: plain text, escaped.
-  label.innerHTML = stat.note
-    ? html`${stat.label}<span class="kv-note">${stat.note}</span>`
-    : html`${stat.label}`;
+  if (!state.cities.length) return;
+  if (!before) openOnFirstCity();
+  else await refreshLayers();
 }
 
-async function selectCell(h3) {
-  if (state.selected && state.selected !== h3) {
+/* --------------------------------------------------------------- the cell */
+
+/** Open a cell's popup: its rating now, and its hour and weekday shapes. */
+async function selectCell(h3Index) {
+  if (state.selected && state.selected !== h3Index) {
     map.setFeatureState({ source: "cells", id: state.selected }, { selected: false });
   }
-  state.selected = h3;
-  map.setFeatureState({ source: "cells", id: h3 }, { selected: true });
+  state.selected = h3Index;
+  map.setFeatureState({ source: "cells", id: h3Index }, { selected: true });
 
-  const hourParam = state.hour === null ? "" : `&hour=${state.hour}`;
-  const period = new URLSearchParams(periodParams());
-  const [detail, ring] = await Promise.all([
-    fetch(`${API}/cells/${encodeURIComponent(h3)}?${period}${hourParam}`)
-      .then((r) => (r.ok ? r.json() : null)),
-    fetch(`${API}/cells/ring?h3=${encodeURIComponent(h3)}&k=1&${period}&category=all`)
-      .then((r) => (r.ok ? r.json() : null)),
-  ]);
-  if (!detail) return;
-  // Kept so switching track re-reads the hourly ratings without a refetch,
-  // the same way the map repaints from properties it already holds.
-  state.detail = detail;
-
-  $("detail-empty").hidden = true;
-  $("detail-body").hidden = false;
-
-  const headline = detail.headline ?? { incident_count: 0 };
-  renderHeadlineStat(detail);
-
-  // The activity tier gave up its row to the time-of-day figure; it still
-  // reaches the reader through the table view.
-  $("d-rank").textContent = headline.city_rank
-    ? `${nf.format(headline.city_rank)} of ${nf.format(headline.city_cell_total)}`
-    : "—";
-  $("d-density").textContent = headline.incidents_per_km2
-    ? `${nf.format(Math.round(headline.incidents_per_km2))} per km²`
-    : "—";
-
-  // Residents and workers separately, not just the sum: which of the two a
-  // cell's exposure comes from is most of what distinguishes a business
-  // district from a neighbourhood, and the ranking treats them alike.
-  const exposure = detail.exposure;
-  $("d-exposure").textContent = exposure
-    ? `${nf.format(exposure.residents)} living · ${nf.format(exposure.jobs)} working`
-    : "—";
-
-  $("d-h3").textContent = h3;
-
-  // S10: the cell plus its ring of neighbours is an O(1) H3 operation and an
-  // indexed key lookup -- no spatial query anywhere in the path.
-  const ringTotal = (ring?.cells ?? []).reduce((sum, c) => sum + c.incident_count, 0);
-  $("d-neighbours").textContent = ring
-    ? `${nf.format(ringTotal)} across ${ring.resolved} cells`
-    : "—";
-
-  renderSafety(detail.safety);
-  renderHours(detail);
-  renderCategoryBars(detail.by_category, detail.by_category_available);
-  renderSparkline(detail.monthly, headline.window_end);
-  renderOffenseMix(detail.top_offenses);
+  const { hour } = cityNow(cellCity(h3Index));
+  const detail = await fetch(`${API}/cells/${encodeURIComponent(h3Index)}?hour=${hour}`)
+    .then((r) => (r.ok ? r.json() : null))
+    .catch(() => null);
   // A later click may have moved on while this one was in flight.
-  if (state.selected === h3) showCellPopup(h3, detail);
+  if (!detail || state.selected !== h3Index) return;
+  // Kept so switching track re-reads the profiles without a refetch, the same
+  // way the map repaints from properties it already holds.
+  state.detail = detail;
+  showCellPopup(h3Index, detail);
+}
+
+function closeDetail() {
+  removeCellPopup();
+  if (state.selected) {
+    map.setFeatureState({ source: "cells", id: state.selected }, { selected: false });
+    state.selected = null;
+  }
+  state.detail = null;
+}
+
+/** The popup's clock: the cell's city's exact time now, "10:13 PM EDT". */
+function renderCityClock() {
+  const popupTime = document.querySelector(".cell-popup .cp-time");
+  if (popupTime && state.selected) {
+    popupTime.textContent = cityTimeLabel(cellCity(state.selected)?.timezone, new Date(), { zoneName: true });
+  }
 }
 
 /**
- * Short label for a safety percentile, correct at both ends.
- *
- * The extremes need naming rather than rounding: the worst cell in a city scores
- * something like 0.0009 -- one over twice the cell count -- and "0th percentile"
- * reads as a missing value rather than as the bottom of the city. Kept terse
- * because it sits in a narrow panel column beside the tier label.
+ * Every minute, on the minute: keep each city coloured for the hour it is now
+ * there. A city whose hour (or day) has rolled over since its layer was fetched
+ * reloads quietly (layerStale), and an open popup redraws so its "now" bar
+ * moves with it. Skipped while the tab is hidden; coming back catches up at once.
  */
-function safetyLabel(percentile) {
-  const value = percentile * 100;
-  if (value < 1) return "bottom 1%";
-  if (value > 99) return "top 1%";
-  const n = Math.round(value);
-  const suffix =
-    n % 10 === 1 && n % 100 !== 11 ? "st"
-    : n % 10 === 2 && n % 100 !== 12 ? "nd"
-    : n % 10 === 3 && n % 100 !== 13 ? "rd"
-    : "th";
-  return `${n}${suffix} percentile`;
-}
-
-/** The percentile plus its tier label, so the number is never colour-only. */
-function renderSafety(rows) {
-  const byTrack = Object.fromEntries((rows ?? []).map((r) => [r.track, r]));
-  const format = (row) => {
-    if (!row) return "—";
-    const label = SAFETY_TIER_LABELS[row.safety_tier] ?? "";
-    return `${safetyLabel(row.safety_percentile)} · ${label}`;
-  };
-  $("d-safety-violent").innerHTML = html`${format(byTrack.violent)}`;
-  $("d-safety-nonviolent").innerHTML = html`${format(byTrack.non_violent)}`;
-
-  const missing = !rows?.length;
-  $("d-safety-note").textContent = missing
-    ? "The safety ranking has not been built for this city yet."
-    : "Percentile against every other cell in the city, weighted by offence " +
-      "severity. Higher is safer. A cell with nothing reported is shown as such " +
-      "rather than as safe.";
-}
-
-/** The chart's title: the city's exact time now, "Time of Day: 10:13 PM EDT". */
-function renderCityClock() {
-  const popupTime = document.querySelector(".cell-popup .cp-time");
-  if (popupTime) {
-    popupTime.textContent = cityTimeLabel(state.cityRecord?.timezone, new Date(), { zoneName: true });
-  }
-  if ($("d-hour-block").hidden) return;
-  const now = cityTimeLabel(state.cityRecord?.timezone, new Date(), { zoneName: true });
-  $("d-hour-title").textContent = `Time of Day: ${now}`;
-}
-
-/* Keep the clock on the minute while the panel is open: first at the next
-   minute boundary, then every minute. When the city's hour rolls over the
-   outlook moves with it, so the whole block redraws. Skipped while the tab is
-   hidden; coming back redraws at once. */
 function watchCityClock() {
-  let lastHour = cityHour(state.cityRecord?.timezone);
-  const tick = () => {
-    if (document.hidden) return;
-    const hour = cityHour(state.cityRecord?.timezone);
-    if (hour !== lastHour && state.detail) {
-      renderHours(state.detail);
-      if (state.selected) showCellPopup(state.selected, state.detail);
-    } else renderCityClock();
-    lastHour = hour;
+  const tick = async () => {
+    if (document.hidden || !state.cities.length) return;
+    const open = state.selected;
+    const before = open ? cityNow(cellCity(open)) : null;
+    await refreshLayers({ quiet: true });
+    renderCityClock();
+    if (open && state.selected === open && state.detail) {
+      const after = cityNow(cellCity(open));
+      if (after.hour !== before.hour || after.day !== before.day) showCellPopup(open, state.detail);
+    }
   };
   setTimeout(() => {
     tick();
@@ -1177,19 +947,6 @@ function watchCityClock() {
 
 /** "38%": the size of a fractional change, sign carried by the words around it. */
 const pctOf = (change) => `${Math.abs(Math.round(change * 100))}%`;
-
-/** "Expected to rise over the next 3 hours (+24%)": plain text. */
-function outlookSentence(outlook) {
-  const ahead = `over the next ${outlook.span} hours`;
-  const change = outlook.change === null
-    ? ""
-    : ` (${outlook.change >= 0 ? "+" : "−"}${pctOf(outlook.change)})`;
-  return outlook.direction === "up"
-    ? `Expected to rise ${ahead}${change}`
-    : outlook.direction === "down"
-      ? `Expected to fall ${ahead}${change}`
-      : `Expected to stay about the same ${ahead}`;
-}
 
 /**
  * "Lower-risk window: 1 PM – 4 PM — about 18% lower than now": plain text.
@@ -1209,283 +966,11 @@ function windowSentence(win) {
     `about ${pctOf(win.vsNow)} lower than now${still}`;
 }
 
-const TREND_ARROWS = { up: "↑", down: "↓", flat: "→" };
-
-/**
- * Under the chart: which way the next three hours usually go from now in the
- * city, and the comparatively lowest-risk three-hour stretch in the next
- * twelve. Both read this cell's own hourly profile -- what these hours have
- * looked like here, not a live count -- so "expected" means "usually", and
- * the footnote says so. Returns the blocks of a window worth pointing at, for
- * the chart to tint.
- */
-function renderHourOutlook(counts) {
-  const box = $("d-hour-note");
-  const now = cityHour(state.cityRecord?.timezone);
-  const outlook = hourOutlook(counts, now);
-  const win = quietestWindow(counts, now);
-  if (!outlook || !win) {
-    box.innerHTML = html`<p class="bar-empty">Too few incidents here with a recorded hour for an outlook.</p>`;
-    return new Set();
-  }
-  const line = (label, arrow, text) =>
-    html`<li><span class="outlook-arrow" aria-hidden="true">${arrow}</span><span><b>${label}:</b> ${text}</span></li>`;
-  box.innerHTML = html`<ul>${[
-    line("Next 3 hours", TREND_ARROWS[outlook.direction], outlookSentence(outlook)),
-    line("Next 12 hours", "◷", windowSentence(win)),
-  ]}</ul><p class="outlook-foot">From this cell's reported incidents by hour over the past
-12 months — the usual pattern, not a forecast.</p>`;
-  return new Set(win.startsNow || win.quieter ? win.blocks : []);
-}
-
-/**
- * The cell's day on the selected track, and its rating at the selected hour.
- *
- * The 24-bar profile is drawn whether or not an hour is selected: the shape
- * across the day is the useful thing, and it also gives the selected block
- * somewhere to sit. The rating is printed as text beside it, so it is never
- * reachable only through the colour of a hexagon.
- */
-function renderHours(detail) {
-  const block = $("d-hour-block");
-  // The selected track's own day, so the chart and the outlook describe the
-  // same offences the map and the ranking do. Hidden only when neither track
-  // has an incident with a recorded hour: an empty violent day beside a busy
-  // non-violent one is itself the reading.
-  const profile = detail.hour_profile;
-  const counts = profile?.[state.track];
-  const anyHour = profile && Object.values(profile).some((day) => day.some((n) => n > 0));
-
-  if (!counts || !anyHour) {
-    block.hidden = true;
-    return;
-  }
-  block.hidden = false;
-  $("d-hour-track").textContent = `${TRACK_LABELS[state.track]} offences`;
-
-  const max = Math.max(...counts, 1);
-  const quiet = renderHourOutlook(counts);
-
-  $("d-hours").innerHTML = html`${counts.map((n, hour) => {
-    const height = Math.max((n / max) * 100, n > 0 ? 4 : 0);
-    const selected = hour === state.hour ? html` data-selected` : "";
-    const on = n > 0 ? html` data-on` : "";
-    const lower = quiet.has(hour) ? html` data-quiet` : "";
-    return html`<i style="height:${height}%"${on}${lower}${selected} title="${hourLabel(hour)}: ${nf.format(n)}"></i>`;
-  })}`;
-
-  renderCityClock();
-
-  const safety = (detail.hour_safety ?? []).find((r) => r.track === state.track);
-  const dash = "—";
-
-  if (state.hour === null) {
-    $("d-hour-safety").textContent = $("f-hour").disabled
-      ? "hourly view not built for this range"
-      : "pick an hour under Time of day";
-    return;
-  }
-
-  // The all-hours ranking scaled by this cell's hour factor and re-ranked at
-  // this hour. Tier 0 is the all-hours tier 0: nothing of this track reported
-  // here at any hour.
-  $("d-hour-safety").textContent = !safety
-    ? dash
-    : safety.safety_tier === 0
-      ? safety.tier_label ?? "No reported incidents"
-      : `${safetyLabel(safety.safety_percentile)} · ${safety.tier_label ?? ""}`;
-}
-
-/**
- * `available === false` means the split is not built at this cell size, which is
- * a different statement from an empty cell and must not borrow its wording. The
- * per-offence list below the chart is built at every resolution, so there is a
- * finer answer to send the reader to rather than a dead end.
- */
-function renderCategoryBars(rows, available = true) {
-  const container = $("d-categories");
-  if (available === false) {
-    container.innerHTML =
-      `<p class="bar-empty">Not split by category at this cell size — a cell this ` +
-      `small is empty in most single categories, so the split would be mostly ` +
-      `zeroes. The reported offences listed below cover this cell.</p>`;
-    return;
-  }
-  if (!rows?.length) {
-    container.innerHTML = `<p class="bar-empty">No incidents reported in this cell.</p>`;
-    return;
-  }
-
-  // Nominal categories: one hue for every bar. Bar length already encodes the
-  // value, so the hue channel is not spent re-encoding it.
-  const max = Math.max(...rows.map((r) => r.incident_count), 1);
-  container.innerHTML = html`${rows.map((row) => {
-    // The fallback is the server's raw category string: escaped by html``.
-    const label = CATEGORY_LABELS[row.category] ?? row.category;
-    const width = Math.max((row.incident_count / max) * 100, row.incident_count > 0 ? 1.5 : 0);
-    return html`
-        <div class="bar-row">
-          <span class="bar-name">${label}</span>
-          <span class="bar-track"><span class="bar-fill" style="width:${width}%"></span></span>
-          <span class="bar-value">${nf.format(row.incident_count)}</span>
-        </div>`;
-  })}`;
-}
-
-/** True when the whole calendar month is covered by data up to `anchorIso`. */
-function isCompleteMonth(monthStartIso, anchorIso) {
-  if (!anchorIso) return true;
-  const [year, month] = monthStartIso.split("-").map(Number);
-  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
-  const monthEnd = `${monthStartIso.slice(0, 8)}${String(lastDay).padStart(2, "0")}`;
-  return monthEnd <= anchorIso;
-}
-
-function renderSparkline(monthly, anchorIso) {
-  const svg = $("d-spark");
-  // The trailing month is nearly always partial -- the source has only
-  // published a few days of it -- and plotting it makes a data boundary look
-  // like a collapse in reported crime. Complete months only.
-  const series = (monthly ?? [])
-    .filter((row) => row.category === "all")
-    .filter((row) => isCompleteMonth(row.month_start, anchorIso))
-    .sort((a, b) => a.month_start.localeCompare(b.month_start));
-
-  svg.innerHTML = "";
-  $("d-spark-readout").textContent = "";
-
-  if (series.length < 2) {
-    $("d-spark-from").textContent = "";
-    $("d-spark-to").textContent = "";
-    $("d-spark-readout").textContent = "Not enough complete months to plot a trend.";
-    return;
-  }
-
-  const width = svg.clientWidth || 320;
-  const height = 58;
-  const padY = 6;
-  const max = Math.max(...series.map((d) => d.incident_count), 1);
-  const stepX = width / (series.length - 1);
-  const y = (v) => height - padY - (v / max) * (height - padY * 2);
-  const points = series.map((d, i) => [i * stepX, y(d.incident_count)]);
-
-  const ns = "http://www.w3.org/2000/svg";
-  const make = (tag, attrs) => {
-    const el = document.createElementNS(ns, tag);
-    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
-    return el;
-  };
-
-  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  svg.setAttribute("preserveAspectRatio", "none");
-
-  // Recessive hairline baseline -- solid, one shade off the surface, never dashed.
-  svg.appendChild(
-    make("line", {
-      x1: 0, y1: height - padY, x2: width, y2: height - padY,
-      stroke: BASELINE, "stroke-width": 1,
-    })
-  );
-
-  svg.appendChild(
-    make("polyline", {
-      points: points.map(([px, py]) => `${px},${py}`).join(" "),
-      fill: "none",
-      stroke: SERIES_1,
-      "stroke-width": 2,
-      "stroke-linejoin": "round",
-      "stroke-linecap": "round",
-    })
-  );
-
-  const marker = make("circle", { r: 3.5, fill: SERIES_1, cx: points.at(-1)[0], cy: points.at(-1)[1] });
-  svg.appendChild(marker);
-
-  const crosshair = make("line", {
-    y1: 0, y2: height, stroke: INK_SECONDARY, "stroke-width": 1, opacity: "0",
-  });
-  svg.appendChild(crosshair);
-
-  const monthLabel = (iso) =>
-    new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { month: "short", year: "numeric" });
-
-  $("d-spark-from").textContent = monthLabel(series[0].month_start);
-  $("d-spark-to").textContent = monthLabel(series.at(-1).month_start);
-  // The trend series always spans the full retained history, which is wider
-  // than the window driving the map -- say so rather than letting the panel
-  // imply both numbers cover the same period.
-  $("d-trend-title").textContent = `Monthly trend · ${series.length} complete months`;
-
-  // The readout is always visible, so a value is never reachable only by hover.
-  const readout = (index) => {
-    const row = series[index];
-    $("d-spark-readout").textContent =
-      `${monthLabel(row.month_start)}: ${nf.format(row.incident_count)} reported`;
-  };
-  readout(series.length - 1);
-
-  svg.onpointermove = (event) => {
-    const box = svg.getBoundingClientRect();
-    const ratio = (event.clientX - box.left) / box.width;
-    const index = Math.min(series.length - 1, Math.max(0, Math.round(ratio * (series.length - 1))));
-    crosshair.setAttribute("x1", points[index][0]);
-    crosshair.setAttribute("x2", points[index][0]);
-    crosshair.setAttribute("opacity", "0.5");
-    marker.setAttribute("cx", points[index][0]);
-    marker.setAttribute("cy", points[index][1]);
-    readout(index);
-  };
-  svg.onpointerleave = () => {
-    crosshair.setAttribute("opacity", "0");
-    marker.setAttribute("cx", points.at(-1)[0]);
-    marker.setAttribute("cy", points.at(-1)[1]);
-    readout(series.length - 1);
-  };
-}
-
-function renderOffenseMix(rows) {
-  const body = $("d-offenses").querySelector("tbody");
-  if (!rows?.length) {
-    body.innerHTML = `<tr><td colspan="3">Nothing reported in this window.</td></tr>`;
-    return;
-  }
-  // Third-party offence descriptions, verbatim from the source: built as DOM
-  // nodes with textContent, so nothing in them is ever parsed as markup.
-  body.replaceChildren(
-    ...rows.map((row) => {
-      const offence = document.createElement("td");
-      offence.textContent = row.raw_offense_text;
-      const nibrs = document.createElement("td");
-      nibrs.className = "nibrs";
-      nibrs.textContent = row.nibrs_code ?? "—";
-      const count = document.createElement("td");
-      count.className = "num";
-      count.textContent = nf.format(row.incident_count);
-      const tr = document.createElement("tr");
-      tr.append(offence, nibrs, count);
-      return tr;
-    })
-  );
-}
-
-function closeDetail() {
-  removeCellPopup();
-  if (state.selected) {
-    map.setFeatureState({ source: "cells", id: state.selected }, { selected: false });
-    state.selected = null;
-  }
-  state.detail = null;
-  $("detail-body").hidden = true;
-  $("detail-empty").hidden = false;
-}
-
 /* ------------------------------------------------------- cell size by zoom */
 
-/* Testing UI: there is no cell-size control, so the size follows the zoom.
-   Resolution 8 (~0.3 mi cells) while SCALE_MAX_WIDTH pixels -- the scale
-   bar's own width -- span 0.6214 mi or more, resolution 9 (~0.1 mi) from
-   there in. 0.6214 mi is exactly the kilometre this switched at when the bar
-   was metric, so the cells change at the same zoom as before. Measured the way MapLibre's
+/* The cell size follows the zoom: resolution 8 (~0.3 mi cells) while
+   SCALE_MAX_WIDTH pixels -- the scale bar's own width -- span 0.6214 mi or
+   more, resolution 9 (~0.1 mi) from there in. Measured the way MapLibre's
    ScaleControl measures, across the middle of the map. */
 const SCALE_MAX_WIDTH = 110;
 const METERS_PER_MILE = 1609.344;
@@ -1497,34 +982,19 @@ function resForZoom() {
   return meters / METERS_PER_MILE < FINE_RES_BELOW_MILES ? 9 : 8;
 }
 
-/** The same steps as the (hidden) cell-size control, plus keeping the open
-    cell: the popup moves to the cell at the same spot on the new layer
-    rather than closing under the user's zoom. */
+/** After the camera moves: the zoom's cell size for the cities on screen, and
+    any city that has come into view at the fine size. keepSelection carries an
+    open cell across a change of size. */
 async function syncResToZoom() {
-  if (!state.cityRecord) return;
-  const res = resForZoom();
-  if (res === state.res) return;
-
-  state.res = res;
-  $("f-res").value = String(res);
-  syncActivityScope();
-  syncHourAvailability();
-  syncSafetyAvailability();
-
-  const spot = state.selected ? h3.cellToLatLng(state.selected) : null;
-  closeDetail();
-  await loadLayer();
-  // A later zoom may have moved the resolution on while this layer loaded.
-  if (spot && state.res === res && !state.selected) {
-    selectCell(h3.latLngToCell(spot[0], spot[1], res));
-  }
+  if (!state.cities.length) return;
+  state.res = resForZoom();
+  await refreshLayers();
 }
 
 /* ---------------------------------------------------------------- cell popup */
 
-/* The testing UI's whole cell view: the relative risk rating and the day's
-   shape, in a small box on the map rather than the side panel (which is still
-   rendered, hidden, so the rest of the app keeps reading from it). */
+/* The whole cell view: the relative risk rating now, and the cell's day and
+   week against themselves, in a small box on the map. */
 let cellPopup = null;
 
 /** "#rrggbb" for a multiple of the city average, by the same linear
@@ -1554,24 +1024,22 @@ function showCellPopup(h3Index, detail) {
   removeCellPopup();
 
   const props = state.featureIndex.get(h3Index);
-  const ratio = props ? cellRatio(props, paintedMeasure(), state.rampDomain) : null;
+  const ratio = ratioNow(props);
+  const city = cellCity(h3Index);
+  const zone = city?.timezone;
+  const { hour: nowHour, day: nowDay } = cityNow(city);
 
-  // The rating is the same multiple of the city average the cell's colour
+  // The rating is the same multiple of its city's average the cell's colour
   // (and so the outline) comes from: the smoothed, severity-weighted rate the
-  // ranking is built on. The side panel's headline uses the raw rate instead,
-  // which can read very differently for a small cell.
-  const windowLabel = detail.range ? detail.window_label : detail.window_label.toLowerCase();
+  // ranking is built on, at the hour and weekday it is now in that city.
+  const windowLabel = detail.window_label.toLowerCase();
   const track = TRACK_LABELS[state.track];
   const sense = ratio === null ? ""
     : ratio > 1.05 ? "higher than the city average"
     : ratio < 0.95 ? "lower than the city average"
     : "about the city average";
-  // "Saturday at 10 PM": the time the rating is for, when the map has one.
-  const when = [
-    state.day !== null ? dayName(state.day) : null,
-    state.hour !== null ? `at ${hourName(state.hour)}` : null,
-  ].filter(Boolean).join(" ");
-  const at = when ? `${when} · ` : "";
+  // "Saturday at 10 PM": the time the rating is for -- now, in the cell's city.
+  const at = `${dayName(nowDay)} at ${hourName(nowHour)} · `;
   const rating = ratio === null
     ? {
         value: "—",
@@ -1579,12 +1047,12 @@ function showCellPopup(h3Index, detail) {
       }
     : {
         value: formatRatio(ratio),
-        label: `relative ${track} risk — ${sense} · ${at}${windowLabel}`,
+        label: `relative ${track} risk — ${sense} in ${city?.city_name ?? "this city"} · ${at}${windowLabel}`,
       };
 
   const counts = detail.hour_profile?.[state.track];
   const max = Math.max(...(counts ?? []), 1);
-  const now = cityHour(state.cityRecord?.timezone);
+  const now = nowHour;
   // The 12-hour outlook: the quietest three-hour stretch ahead, from this
   // cell's own day on this track (hours.js). Its bars go green only when it
   // is worth pointing at -- it starts now, or it is meaningfully lower.
@@ -1595,7 +1063,7 @@ function showCellPopup(h3Index, detail) {
     : "Too few incidents here for a 12-hour outlook.";
   const span = (hour) => `${hourName(hour)} – ${hourName(hour + 1)}`;
   const chart = counts && counts.some((n) => n > 0)
-    ? html`<div class="cp-sub cp-time">${cityTimeLabel(state.cityRecord?.timezone, new Date(), { zoneName: true })}</div>
+    ? html`<div class="cp-sub cp-time">${cityTimeLabel(zone, new Date(), { zoneName: true })}</div>
       <div class="hours" role="img" aria-label="Reported ${TRACK_LABELS[state.track]} offences by hour of the day">${counts.map((n, hour) => {
         const height = Math.max((n / max) * 100, n > 0 ? 4 : 0);
         const on = n > 0 ? html` data-on` : "";
@@ -1612,7 +1080,7 @@ function showCellPopup(h3Index, detail) {
   // The week: this cell's incidents on each weekday, today's bar dark -- the
   // day the rating above is for when the map is on today.
   const days = detail.day_profile?.[state.track];
-  const today = cityDay(state.cityRecord?.timezone);
+  const today = nowDay;
   const week = days && days.some((n) => n > 0)
     ? (() => {
         const most = Math.max(...days, 1);
@@ -1653,146 +1121,6 @@ function showCellPopup(h3Index, detail) {
     if (cellPopup === popup) closeDetail();
   });
   cellPopup = popup;
-}
-
-/* ---------------------------------------------------------------- table view */
-
-function renderTable() {
-  const body = $("table-data").querySelector("tbody");
-  const rows = [...state.features]
-    .sort((a, b) => b.properties.count - a.properties.count)
-    .slice(0, 250);
-
-  $("table-caption").textContent =
-    `Cells by reported incident count — ${state.features.length} cells, ` +
-    `showing the top ${rows.length}` +
-    (timedLabel() === null ? "" : ` · ratings at ${timedLabel()}`);
-
-  const props = TRACK_PROPS[state.track];
-  $("th-hour-safety").textContent =
-    timedLabel() === null ? "At hour" : `At ${timedLabel()}`;
-
-  const pct = (value) =>
-    value === null || value === undefined ? "—" : `${(value * 100).toFixed(1)}%`;
-
-  body.innerHTML = html`${rows.map((feature, index) => {
-    const p = feature.properties;
-    return html`
-      <tr>
-        <td class="num">${index + 1}</td>
-        <td class="mono">${p.h3}</td>
-        <td class="num">${nf.format(p.count)}</td>
-        <td class="num">${nf.format(p.per_km2)}</td>
-        <td class="num">${(p.percentile * 100).toFixed(1)}%</td>
-        <td>${TIER_LABELS[p.tier]}</td>
-        <td class="num">${pct(p.safety_violent)}</td>
-        <td class="num">${pct(p.safety_nonviolent)}</td>
-        <td class="num">${pct(p[props.hpct])}</td>
-      </tr>`;
-  })}`;
-}
-
-/* --------------------------------------------------------------- methodology */
-
-async function openMethodology() {
-  const dialog = $("methodology");
-  dialog.showModal();
-  const response = await fetch(`${API}/methodology?city=${encodeURIComponent(state.city)}`);
-  if (!response.ok) return;
-  const m = await response.json();
-  // Every field is server prose (registry text included): html`` escapes it.
-  // terms_url becomes a link only if it is a plain http(s) URL.
-  const terms = safeHttpUrl(m.terms_url);
-
-  $("methodology-body").innerHTML = html`
-    <h2>How to read this map</h2>
-    <p>${m.what_this_shows}</p>
-
-    <div class="callout">
-      <h3 style="margin-top:0">What this is not</h3>
-      <ul>${m.what_this_is_not.map((line) => html`<li>${line}</li>`)}</ul>
-    </div>
-
-    <h3>Known limitations</h3>
-    <ul>${m.known_limitations.map((line) => html`<li>${line}</li>`)}</ul>
-
-    <h3>The cell model</h3>
-    <p>
-      Cells are ${m.cell_model.grid} hexagons at resolution
-      ${m.cell_model.primary_resolution} (${m.cell_model.primary_resolution_note}),
-      with resolution ${m.cell_model.detail_resolution}
-      (${m.cell_model.detail_resolution_note}) and resolution
-      ${m.cell_model.fine_resolution} available as drill-downs.
-    </p>
-    <p>${m.cell_model.fine_resolution_note}</p>
-    <p>${m.cell_model.relative_measure}</p>
-
-    ${m.safety_measure ? html`
-    <h3>The safety ranking</h3>
-    <p>${m.safety_measure.what_it_is}</p>
-    <p>${m.safety_measure.why_two_rankings}</p>
-    <p>${m.safety_measure.weights.note}</p>
-    <dl>
-      <div><dt>Severity source</dt><dd>${m.safety_measure.weights.source ?? "—"}</dd></div>
-      <div><dt>Weight scheme</dt><dd>${m.safety_measure.weights.scheme_version ?? "—"}</dd></div>
-      <div><dt>Published weights cover</dt><dd>${
-        m.safety_measure.weights.published_share === null ||
-        m.safety_measure.weights.published_share === undefined
-          ? "—"
-          : `${(m.safety_measure.weights.published_share * 100).toFixed(1)}% of incidents`
-      }</dd></div>
-    </dl>
-    <p>${m.safety_measure.weights.fallback_note}</p>
-    <p>${m.safety_measure.smoothing.note}</p>
-    <ul>${m.safety_measure.known_limitations.map((line) => html`<li>${line}</li>`)}</ul>
-    ` : ""}
-
-    ${m.time_of_day ? html`
-    <h3>Time of day</h3>
-    <p>${m.time_of_day.what_it_is}</p>
-    <ul>${m.time_of_day.how_it_works.map((line) => html`<li>${line}</li>`)}</ul>
-    <p>${m.time_of_day.hour_factor_note}</p>
-
-    <div class="callout">
-      <h3 style="margin-top:0">What the timestamps are</h3>
-      <p style="margin-bottom:0">${m.time_of_day.timestamp_caveat}</p>
-    </div>
-
-    <dl>
-      <div><dt>Incidents with a known hour</dt><dd>${
-        m.time_of_day.coverage.hour_known_share === null ||
-        m.time_of_day.coverage.hour_known_share === undefined
-          ? "—"
-          : `${(m.time_of_day.coverage.hour_known_share * 100).toFixed(1)}%`
-      }</dd></div>
-      <div><dt>Built for cell sizes</dt><dd>H3 res ${m.time_of_day.scope.resolutions.join(", ")}</dd></div>
-      <div><dt>Built for windows</dt><dd>${m.time_of_day.scope.windows.join(", ")}</dd></div>
-    </dl>
-    <p>${m.time_of_day.coverage.note}</p>
-    <p>${m.time_of_day.scope.note}</p>
-    <ul>${m.time_of_day.known_limitations.map((line) => html`<li>${line}</li>`)}</ul>
-    ` : ""}
-
-    <h3>Offence classification</h3>
-    <p>${m.classification.standard}</p>
-    <dl>
-      <div><dt>Crosswalk version</dt><dd>${m.classification.crosswalk_version}</dd></div>
-      <div><dt>Raw source codes kept</dt><dd>Yes</dd></div>
-      <div><dt>Demographic overlays</dt><dd>None</dd></div>
-    </dl>
-
-    <h3>Source &amp; attribution</h3>
-    <p>${m.attribution}</p>
-    <dl>
-      <div><dt>Data as of</dt><dd>${new Date(m.data_as_of).toLocaleString()}</dd></div>
-      <div><dt>Coverage</dt><dd>${m.coverage.start} to ${m.coverage.end}</dd></div>
-      <div><dt>Incidents loaded</dt><dd>${nf.format(m.coverage.incidents)}</dd></div>
-      <div><dt>Update cadence</dt><dd>${m.update_cadence}</dd></div>
-    </dl>
-    <p>${m.freshness_note ?? ""}</p>
-    <p>${m.location_precision_note ?? ""}</p>
-    ${terms ? html`<p><a href="${terms}" target="_blank" rel="noopener">Source dataset and terms of use</a></p>` : ""}
-  `;
 }
 
 /* ------------------------------------------------------------------ geolocate */
@@ -1860,12 +1188,12 @@ const milesLabel = (km) => {
 };
 
 /**
- * The city to open on, from a location the visitor has *already* allowed.
+ * The city to frame first, from a location the visitor has *already* allowed.
  *
  * Never prompts: a permission dialog the moment the page opens, before anyone
  * has asked for anything, is the wrong first impression for a safety map. Where
  * the browser has no grant on record this returns null at once and the page
- * opens on DEFAULT_CITY as before. Bounded by a short timeout, because it sits
+ * frames DEFAULT_CITY. Bounded by a short timeout, because it sits
  * in front of the first paint.
  */
 async function cityFromGrantedLocation() {
@@ -1912,89 +1240,15 @@ function hideLocateNote() {
   $("locate-note").hidden = true;
 }
 
-/** selectCity, with the picker kept in step -- it only listens for user changes. */
+/** Fly to a city. Every city is already on the map; this only moves the view,
+    and resolves once the move has settled and its cells are loaded. */
 async function switchCity(sourceId) {
-  $("f-city").value = sourceId;
-  await selectCity(sourceId);
-}
-
-/**
- * Take the visitor to their own cell.
- *
- * If they are standing in a different served city from the one on screen, that
- * city opens first -- declaring them "outside coverage" while they stand in
- * Chicago with Philadelphia selected was the picker's fault, not theirs.
- * Outside every city, the nearest one is named with a way to open it.
- */
-async function goToLocation(point) {
-  hideLocateNote();
-  const home = cityAt(point);
-
-  if (!home) {
-    const near = nearestCity(point);
-    renderCompass();
-    if (!near) {
-      showLocateNote("You are outside the cities this map covers.");
-      return;
-    }
-    showLocateNote(
-      `You are outside the cities this map covers. The nearest is ` +
-        `${near.city.city_name}, about ${milesLabel(near.km)} away.`,
-      near.city.source_id === state.city
-        ? null
-        : { label: `View ${near.city.city_name}`, run: () => switchCity(near.city.source_id) }
-    );
-    return;
-  }
-
-  if (home.source_id !== state.city) await switchCity(home.source_id);
-
-  const cell = h3.latLngToCell(point.lat, point.lng, state.res);
-  if (!state.featureIndex.has(cell)) {
-    // Inside the box but past the edge of the data: across the city line, or
-    // somewhere the source publishes nothing.
-    showLocateNote(
-      `You are near ${home.city_name}, but just outside the area its data covers.`
-    );
-    map.flyTo({ center: [point.lng, point.lat], zoom: Math.max(map.getZoom(), 12), duration: 900 });
-    renderCompass();
-    return;
-  }
-  const [lat, lng] = h3.cellToLatLng(cell);
-  map.flyTo({ center: [lng, lat], zoom: Math.max(map.getZoom(), 13), duration: 900 });
-  selectCell(cell);
-}
-
-function locateMe() {
-  if (!navigator.geolocation) {
-    showLocateNote("This browser does not expose a location.");
-    return;
-  }
-  const button = $("btn-locate");
-  button.disabled = true;
-  button.textContent = "Locating…";
-
-  navigator.geolocation.getCurrentPosition(
-    (position) => {
-      button.disabled = false;
-      button.textContent = "Use my location";
-      // S10: the cell is computed here, on the client, from GPS coordinates --
-      // no server round trip and no spatial query is involved in "which cell
-      // am I in". Which *city* is the same: every bounding box is already here.
-      state.userLocation = {
-        lat: position.coords.latitude,
-        lng: position.coords.longitude,
-      };
-      followLocation();
-      goToLocation(state.userLocation);
-    },
-    (error) => {
-      button.disabled = false;
-      button.textContent = "Use my location";
-      showLocateNote(`Could not read your location: ${error.message}`);
-    },
-    { enableHighAccuracy: false, timeout: 10000 }
-  );
+  const city = cityById(sourceId);
+  if (!city) return;
+  const settled = new Promise((resolve) => map.once("moveend", resolve));
+  frameCity(city, { animate: true });
+  await settled;
+  await resSync;
 }
 
 /**
@@ -2311,7 +1565,9 @@ function cityOnScreen(point) {
     box but past the edge of its data -- across the city line, or somewhere
     the source publishes nothing -- there is none. */
 function coveredCell(point) {
-  const cell = h3.latLngToCell(point.lat, point.lng, state.res);
+  const city = cityAt(point);
+  if (!city) return null;
+  const cell = h3.latLngToCell(point.lat, point.lng, layerRes(city.source_id));
   return state.featureIndex.has(cell) ? cell : null;
 }
 
@@ -2577,8 +1833,6 @@ async function submitDirections() {
     to: { lat: to.lat, lng: to.lng },
     mode: dir.mode,
   };
-  const preset = currentPreset();
-  if (preset) request.window = preset.id;
 
   const key = directionsKey(request);
   const kept = dir.cache.get(key);
@@ -3200,8 +2454,8 @@ async function initMap() {
   map = new maplibregl.Map({
     container: "map",
     style,
-    // Placeholder only: loadFreshness fits the real bounds from the city's own
-    // snapshot before the first paint, at duration 0, so this is never seen.
+    // The whole country until a city is served: frameCity then fits the first
+    // city's own bounds, at duration 0.
     center: [-98.5, 39.5],
     zoom: 3,
     // No minZoom. With six cities spread across the country, a floor tight
@@ -3280,18 +2534,21 @@ async function initMap() {
     $("nav-recenter").hidden = false;
   });
 
-  // The compass reads from the map centre until a location is shared, and its
-  // rose turns with the map either way.
-  map.on("moveend", renderCompass);
-  // Kept, so a search can wait for the layer its own zoom set loading.
-  map.on("zoomend", () => {
+  // After every move: which city the page is in, the cell size the zoom calls
+  // for (and any city that came into view at it), and the compass. Kept, so a
+  // search can wait for the layer its own move set loading. Registered before
+  // flyAndSettle's own moveend listener, so it always runs first.
+  map.on("moveend", () => {
+    updateFocus();
     resSync = syncResToZoom();
+    renderCompass();
   });
   map.on("rotate", () => {
     $("compass-rose").style.transform = `rotate(${-map.getBearing()}deg)`;
   });
 
   initRouteLayers();
+  initCityMarkers();
   window.__safetyMap = map;
 }
 
@@ -3317,9 +2574,9 @@ function cellsOpacity() {
 }
 
 /** The track toggle picks the colour the cells are painted in, so it shows
-    only while the safety ramp is painted -- and the tiles are on. */
+    only while the tiles are on. */
 function syncTrackField() {
-  $("f-track-field").hidden = state.scale !== "safety" || !state.tiles;
+  $("f-track-field").hidden = !state.tiles;
 }
 
 function setTiles(on) {
@@ -3331,302 +2588,16 @@ function setTiles(on) {
   syncTrackField();
 }
 
-/** Fill the time-of-day control with the 24 hour blocks, after "All hours". */
-function fillHourOptions() {
-  const select = $("f-hour");
-  for (let hour = 0; hour < 24; hour++) select.add(new Option(hourLabel(hour), String(hour)));
-}
-
-/** "EDT": the selected city's zone as its clocks read today; "" if unknown. */
-function cityZoneName() {
-  const timeZone = state.cityRecord?.timezone;
-  if (!timeZone) return "";
-  try {
-    return new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "short" })
-      .formatToParts(new Date())
-      .find((part) => part.type === "timeZoneName")?.value ?? "";
-  } catch {
-    return ""; // RangeError for a zone this browser does not know
-  }
-}
-
-/** "11 AM – 12 PM EDT" for each hour block, in the selected city's zone. */
-function labelHourOptions() {
-  const zone = cityZoneName();
-  for (const option of $("f-hour").options) {
-    if (option.value === "all") continue;
-    const hour = Number(option.value);
-    option.text = `${hourName(hour)} – ${hourName(hour + 1)}${zone ? ` ${zone}` : ""}`;
-  }
-}
-
-/**
- * Enable or disable the hour control for the current window and cell size.
- *
- * The pipeline builds the hourly layers only where the counts support them, so
- * the control says so up front rather than letting the request 400 or, worse,
- * return a layer of nulls that looks like "nothing happens here at 3am".
- * Clears any hour already set, since it is about to stop being served.
- */
-function syncHourAvailability() {
-  const ok =
-    HOURLY_RESOLUTIONS.includes(state.res) && Boolean(currentPreset()?.hourly);
-  const select = $("f-hour");
-  labelHourOptions();
-  select.disabled = !ok;
-  if (!ok) state.hour = null;
-  select.value = state.hour === null ? "all" : String(state.hour);
-  // The day factor is built where the hour layer is, by the same run.
-  const daySelect = $("f-day");
-  daySelect.disabled = !ok;
-  if (!ok) state.day = null;
-  daySelect.value = state.day === null ? "all" : String(state.day);
-
-  // Explanations ride on the tooltip so nothing sits under the control.
-  if (!ok) {
-    select.title =
-      currentPreset() || !HOURLY_RESOLUTIONS.includes(state.res)
-        ? "Hourly view not built at this cell size / window — map shows all hours."
-        : "Hourly view is built for the last-12-months range only — map shows all hours.";
-  } else if (state.meta && !state.meta.hour_known_share) {
-    // An empty layer and a quiet city look identical on the map. Say which.
-    select.title = "No time-of-day data loaded — run the hourly rollup.";
-  } else {
-    // Whose clock: the hour blocks are the city's local time, not the visitor's.
-    const city = state.cityRecord?.city_name;
-    select.title = city ? `Hour blocks in ${city} local time` : "";
-  }
-  return ok;
-}
-
-/**
- * Gate the safety ramp on cell sizes where a population denominator exists.
- *
- * Same principle as syncHourAvailability: the control says why up front rather
- * than letting the request 400 or, worse, painting a layer of nulls that reads
- * as "everywhere here is equally safe". Falls back to the count ramp, which is
- * built at every resolution, instead of leaving the map blank.
- */
-function syncSafetyAvailability() {
-  const ok = SAFETY_RESOLUTIONS.includes(state.res);
-  const option = $("f-scale").querySelector('option[value="safety"]');
-  option.disabled = !ok;
-
-  if (!ok && state.scale === "safety") {
-    state.scale = "count";
-    $("f-scale").value = "count";
-    syncTrackField();
-  }
-  $("f-scale").title = ok
-    ? ""
-    : "Safety ranking needs a population denominator, which this cell size is " +
-      "too small to carry — showing incident count.";
-  return ok;
-}
-
-/**
- * Fill the date controls from the city record (windows.js).
- *
- * Runs whenever the record arrives: on load, on a city switch, and when a
- * refresh moves the data's newest day. Settles the dates first -- a carried
- * preset becomes the new city's nearest one, a legacy ?window= link becomes its
- * window's dates, nothing at all becomes the year up to today -- then clamps them
- * to what this city holds and fills the preset list.
- */
-function renderRangeControls() {
-  const city = state.cityRecord;
-  const windows = city?.windows ?? [];
-  const today = todayIso();
-
-  if (state.carryPreset) {
-    const { id, span } = state.carryPreset;
-    const chosen = pickWindow(windows, id, span, city?.default_window);
-    if (chosen) state.range = presetRange(chosen, today);
-    state.carryPreset = null;
-  } else if (!state.range) {
-    const linked = findWindow(windows, state.pendingWindow);
-    // The stored year rather than a year counted back from today: the stored
-    // one ends where the data does, so a computed year never matches it while
-    // the city publishes with any lag -- and only the stored one carries the
-    // hourly layer the time-of-day control opens on.
-    const year = findWindow(windows, DEFAULT_WINDOW);
-    state.range = linked
-      ? presetRange(linked, today)
-      : year ? presetRange(year, today) : defaultRange(today);
-  }
-  state.pendingWindow = null;
-
-  // The calendar starts on the city's oldest stored day. Before the city is
-  // rebuilt with the daily rollup there is no such day on the record and no
-  // custom range either; the presets still reach back as far as they go.
-  const min = city?.selectable_start ?? windows.at(-1)?.start ?? null;
-  for (const input of [$("f-from"), $("f-to")]) {
-    input.min = min ?? "";
-    input.max = today;
-  }
-
-  $("f-preset").replaceChildren(
-    new Option("Custom dates", "custom"),
-    ...windows.map((w) => new Option(w.partial ? `${w.label} (partial)` : w.label, w.id))
-  );
-  // Custom dates into a city that serves none: its default preset, not whichever
-  // preset the clamped dates happen to land on.
-  if (!city?.custom_range_resolutions?.length && !currentPreset()) {
-    const fallback =
-      findWindow(windows, city?.default_window) || findWindow(windows, DEFAULT_WINDOW);
-    if (fallback) state.range = presetRange(fallback, today);
-  }
-  setRange(clampRange(state.range, min, today));
-  syncActivityScope();
-}
-
-/** Select dates: state, controls and URL together. Does not reload. */
-function setRange(range) {
-  state.range = range;
-  $("f-from").value = range.from;
-  $("f-to").value = range.to;
-  const preset = currentPreset();
-  $("f-preset").value = preset?.id ?? "custom";
-  // A preset goes into the URL by name, not as its dates. The stored windows
-  // slide forward a day with every data refresh, so dates saved from one would
-  // stop matching it by the next day -- reopening the page from history would
-  // then land on a custom range, which has no hourly layer. ?window= always
-  // means the city's current window; only hand-picked dates are pinned.
-  const url = new URL(location.href);
-  if (preset) {
-    url.searchParams.set("window", preset.id);
-    url.searchParams.delete("from");
-    url.searchParams.delete("to");
-  } else {
-    url.searchParams.set("from", range.from);
-    url.searchParams.set("to", range.to);
-    url.searchParams.delete("window");
-  }
-  history.replaceState(null, "", url);
-}
-
-/** Whether the server ranks custom dates at this cell size for this city. */
-const customRangeServed = () =>
-  (state.cityRecord?.custom_range_resolutions ?? []).includes(state.res);
-
-/**
- * Gate the date and category controls on what is served at this cell size.
- *
- * Same principle as syncHourAvailability and syncSafetyAvailability. At
- * resolution 10 the layer exists only for the one- and two-year presets and
- * the combined category, and custom dates are not served at all (there is no
- * daily rollup that fine). Coerces the current selection rather than leaving
- * one that is about to 400 -- the city's default preset is built at every
- * resolution, so there is always something to fall back to.
- *
- * Every caller reloads the layer straight afterwards, so a coerced selection is
- * picked up by that fetch rather than needing one of its own.
- */
-function syncActivityScope() {
-  const city = state.cityRecord;
-  const windows = city?.windows ?? [];
-  const categories = activityCategories(state.res);
-  const custom = customRangeServed();
-
-  for (const option of $("f-preset").options) {
-    const win = findWindow(windows, option.value);
-    option.disabled = win ? !windowBuiltAt(win, state.res) : !custom;
-  }
-  $("f-from").disabled = !custom;
-  $("f-to").disabled = !custom;
-  for (const option of $("f-category").options) {
-    option.disabled = categories !== null && !categories.includes(option.value);
-  }
-
-  const preset = currentPreset();
-  if (state.range && (preset ? !windowBuiltAt(preset, state.res) : !custom)) {
-    const fallback =
-      findWindow(windows, city?.default_window) || findWindow(windows, DEFAULT_WINDOW);
-    if (fallback) setRange(presetRange(fallback, todayIso()));
-  }
-  if (categories && !categories.includes(state.category)) {
-    state.category = "all";
-    $("f-category").value = state.category;
-  }
-
-  const note = rangeNote(state.range, city, state.res);
-  $("f-preset").title =
-    state.res === 10
-      ? `Only the 12-month and 2-year presets are built for cells this small. ${note}`.trim()
-      : note;
-  $("f-category").title = categories
-    ? "A cell this small is empty in most single categories."
-    : "";
-}
-
-/** The dates changed: re-gate the controls, then redraw the map and the panel. */
-function onRangeChange(range) {
-  setRange(clampRange(range, $("f-from").min || null, $("f-to").max || null));
-  syncActivityScope();
-  syncHourAvailability();
-  if (state.selected) selectCell(state.selected);
-  loadLayer();
-}
-
+/* The only two controls: Show tiles, and which offences the colour ranks.
+   There is nothing else to choose -- every city, the last year, coloured for
+   the hour and day it is now in each city. */
 function wireControls() {
-  $("f-city").onchange = (e) => selectCity(e.target.value);
-  $("f-preset").onchange = (e) => {
-    const win = findWindow(state.cityRecord?.windows, e.target.value);
-    // "Custom dates" changes nothing by itself; the calendars are the control.
-    if (!win) {
-      $("f-from").focus();
-      return;
-    }
-    onRangeChange(presetRange(win, todayIso()));
-  };
-  // `change`, not `input`: it fires once a whole date is chosen, not on every
-  // keystroke of one being typed. An emptied input is ignored rather than sent.
-  $("f-from").onchange = (e) => {
-    if (e.target.value) onRangeChange({ from: e.target.value, to: state.range.to });
-  };
-  $("f-to").onchange = (e) => {
-    if (e.target.value) onRangeChange({ from: state.range.from, to: e.target.value });
-  };
-  $("f-hour").onchange = (e) => {
-    state.hour = e.target.value === "all" ? null : Number(e.target.value);
-    if (state.selected) selectCell(state.selected);
-    loadLayer();
-  };
-  $("f-day").onchange = (e) => {
-    state.day = e.target.value === "all" ? null : Number(e.target.value);
-    if (state.selected) selectCell(state.selected);
-    loadLayer();
-  };
-  $("f-category").onchange = (e) => {
-    state.category = e.target.value;
-    loadLayer();
-  };
-  $("f-res").onchange = (e) => {
-    state.res = Number(e.target.value);
-    // Before syncHourAvailability, which reads the preset: the new resolution
-    // may have just moved it.
-    syncActivityScope();
-    syncHourAvailability();
-    syncSafetyAvailability();
-    // A res-8 index is meaningless on the res-9 layer, so drop the selection.
-    closeDetail();
-    loadLayer();
-  };
-  $("f-scale").onchange = (e) => {
-    state.scale = e.target.value;
-    syncTrackField();
-    repaint();
-    // The open cell's headline measures whatever the map is coloured by, so it
-    // changes with this control -- and the detail is already in hand.
-    if (state.detail) renderHeadlineStat(state.detail);
-  };
-
   $("f-tiles").querySelectorAll("[data-tiles]").forEach((button) => {
     button.onclick = () => setTiles(button.dataset.tiles === "on");
   });
 
-  // Both tracks ride along on every feature, so switching is a repaint with no
-  // request and no loading state.
+  // Both tracks are rated on every feature (rateCity), so switching is a
+  // repaint with no request and no loading state.
   $("f-track").querySelectorAll("[data-track]").forEach((button) => {
     button.onclick = () => {
       state.track = button.dataset.track;
@@ -3634,66 +2605,35 @@ function wireControls() {
         .querySelectorAll("[data-track]")
         .forEach((b) => b.setAttribute("aria-selected", String(b === button)));
       repaint();
-      // The panel's headline, chart and hourly rating are per track too, and
-      // the detail is already in hand -- re-read it rather than re-request it.
-      if (state.detail) {
-        renderHeadlineStat(state.detail);
-        renderHours(state.detail);
-        // repaint() has just moved the city average, so the popup's rating,
-        // outline and chart are all re-read for the new track.
-        if (state.selected) showCellPopup(state.selected, state.detail);
-      }
+      // The popup's rating, outline and charts are per track too, and the
+      // detail is already in hand -- re-read it rather than re-request it.
+      if (state.detail && state.selected) showCellPopup(state.selected, state.detail);
       // Both tracks ride on every route too.
       if (dir.result) renderDirections();
-      renderTable();
     };
   });
 
-  $("btn-locate").onclick = locateMe;
   wireSearch();
   $("locate-note-close").onclick = hideLocateNote;
-  $("detail-close").onclick = closeDetail;
-
-  const tableButton = $("btn-table");
-  const toggleTable = (open) => {
-    $("tableview").hidden = !open;
-    tableButton.setAttribute("aria-pressed", String(open));
-  };
-  tableButton.onclick = () => toggleTable($("tableview").hidden);
-  $("table-close").onclick = () => toggleTable(false);
-
-  document.querySelectorAll("[data-open-methodology]").forEach((el) => {
-    el.onclick = openMethodology;
-  });
-  document.querySelectorAll("[data-close-methodology]").forEach((el) => {
-    el.onclick = () => $("methodology").close();
-  });
-
-  window.addEventListener("resize", () => {
-    if (state.selected) {
-      // Re-lay the sparkline against the new panel width.
-      selectCell(state.selected);
-    }
-  });
 }
 
-/* Poll the pipeline's own refresh stamp; reload the layer when the ETL runs.
-   Cheap enough to sit behind the same cache-invalidation rule the API uses. */
+/* Poll the pipeline's own refresh stamp; reload every city's layer when the
+   ETL has run. While no load is being shown, also look in on the progress
+   endpoint, so a load a later deploy starts gets its bar without a reload. */
 function watchForRefresh() {
   // Skipped while the tab is hidden: a background tab has nobody to show a
   // fresher layer to. Coming back runs a tick at once, so it catches up.
   const tick = async () => {
     if (document.hidden) return;
+    if (progressTimer === null) pollProgress();
     try {
-      // Scoped to the displayed city: a bi-weekly Los Angeles refresh is not a
-      // reason to reload a Philadelphia layer that has not moved.
-      const response = await fetch(`${API}/version?city=${encodeURIComponent(state.city)}`);
+      const response = await fetch(`${API}/version`);
       if (!response.ok) return;
       const version = await response.json();
-      const stamp = String(version.last_refreshed_at);
+      const stamp = `${version.last_refreshed_at}|${version.cities ?? ""}`;
       if (state.refreshStamp && stamp !== state.refreshStamp) {
-        await Promise.all([loadLayer({ quiet: true }), loadFreshness()]);
-        if (state.selected) selectCell(state.selected);
+        await onCitiesChanged();
+        await refreshLayers({ force: true, quiet: true });
       }
       state.refreshStamp = stamp;
     } catch {
@@ -3706,44 +2646,39 @@ function watchForRefresh() {
   });
 }
 
+/** Frame the first city to open on and load every city's layer. The city is
+    the one the visitor is standing in, where they have already granted their
+    location, else DEFAULT_CITY, else the first served. */
+async function openOnFirstCity() {
+  const here = await cityFromGrantedLocation();
+  const first = cityById(here) ?? cityById(DEFAULT_CITY) ?? state.cities[0];
+  frameCity(first);
+  updateFocus();
+  state.res = resForZoom();
+  await refreshLayers();
+}
+
 (async function main() {
   await initMap();
-
-  // The city has to be known before anything is fetched for it, so this is the
-  // one load that is not parallel with the others.
-  try {
-    state.city = await loadCities();
-  } catch (error) {
-    console.error(error);
-    $("loading").textContent =
-      "No city has serving data yet. Run the pipeline for one city, then reload.";
-    return;
-  }
-
-  fillHourOptions();
   wireControls();
-  // Not awaited: the map does not wait on routing being up.
+  // Not awaited: the map does not wait on routing being up, nor on the bar.
   loadDirectionsStatus();
+  pollProgress();
   // Expose read-only state for debugging and for the smoke-test driver.
   window.__safetyState = state;
-  // Sequential, not parallel: the frame and the window control read the city
-  // record, so the controls sync and the layer paints after it exists.
-  await loadFreshness();
-  syncActivityScope();
-  // Open on the hour it is now in the city -- the hour blocks are its local
-  // clock (web/hours.js). syncHourAvailability falls back to all hours where
-  // the opening window has no hourly layer.
-  state.hour = cityHour(state.cityRecord?.timezone);
-  // And on today's weekday there, likewise.
-  state.day = cityDay(state.cityRecord?.timezone);
-  syncHourAvailability();
-  syncSafetyAvailability();
-  await loadLayer();
 
-  const version = await fetch(`${API}/version?city=${encodeURIComponent(state.city)}`)
-    .then((r) => r.json())
-    .catch(() => null);
-  state.refreshStamp = version ? String(version.last_refreshed_at) : null;
+  try {
+    await loadCities();
+  } catch (error) {
+    console.error(error);
+    showLoading("Could not reach the map's data. Try again shortly.", true);
+  }
+  if (state.cities.length) await openOnFirstCity();
+  // With no city served yet, the progress bar is the page; pollProgress opens
+  // the map on the first city to finish (onCitiesChanged).
+
+  const version = await fetch(`${API}/version`).then((r) => r.json()).catch(() => null);
+  state.refreshStamp = version ? `${version.last_refreshed_at}|${version.cities ?? ""}` : null;
   watchForRefresh();
   watchCityClock();
 })();

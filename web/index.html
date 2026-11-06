@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- Replaced from the selected city's snapshot on load; this is the pre-boot value. -->
-<title>Reported-incident activity</title>
+<!-- Replaced with the city under the map once one is served. -->
+<title>Reported-incident risk</title>
 <link rel="preconnect" href="https://basemaps.cartocdn.com">
 <!-- Third-party assets are pinned to an exact version AND to its hash
      (subresource integrity): if unpkg ever served different bytes for these
@@ -13,7 +13,7 @@
        curl -sSfL <url> | openssl dgst -sha384 -binary | openssl base64 -A
      crossorigin="anonymous" is required for SRI on a cross-origin fetch; unpkg
      answers with access-control-allow-origin: *. Same-origin files (styles.css,
-     html.js, windows.js, app.js) need no integrity attribute. -->
+     html.js, hours.js, progress.js, app.js) need no integrity attribute. -->
 <link href="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.css" rel="stylesheet"
       integrity="sha384-gNYNsUmuZqDYiT3gbirWTV5K7rt71RoveS/yXAaU09d4ZUmeDVTD3XoqB6uJAIFR"
       crossorigin="anonymous">
@@ -21,120 +21,16 @@
 </head>
 <body>
 
-<header class="topbar">
-  <div class="brand">
-    <h1 id="city-heading">Reported incident activity</h1>
-    <p class="subtitle">
-      Crime incidents reported to police, aggregated into H3 hexagonal cells.
-      <button type="button" class="linkish" data-open-methodology>How to read this</button>
-    </p>
-  </div>
-
-  <div class="freshness" id="freshness" aria-live="polite">
-    <span class="freshness-label">Data as of</span>
-    <span class="freshness-value" id="data-as-of">&mdash;</span>
-    <span class="freshness-meta" id="freshness-meta"></span>
-  </div>
-</header>
-
-<!-- One filter row above everything it scopes; every view re-renders off the same slice. -->
-<div class="filters" role="group" aria-label="Map filters">
-  <!-- Populated from /api/v1/cities, and hidden while only one city has data:
-       a dropdown with one entry is a control that cannot do anything. Every
-       figure on this page is relative to the selected city's own distribution
-       (design doc S3.3), so switching changes the reference class, not the
-       viewport -- values are never comparable across two cities. -->
-
-  <!-- Two calendar dates drive the map (web/windows.js). The calendar runs from
-       the city's oldest stored day to today; the presets are the city's stored
-       windows (3/6/9 months, then years) and fill both dates in one click. -->
-  <div class="field field-range" role="group" aria-labelledby="f-range-label">
-    <span class="field-label" id="f-range-label">Dates</span>
-    <div class="range-inputs">
-      <input type="date" id="f-from" aria-label="From date" required>
-      <span class="range-sep" aria-hidden="true">–</span>
-      <input type="date" id="f-to" aria-label="To date" required>
-    </div>
-    <select id="f-preset" aria-label="Quick range">
-      <option value="custom">Custom dates</option>
-    </select>
-  </div>
-
-  <label class="field">
-    <span class="field-label">Offense category</span>
-    <select id="f-category">
-      <option value="all" selected>All reported incidents</option>
-      <option value="violent">Violent</option>
-      <option value="property">Property</option>
-      <option value="quality_of_life">Quality of life</option>
-      <option value="other">Other</option>
-    </select>
-  </label>
-
-  <label class="field">
-    <span class="field-label">Cell size</span>
-    <select id="f-res">
-      <option value="8" selected>~0.3 mi (H3 res 8)</option>
-      <option value="9">~0.1 mi (H3 res 9)</option>
-      <option value="10">~250 ft (H3 res 10)</option>
-    </select>
-  </label>
-
-  <!-- "All hours" or one hour block on the city's local clock. Disabled where
-       the window or cell size has no hourly layer (syncHourAvailability). -->
-  <label class="field" id="f-hour-field">
-    <span class="field-label">Time of day</span>
-    <select id="f-hour">
-      <option value="all" selected>All hours</option>
-    </select>
-  </label>
-
-  <!-- "All days" or one weekday on the city's local calendar, 0 = Monday.
-       Available where the hour is (syncHourAvailability). -->
-  <label class="field" id="f-day-field">
-    <span class="field-label">Day of week</span>
-    <select id="f-day">
-      <option value="all" selected>All days</option>
-      <option value="0">Monday</option>
-      <option value="1">Tuesday</option>
-      <option value="2">Wednesday</option>
-      <option value="3">Thursday</option>
-      <option value="4">Friday</option>
-      <option value="5">Saturday</option>
-      <option value="6">Sunday</option>
-    </select>
-  </label>
-
-  <div class="field">
-    <span class="field-label">Colour by</span>
-    <select id="f-scale">
-      <option value="safety" selected>Safety ranking</option>
-      <option value="count">Incident count</option>
-    </select>
-  </div>
-
-  <div class="filters-spacer"></div>
-
-  <button type="button" id="btn-locate" class="btn">Use my location</button>
-  <button type="button" id="btn-table" class="btn" aria-pressed="false">Table view</button>
-</div>
-
 <main class="layout">
   <section class="map-pane">
-    <div id="map" role="application" aria-label="Map with hexagonal cells shaded by reported incident count"></div>
+    <div id="map" role="application" aria-label="Map of every covered city, hexagonal cells shaded by relative risk"></div>
 
-    <!-- Testing UI: one row of controls floating on the map -- the city, the
-         address search, Show tiles and the violent / non-violent toggle.
-         Everything else in the filter row, the header, the side panel and the
-         table view is still in the page -- app.js reads and writes it -- but
-         hidden by the overrides at the end of styles.css. -->
+    <!-- One row of controls floating on the map: the address search, Show
+         tiles and the violent / non-violent toggle. Nothing chooses the data:
+         every city is on the map, over the last year, coloured for the hour and
+         day it is now in each city. -->
     <div class="map-controls">
       <div class="map-controls-row">
-        <label class="field map-control" id="f-city-field" hidden>
-          <span class="field-label">City</span>
-          <select id="f-city" aria-label="City"></select>
-        </label>
-
         <!-- Address search in the city on screen. A match drops a pin and opens
              its cell's popup; Directions then routes to it. Shown once
              /directions/status answers (hidden while the server has directions
@@ -278,130 +174,19 @@
 
     <!-- A live region, so a load error that stays on screen is announced. -->
     <div class="loading" id="loading" role="status" aria-live="polite" hidden>Loading&hellip;</div>
+
+    <!-- While a city's first load (the backfill) runs on the live site: how far
+         it has got and roughly how much longer it will take
+         (GET /api/v1/progress, web/progress.js). Cities appear as they finish. -->
+    <div class="load-progress" id="load-progress" hidden>
+      <div class="lp-text" id="lp-text" role="status" aria-live="polite"></div>
+      <div class="lp-bar" id="lp-bar" role="progressbar" aria-labelledby="lp-text"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="lp-fill"></i></div>
+      <div class="lp-detail" id="lp-detail"></div>
+    </div>
   </section>
 
-  <!-- Detail panel: opens on cell click. -->
-  <aside class="detail" id="detail" aria-live="polite">
-    <div class="detail-empty" id="detail-empty">
-      <h2>Select a cell</h2>
-      <p>
-        Click any hexagon to see what was reported inside it &mdash; the count,
-        where it sits relative to the rest of the city, the month-by-month
-        trend, and the offence types behind the number.
-      </p>
-      <p class="caution">
-        These are <strong>reported</strong> incidents, not a measure of how safe a
-        place is, and not a prediction.
-      </p>
-    </div>
-
-    <div class="detail-body" id="detail-body" hidden>
-      <button type="button" class="detail-close" id="detail-close" aria-label="Close cell detail">&times;</button>
-
-      <div class="stat">
-        <div class="stat-value" id="d-count">&mdash;</div>
-        <div class="stat-label" id="d-count-label">reported incidents</div>
-      </div>
-
-      <section class="chart-block" id="d-hour-block" hidden>
-        <h3 id="d-hour-title">Time of Day</h3>
-        <dl class="kv">
-          <div><dt>Safety at this hour</dt><dd id="d-hour-safety">&mdash;</dd></div>
-          <div><dt>Chart shows</dt><dd id="d-hour-track">&mdash;</dd></div>
-        </dl>
-        <!-- The selected track's whole day, so the selected block is read
-             against the rest of it rather than as a bare number. -->
-        <div class="hours" id="d-hours" role="img" aria-label="Reported offences on the selected track by hour of the day"></div>
-        <div class="hours-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
-        <div class="hour-outlook" id="d-hour-note"></div>
-      </section>
-
-      <dl class="kv">
-        <div><dt>City rank</dt><dd id="d-rank">&mdash;</dd></div>
-        <div><dt>Density</dt><dd id="d-density">&mdash;</dd></div>
-        <!-- The denominator the safety ranking divided by, stated rather than
-             left implicit: a cell's standing depends on it as much as on the
-             incidents. -->
-        <div><dt>People here</dt><dd id="d-exposure">&mdash;</dd></div>
-        <div><dt>This cell + neighbours</dt><dd id="d-neighbours">&mdash;</dd></div>
-        <div><dt>H3 cell</dt><dd id="d-h3" class="mono">&mdash;</dd></div>
-      </dl>
-
-      <section class="chart-block">
-        <h3>Safety ranking</h3>
-        <dl class="kv" id="d-safety">
-          <div><dt>Violent</dt><dd id="d-safety-violent">&mdash;</dd></div>
-          <div><dt>Non-violent</dt><dd id="d-safety-nonviolent">&mdash;</dd></div>
-        </dl>
-        <p class="bar-empty" id="d-safety-note">
-          Percentile against every other cell in the city, weighted by offence
-          severity. Higher is safer.
-        </p>
-      </section>
-
-      <section class="chart-block">
-        <h3 id="d-cat-title">Reported incidents by category</h3>
-        <div class="bars" id="d-categories"></div>
-      </section>
-
-      <section class="chart-block">
-        <h3 id="d-trend-title">Monthly trend</h3>
-        <div class="spark-wrap">
-          <svg id="d-spark" class="spark" role="img" aria-labelledby="d-trend-title"></svg>
-          <div class="spark-axis"><span id="d-spark-from"></span><span id="d-spark-to"></span></div>
-          <div class="spark-readout" id="d-spark-readout"></div>
-        </div>
-      </section>
-
-      <section class="chart-block">
-        <h3>Most reported offence types</h3>
-        <table class="mix" id="d-offenses">
-          <thead>
-            <tr><th scope="col">Offence, as reported by PPD</th><th scope="col">NIBRS</th><th scope="col" class="num">Count</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </section>
-    </div>
-  </aside>
 </main>
-
-<!-- Table view: the WCAG-clean twin of the map. Colour is never the only channel. -->
-<section class="tableview" id="tableview" hidden>
-  <div class="tableview-head">
-    <h2 id="table-caption">Cells by reported incident count</h2>
-    <button type="button" class="btn" id="table-close">Close</button>
-  </div>
-  <div class="tableview-scroll">
-    <table class="data" id="table-data">
-      <thead>
-        <tr>
-          <th scope="col" class="num">#</th>
-          <th scope="col">H3 cell</th>
-          <th scope="col" class="num">Incidents</th>
-          <th scope="col" class="num">Per km&sup2;</th>
-          <th scope="col" class="num">Percentile</th>
-          <th scope="col">Relative activity</th>
-          <!-- The deepest step of the safety ramp sits under 3:1 against the
-               map surface, so these two columns are its required relief: the
-               value is always readable without relying on colour. -->
-          <th scope="col" class="num">Safety (violent)</th>
-          <th scope="col" class="num">Safety (non-violent)</th>
-          <!-- The time-of-day rating in text, for the same reason the two
-               columns above exist: the ramp must never be the only channel. -->
-          <th scope="col" class="num" id="th-hour-safety">At hour</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </div>
-</section>
-
-<!-- Methodology & attribution: design doc S12 makes these first-class, not a footnote. -->
-<dialog id="methodology" class="sheet">
-  <button type="button" class="sheet-close" data-close-methodology aria-label="Close">&times;</button>
-  <div id="methodology-body">Loading&hellip;</div>
-</dialog>
 
 <script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"
         integrity="sha384-81ppUWZZO+pveTPk4qU9cZuScEFULHfuOMHVJHFZ7xVBlWQTG1zsPrVIMGAl1WMb"
@@ -410,8 +195,8 @@
         integrity="sha384-ViAXEmpUtfR6LTFA4VPFElyF4q6ysOu7yi4fs2v5udUWy6l162CdHpDx1SyS870v"
         crossorigin="anonymous"></script>
 <script src="html.js"></script>
-<script src="windows.js"></script>
 <script src="hours.js"></script>
+<script src="progress.js"></script>
 <script src="directions.js"></script>
 <script src="app.js"></script>
 <script src="sw-register.js"></script>

@@ -76,7 +76,7 @@ jobs:
           node --check web/html.js
           node --check web/hours.js
           node --check web/directions.js
-          node --check web/windows.js
+          node --check web/progress.js
           node --test tests/js/*.test.mjs
       - name: Migrate CLI parses
         run: python -m safety.migrate --help
