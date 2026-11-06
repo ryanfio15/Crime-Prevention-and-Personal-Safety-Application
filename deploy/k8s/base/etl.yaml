@@ -76,6 +76,10 @@ spec:
               envFrom:
                 - configMapRef:
                     name: safety-config
+                # Egress proxy, on FABRIC sites without IPv4 (deploy.sh).
+                - configMapRef:
+                    name: safety-egress
+                    optional: true
               env:
                 - name: JOBLOCK_WAIT_SECONDS
                   value: "1800"
@@ -168,6 +172,10 @@ spec:
               envFrom:
                 - configMapRef:
                     name: safety-config
+                # Egress proxy, on FABRIC sites without IPv4 (deploy.sh).
+                - configMapRef:
+                    name: safety-egress
+                    optional: true
               env:
                 - name: JOBLOCK_WAIT_SECONDS
                   value: "21600"
@@ -260,6 +268,10 @@ spec:
               envFrom:
                 - configMapRef:
                     name: safety-config
+                # Egress proxy, on FABRIC sites without IPv4 (deploy.sh).
+                - configMapRef:
+                    name: safety-egress
+                    optional: true
               env:
                 - name: JOBLOCK_WAIT_SECONDS
                   value: "1800"

@@ -47,12 +47,17 @@ traffic -- the API server, flannel's VXLAN, the database's replication -- uses
 that dataplane network, never the management network, which FABRIC reserves
 for SSH.
 
-One requirement on the site: its management network must give the VMs IPv4
-egress. The ETL pulls from city portals and census.gov over IPv4, from pods
-on an IPv4-only cluster network, and FABRIC's NAT64 (which serves IPv6-only
-sites) helps processes on the VM, not pods behind it. `up` checks this right
-after the VMs boot and stops, saying so, before installing anything if it is
-missing; recreate the slice at another site.
+Any site works, IPv4 or IPv6-only. The pods are on an IPv4-only cluster
+network and the ETL pulls from city portals, census.gov and GitHub, most of
+them IPv4-only. At a site whose management network gives the VMs IPv4, pods
+reach them directly. At an IPv6-only site the VMs themselves still reach
+IPv4-only hosts by name, through FABRIC's NAT64 and DNS64, but pods behind them
+cannot: so `up` installs a small forward proxy (tinyproxy) on cp1, listening
+on the private bridge, and deploy.sh points every pod's HTTP(S) at it
+(EGRESS_PROXY; the `safety-egress` ConfigMap). The proxy resolves names with
+the VM's DNS and connects over IPv6, and NAT64 does the rest. `up` checks
+which case it is right after the VMs boot, and stops before installing
+anything only if neither works.
 """
 
 from __future__ import annotations
@@ -242,24 +247,88 @@ def configure_network(slice_, profile) -> dict[str, str]:
     return ips
 
 
-def check_ipv4_egress(slice_, profile) -> None:
-    """Stop early at a site whose VMs cannot reach the IPv4 internet."""
-    for name in profile:
+# IPv4-only hosts the deployment needs from inside: GitHub (the tile builds),
+# the Census Bureau (TIGER blocks), a city portal (Socrata). Reached by name.
+EGRESS_PROBES = (
+    "https://api.github.com",
+    "https://www2.census.gov",
+    "https://data.cityofchicago.org",
+)
+PROXY_PORT = 8888
+
+
+def _reaches(node, url: str, flags: str = "") -> bool:
+    out = run(
+        node,
+        f"curl {flags} -s -o /dev/null -w '%{{http_code}}' --max-time 20 {url} || true",
+        check=False,
+    )
+    return out.strip().startswith(("2", "3", "4"))
+
+
+def check_egress(slice_, profile) -> bool:
+    """How the pods will reach the internet: True through a proxy (NAT64), False directly.
+
+    Direct when every VM has IPv4. Otherwise every VM must reach the IPv4-only
+    hosts by name -- FABRIC's NAT64, which image pulls depend on as well --
+    and the pods go through cp1's proxy. Neither: stop before installing.
+    """
+    names = list(profile)
+    if all(_reaches(slice_.get_node(n), EGRESS_PROBES[0], "-4") for n in names):
+        log("IPv4 egress ok on every node: pods reach the internet directly")
+        return False
+    for name in names:
         node = slice_.get_node(name)
-        mgmt = ipaddress.ip_address(node.get_management_ip())
-        out = run(
-            node,
-            "curl -4 -s -o /dev/null -w '%{http_code}' --max-time 15 https://api.github.com || true",
-            check=False,
-        )
-        if not out.strip().startswith(("2", "3", "4")):
+        failed = [url for url in EGRESS_PROBES if not _reaches(node, url)]
+        if failed:
+            mgmt = ipaddress.ip_address(node.get_management_ip())
             sys.exit(
-                f"{name} (management address {mgmt}, IPv{mgmt.version}) has no IPv4 internet "
-                "access. The ETL's pods need it to reach the city portals. Delete this slice "
-                "(`python create_slice.py delete`) and create it at another site with --site; "
-                "sites with IPv4 management networks work."
+                f"{name} (management address {mgmt}, IPv{mgmt.version}) has no IPv4 and "
+                f"cannot reach {', '.join(failed)} through FABRIC's NAT64 either. Check that "
+                "the VM's DNS settings are FABRIC's defaults (NAT64 needs its DNS64), or "
+                "delete the slice (`python create_slice.py delete`) and try another site."
             )
-    log("IPv4 egress ok on every node")
+    log("no IPv4 here, but every node reaches IPv4-only hosts through FABRIC's NAT64: "
+        "pods will go through a proxy on the control-plane node")
+    return True
+
+
+def setup_egress_proxy(slice_, profile, ips: dict[str, str]) -> str:
+    """tinyproxy on cp1, on the private bridge, for the pods; returns its URL.
+
+    It resolves names itself with the VM's resolver (FABRIC's DNS64) and so
+    connects to IPv4-only hosts over IPv6 and NAT64 -- which the pods, on
+    an IPv4-only network whose DNS cannot reach FABRIC's IPv6 resolvers,
+    could not. Only the bridge and the pod network may use it.
+    """
+    names = list(profile)
+    server = slice_.get_node(names[0])
+    ip = ips[names[0]]
+    conf = "/etc/tinyproxy/tinyproxy.conf"
+    run(
+        server,
+        "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tinyproxy >/dev/null && "
+        # Drop what is being set, then set it: one value per key.
+        f"sudo sed -i -E '/^(Port|Listen|Allow|MaxClients|LogLevel|ConnectPort|Timeout)[[:space:]]/d' "
+        f"{conf} && "
+        f"printf '%s\\n' 'Port {PROXY_PORT}' 'Listen {ip}' 'Timeout 900' 'MaxClients 200' "
+        "'LogLevel Warning' 'Allow 127.0.0.1' 'Allow 10.20.0.0/24' 'Allow 10.42.0.0/16' "
+        f"'ConnectPort 443' 'ConnectPort 80' | sudo tee -a {conf} >/dev/null && "
+        "sudo systemctl enable --quiet tinyproxy && sudo systemctl restart tinyproxy",
+    )
+    url = f"http://{ip}:{PROXY_PORT}"
+    # From another VM, over the bridge, the way a pod's traffic arrives.
+    probe = slice_.get_node(names[-1])
+    if not _reaches(probe, EGRESS_PROBES[0], f"-x {url}"):
+        sys.exit(f"the egress proxy on {names[0]} ({url}) does not answer from {names[-1]}")
+    log(f"egress proxy up on {names[0]}: {url}")
+    return url
+
+
+def egress_proxy_of(server, ip: str) -> str:
+    """The proxy URL if cp1 runs one (an IPv6-only site), else empty."""
+    active = run(server, "systemctl is-active tinyproxy 2>/dev/null || true", check=False)
+    return f"http://{ip}:{PROXY_PORT}" if active.strip() == "active" else ""
 
 
 # --------------------------------------------------------------------------- install
@@ -375,13 +444,15 @@ def deploy(slice_, args) -> None:
     profile = PROFILES[args.profile]
     server = slice_.get_node(next(iter(profile)))
     checkout(server, args.branch)
+    proxy = egress_proxy_of(server, node_ip(0))
     log(f"deploying {args.image} with overlay {OVERLAY[args.profile]} (this takes a while: "
         "the database initialises and each routing pod downloads ~1.2 GB of tiles)")
     # quiet=False streams deploy.sh's output as it runs.
     run(
         server,
         f"cd {REMOTE_REPO} && KUBECONFIG={KUBECONFIG} "
-        f"deploy/k8s/deploy.sh {OVERLAY[args.profile]} {shlex.quote(args.image)}",
+        + (f"EGRESS_PROXY={shlex.quote(proxy)} " if proxy else "")
+        + f"deploy/k8s/deploy.sh {OVERLAY[args.profile]} {shlex.quote(args.image)}",
         quiet=False,
     )
     log("deployed. The first data load runs on in the background; follow it with "
@@ -461,9 +532,11 @@ def main(argv: list[str] | None = None) -> int:
     profile = PROFILES[args.profile]
 
     if args.action in ("up", "install"):
-        check_ipv4_egress(slice_, profile)
+        use_proxy = check_egress(slice_, profile)
         ips = configure_network(slice_, profile)
         install_k3s(slice_, profile, ips)
+        if use_proxy:
+            setup_egress_proxy(slice_, profile, ips)
         deploy(slice_, args)
     elif args.action == "deploy":
         deploy(slice_, args)

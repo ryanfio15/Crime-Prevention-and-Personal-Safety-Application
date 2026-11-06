@@ -55,6 +55,10 @@ spec:
           envFrom:
             - configMapRef:
                 name: safety-config
+            # Egress proxy, on FABRIC sites without IPv4 (deploy.sh).
+            - configMapRef:
+                name: safety-egress
+                optional: true
           env:
             - name: OPS_RETRY_COOLDOWN_HOURS
               value: "0"

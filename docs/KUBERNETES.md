@@ -197,6 +197,28 @@ There is no standby: each database is one instance, because a standby needs a se
 same disk to spare. When the project gets the VM.NoLimit tag, the `standard` profile is the better
 layout, with one database, a standby and automatic failover.
 
+## Outbound access on IPv6-only sites
+
+Pods make three kinds of outbound HTTPS call: the ETL to the city portals and census.gov, the
+Valhalla init container to GitHub for its tiles, and the API to Photon and Transitous. Most of those
+hosts are IPv4-only, and the k3s pod network is IPv4-only.
+
+At a FABRIC site whose VMs have no IPv4, the VMs still reach those hosts by name through FABRIC's
+NAT64/DNS64. That covers image pulls and the k3s install, which run on the VM. The pods can't use
+it. So `create_slice.py`:
+1. installs tinyproxy on `cp1`, listening on the slice's private network only (`10.20.0.10:8888`)
+   and accepting the bridge and pod networks only;
+2. runs `deploy.sh` with `EGRESS_PROXY=http://10.20.0.10:8888`;
+3. `deploy.sh` writes that into the `safety-egress` ConfigMap, which every app container loads when
+   it exists:
+   - `HTTPS_PROXY`/`HTTP_PROXY` for the ETL and the tile fetch;
+   - `NO_PROXY` for cluster names;
+   - `ROUTING_HTTPS_PROXY` for the routing client, which ignores proxy variables by design and
+     sends only its `https://` providers through the proxy, never Valhalla.
+
+On any other cluster the ConfigMap doesn't exist and nothing changes. The proxy is also how to run
+the deployment behind a corporate egress proxy: set `EGRESS_PROXY` when running `deploy.sh`.
+
 ## First deploy
 
 `deploy.sh <overlay> [image]` does, in order (each step waits for the last):

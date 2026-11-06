@@ -10,6 +10,8 @@
 #             pins a release and lets the smoke test check the commit.
 #
 # Options (environment):
+#   EGRESS_PROXY=<url>   pods reach the internet through this forward proxy
+#                        (FABRIC sites without IPv4; see step 2)
 #   SKIP_BOOTSTRAP=1     do not create the first-load Job
 #   RERUN_BOOTSTRAP=1    delete a completed bootstrap Job and run it again
 #   FOLLOW_BOOTSTRAP=1   stream the bootstrap's log until it finishes
@@ -101,6 +103,28 @@ if grep -q 'safety.io/shared-credentials: "true"' <<< "$manifests"; then
             --from-literal=dbname=safety
     fi
 fi
+# EGRESS_PROXY=http://host:port sends the pods' outbound HTTP(S) through a
+# forward proxy: on a FABRIC site whose VMs have no IPv4, the nodes reach
+# IPv4-only hosts by FABRIC's NAT64 but the IPv4-only pod network cannot, so
+# create_slice.py runs a proxy on the control-plane node and sets this. Kept
+# in the `safety-egress` ConfigMap, which every app container loads when it
+# exists; leaving EGRESS_PROXY unset on a later deploy leaves it in place.
+# (Running pods pick a change up on their next restart.)
+if [ -n "${EGRESS_PROXY:-}" ]; then
+    kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
+    log "outbound traffic goes through $EGRESS_PROXY (configmap safety-egress)"
+    no_proxy="localhost,127.0.0.1,.svc,.cluster.local,valhalla,10.0.0.0/8"
+    kubectl -n "$ns" create configmap safety-egress \
+        --from-literal=HTTPS_PROXY="$EGRESS_PROXY" \
+        --from-literal=https_proxy="$EGRESS_PROXY" \
+        --from-literal=HTTP_PROXY="$EGRESS_PROXY" \
+        --from-literal=http_proxy="$EGRESS_PROXY" \
+        --from-literal=NO_PROXY="$no_proxy" \
+        --from-literal=no_proxy="$no_proxy" \
+        --from-literal=ROUTING_HTTPS_PROXY="$EGRESS_PROXY" \
+        --dry-run=client -o yaml | kubectl apply -f -
+fi
+
 log "applying overlay '$overlay' with image $image"
 printf '%s\n' "$manifests" | kubectl apply -f -
 

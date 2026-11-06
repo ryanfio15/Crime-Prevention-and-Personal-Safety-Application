@@ -91,14 +91,28 @@ slice's nodes, so `--profile` is only needed with `up`.
 
 ## Choosing a site
 
-The pods need **IPv4** internet access to reach the city portals and census.gov. Some FABRIC sites
-give VMs only an IPv6 management network. FABRIC's NAT64 lets the VM itself reach IPv4 hosts, but
-not the pods inside the cluster.
+Any site works. The pods need to reach IPv4-only hosts (GitHub, census.gov, most city portals), and
+the script handles both kinds of site:
 
-So pick a site whose management network is IPv4. FABRIC staff have named **MAX** and **TACC**;
-check current availability with `fablib.list_sites()` in a notebook. The script tests IPv4 egress
-right after the VMs boot. If it fails, the script stops before installing anything; delete the slice
-and try another site.
+- **Sites whose VMs have IPv4:** pods reach the internet directly.
+- **IPv6-only sites (MAX, for one):** the VMs still reach IPv4-only hosts by name through FABRIC's
+  NAT64, but the pods behind them cannot. So the script installs a small forward proxy (tinyproxy)
+  on `cp1`. It listens only on the slice's private network and carries the pods' web traffic out
+  through the VM's NAT64. Database and in-cluster traffic never goes through it.
+
+The script works out which kind of site it is right after the VMs boot. It stops before installing
+anything only if neither works, for example when a VM's DNS settings have been changed from FABRIC's
+defaults (NAT64 relies on FABRIC's DNS). FABRIC's NAT64 gateway is shared and bandwidth-limited: the
+first load is slower through it, but the volumes here are small.
+
+If you already have a slice that stopped at the old IPv4 check, don't recreate it. Continue on the
+same VMs:
+
+```bash
+git pull
+python create_slice.py renew --days 7
+python create_slice.py install
+```
 
 ## Go
 
@@ -108,7 +122,8 @@ python create_slice.py up --site MAX
 
 What happens (about 30–60 minutes until the site serves; the data load continues after that):
 1. The slice is created and the VMs boot (5–15 min).
-2. IPv4 egress is checked, and each VM gets its 10.20.0.x address.
+2. Internet access is checked (direct IPv4, or NAT64 through a proxy on `cp1`), and each VM gets
+   its 10.20.0.x address.
 3. k3s v1.36 is installed: a server on cp1 and agents on the other nodes, labelled and tainted by
    role.
 4. On cp1, the repo is cloned and `deploy/k8s/deploy.sh fabric` runs:

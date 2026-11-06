@@ -303,3 +303,26 @@ def test_cities_and_directions_list_survive_one_database_down(sharded, monkeypat
     for each in sharded.values():
         each.up = False
     assert TestClient(main.app).get("/api/v1/cities").status_code == 503
+
+
+# --------------------------------------------------------------------------- egress
+
+
+def test_routing_proxy_carries_https_only(monkeypatch):
+    import asyncio
+
+    from safety.routing import service
+
+    monkeypatch.setattr(settings, "routing_https_proxy", "http://10.20.0.10:8888")
+    client = service.new_http_client()
+    https = client._transport_for_url(service.httpx.URL("https://photon.komoot.io/api"))
+    plain = client._transport_for_url(service.httpx.URL("http://valhalla:8002/route"))
+    assert https is not client._transport
+    assert plain is client._transport
+    assert https._pool._proxy_url.host == b"10.20.0.10"
+    asyncio.run(client.aclose())
+
+    monkeypatch.setattr(settings, "routing_https_proxy", "")
+    client = service.new_http_client()
+    assert client._transport_for_url(service.httpx.URL("https://x.org")) is client._transport
+    asyncio.run(client.aclose())

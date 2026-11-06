@@ -131,10 +131,22 @@ def _budget(limit: int, provider: str, pool) -> DailyBudget:
 def new_http_client() -> httpx.AsyncClient:
     """The one outbound client. No redirects (a provider cannot bounce us to
     a host settings did not name), no proxy from the environment, bounded
-    connections."""
+    connections.
+
+    settings.routing_https_proxy, when set, carries the https:// providers
+    (Photon, Transitous) only; Valhalla's plain-http calls stay direct."""
+    limits = httpx.Limits(max_connections=32, max_keepalive_connections=8)
+    mounts = None
+    if settings.routing_https_proxy:
+        mounts = {
+            "https://": httpx.AsyncHTTPTransport(
+                proxy=settings.routing_https_proxy, limits=limits
+            )
+        }
     return httpx.AsyncClient(
         timeout=settings.routing_timeout_seconds,
         follow_redirects=False,
         trust_env=False,
-        limits=httpx.Limits(max_connections=32, max_keepalive_connections=8),
+        limits=limits,
+        mounts=mounts,
     )

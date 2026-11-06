@@ -56,6 +56,12 @@ spec:
         - name: fetch-tiles
           image: safety-app
           args: ["python", "scripts/fetch_valhalla_tiles.py", "/data"]
+          # GitHub is IPv4-only: on FABRIC sites without IPv4 the download goes
+          # through the egress proxy (deploy.sh). Absent elsewhere.
+          envFrom:
+            - configMapRef:
+                name: safety-egress
+                optional: true
           env:
             - name: VALHALLA_TILES_TAG
               value: latest

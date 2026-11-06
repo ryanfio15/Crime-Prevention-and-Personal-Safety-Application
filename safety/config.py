@@ -220,6 +220,12 @@ class Settings(BaseSettings):
     # the public services, so a slow one costs the user a clear "unavailable"
     # within seconds rather than nginx's 60 s gateway timeout.
     routing_timeout_seconds: float = 8.0
+    # A forward proxy for the public providers (https:// only -- Valhalla is
+    # plain http inside the deployment and is always reached directly). Empty:
+    # none. The routing client never reads HTTPS_PROXY from the environment;
+    # this is the one way to give it a proxy. Set from the `safety-egress`
+    # ConfigMap on FABRIC sites without IPv4 (deploy/fabric/create_slice.py).
+    routing_https_proxy: str = ""
     # Upstream calls allowed per UTC day, across all clients, before the mode
     # reports itself unavailable until midnight. Transitous asks for under 720
     # plans a day from us; 500 leaves room for retries and a second instance
