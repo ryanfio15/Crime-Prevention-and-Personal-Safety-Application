@@ -28,7 +28,34 @@ created.
    instructor) to request the `VM.NoLimit` tag for the project in the FABRIC portal
    (<https://portal.fabric-testbed.net>, the project's page). FABRIC staff grant it. Once the project
    has it, `up --site …` works as described below.
-2. **To test now within the caps:**
+2. **Everything, within the caps:**
+   ```bash
+   python create_slice.py up --profile sharded --site MAX
+   ```
+   All six cities with a year of data, plus routing, on eight VMs of 2 cores each:
+
+   | VM | Cores / RAM / disk | Runs |
+   |---|---|---|
+   | `cp1` | 2 / 8 GB / 10 GB | k3s server, Traefik |
+   | `db1` | 2 / 10 GB / 10 GB | database 1: Los Angeles, Washington DC |
+   | `db2` | 2 / 10 GB / 10 GB | database 2: Austin, Philadelphia |
+   | `db3` | 2 / 10 GB / 10 GB | database 3: Chicago, Seattle |
+   | `etl1` | 2 / 10 GB / 10 GB | the data loads and updates |
+   | `app1`, `app2` | 2 / 8 GB / 10 GB | one API pod each |
+   | `route1` | 2 / 8 GB / 10 GB | routing (Valhalla) |
+
+   No 10 GB disk holds a year of all six cities, so each database VM holds two, and the API sends
+   every request to the right one (docs/KUBERNETES.md, "City-sharded databases"). The first load
+   works through the three databases in turn and takes about as long as the standard slice's.
+
+   The differences from the standard slice:
+   - **No standby databases.** If a database VM fails, its two cities go dark while the other four
+     keep working.
+   - **No nightly backup.** `etl1` has no room to keep one. The data can be reloaded from the
+     portals at any time.
+
+   The script prints each VM's free disk after trimming the OS, and warns below 5 GB.
+3. **A quick pipeline test within the caps:**
    ```bash
    python create_slice.py up --profile minimal --site MAX
    ```
@@ -40,8 +67,8 @@ created.
    - there are **no routing pods**, so drive, walk and bike directions show as unavailable. The map
      and transit still work.
 
-   It uses the `deploy/k8s/overlays/fabric-minimal` overlay. When the tag arrives, `delete` this
-   slice and build the standard one.
+   It uses the `deploy/k8s/overlays/fabric-minimal` overlay. When the tag arrives, `delete` the
+   capped slice and build the standard one.
 
 The other commands (`status`, `tunnel`, `deploy`, `renew`, `delete`) work out the profile from the
 slice's nodes, so `--profile` is only needed with `up`.

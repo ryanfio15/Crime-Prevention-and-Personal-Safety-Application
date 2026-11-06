@@ -29,6 +29,19 @@ disk. `--profile minimal` fits those caps -- cp1, data1, app1, app2 at
 pipeline, but Philadelphia over one month and no routing pods, since the disk
 holds little more than the OS and the images.
 
+`--profile sharded` also fits the caps and keeps everything: all six cities
+with a year of data, and routing. No 10 GB disk holds the whole database, so
+the cities are split across three database VMs, two each, and the API sends
+each request to its city's database (safety/shards.py; the `fabric-sharded`
+overlay). Eight VMs:
+
+    cp1             control plane, Traefik
+    db1, db2, db3   one database each: lax+dc, aus+phl, chi+sea
+                    safety.io/tier=db, safety.io/db-shard=N, taint dedicated=db
+    etl1            ETL jobs and bronze; tier=data, taint dedicated=data
+    app1, app2      one API pod each; tier=app
+    route1          Valhalla; tier=route, taint dedicated=route
+
 All five VMs sit at one site on one L2 bridge (10.20.0.0/24). Kubernetes
 traffic -- the API server, flannel's VXLAN, the database's replication -- uses
 that dataplane network, never the management network, which FABRIC reserves
@@ -83,8 +96,39 @@ PROFILES = {
         "app1": (2, 8, 10, "app"),
         "app2": (2, 8, 10, "app"),
     },
+    # Also inside the caps (RAM is capped at "more than 10 GB", so 10 is
+    # allowed; the databases and the ETL get it).
+    "sharded": {
+        "cp1": (2, 8, 10, "control"),
+        "db1": (2, 10, 10, "db"),
+        "db2": (2, 10, 10, "db"),
+        "db3": (2, 10, 10, "db"),
+        "etl1": (2, 10, 10, "data"),
+        "app1": (2, 8, 10, "app"),
+        "app2": (2, 8, 10, "app"),
+        "route1": (2, 8, 10, "route"),
+    },
 }
-OVERLAY = {"standard": "fabric", "small": "fabric-small", "minimal": "fabric-minimal"}
+OVERLAY = {
+    "standard": "fabric",
+    "small": "fabric-small",
+    "minimal": "fabric-minimal",
+    "sharded": "fabric-sharded",
+}
+# Profiles whose VMs have 10 GB disks: the OS is trimmed before k3s goes on,
+# and the kubelet is told to evict only when a disk is nearly full -- its
+# default (10% free, image clean-up from 85% used) would start clearing a
+# database node with gigabytes still free.
+CAPPED = {"minimal", "sharded"}
+CAPPED_KUBELET_ARGS = " ".join(
+    shlex.quote(arg)
+    for arg in (
+        "--kubelet-arg=eviction-hard=memory.available<200Mi,nodefs.available<4%,"
+        "imagefs.available<4%",
+        "--kubelet-arg=image-gc-high-threshold=96",
+        "--kubelet-arg=image-gc-low-threshold=92",
+    )
+)
 
 
 def log(message: str) -> None:
@@ -157,10 +201,10 @@ def create(fablib, args) -> None:
             "granted the VM.NoLimit tag. Either\n"
             "  * ask the project owner (your PI or instructor) to request VM.NoLimit for the "
             "project in the FABRIC portal, then rerun this command; or\n"
-            "  * run now within the caps: python create_slice.py up --profile minimal "
+            "  * run within the caps: python create_slice.py up --profile sharded "
             f"--site {args.site}\n"
-            "    (the full pipeline, but Philadelphia over one month and no routing; "
-            "README, 'Without the VM.NoLimit tag')."
+            "    (eight 2-core VMs: all six cities with a year of data and routing, the "
+            "cities split across three databases; README, 'Without the VM.NoLimit tag')."
         )
     log("slice is up")
 
@@ -226,6 +270,7 @@ def install_k3s(slice_, profile, ips: dict[str, str]) -> None:
     server = slice_.get_node(names[0])
     server_ip = ips[names[0]]
 
+    capped = profile_name(profile) in CAPPED
     for name in names:
         node = slice_.get_node(name)
         run(
@@ -233,6 +278,8 @@ def install_k3s(slice_, profile, ips: dict[str, str]) -> None:
             "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && "
             "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl jq git >/dev/null",
         )
+        if capped:
+            trim_disk(node)
 
     token_file = "/var/lib/rancher/k3s/server/token"
     existing = run(server, f"sudo cat {token_file} 2>/dev/null || true", check=False).strip()
@@ -249,7 +296,8 @@ def install_k3s(slice_, profile, ips: dict[str, str]) -> None:
         f"K3S_TOKEN={token} sh -s - server "
         f"--node-ip {server_ip} --advertise-address {server_ip} --tls-san {server_ip} "
         f"--flannel-iface {iface} --write-kubeconfig-mode 0644 "
-        "--node-label safety.io/tier=control",
+        "--node-label safety.io/tier=control"
+        + (f" {CAPPED_KUBELET_ARGS}" if capped else ""),
     )
     run(server, f"until sudo k3s kubectl get node {names[0]} >/dev/null 2>&1; do sleep 3; done")
 
@@ -259,6 +307,14 @@ def install_k3s(slice_, profile, ips: dict[str, str]) -> None:
         extra = f"--node-label safety.io/tier={role}"
         if role == "data":
             extra += " --node-taint dedicated=data:NoSchedule"
+        elif role == "db":
+            # db1 -> shard 1: the fabric-sharded overlay pins each database here.
+            shard = "".join(ch for ch in name if ch.isdigit())
+            extra += f" --node-label safety.io/db-shard={shard} --node-taint dedicated=db:NoSchedule"
+        elif role == "route":
+            extra += " --node-taint dedicated=route:NoSchedule"
+        if capped:
+            extra += f" {CAPPED_KUBELET_ARGS}"
         log(f"joining {name} as an agent ({role})")
         run(
             node,
@@ -277,6 +333,32 @@ def install_k3s(slice_, profile, ips: dict[str, str]) -> None:
         "kubectl get nodes; exit 1",
     )
     print(run(server, f"KUBECONFIG={KUBECONFIG} kubectl get nodes -L safety.io/tier -o wide"))
+
+
+def profile_name(profile) -> str:
+    return next(name for name, nodes in PROFILES.items() if nodes is profile)
+
+
+def trim_disk(node) -> None:
+    """Free what a 10 GB disk can spare before the images arrive, and say how much is left.
+
+    snapd and its snaps (a few hundred MB on Ubuntu cloud images) are never
+    used on these VMs; apt's cache and the journal are capped.
+    """
+    run(
+        node,
+        "sudo DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq snapd >/dev/null 2>&1 || true; "
+        "sudo apt-get clean; "
+        "sudo mkdir -p /etc/systemd/journald.conf.d && "
+        "printf '[Journal]\\nSystemMaxUse=100M\\n' | "
+        "sudo tee /etc/systemd/journald.conf.d/size.conf >/dev/null && "
+        "sudo systemctl restart systemd-journald && sudo journalctl --vacuum-size=100M -q",
+    )
+    free_gb = int(run(node, "df --output=avail -B1G / | tail -1").strip() or 0)
+    log(f"{node.get_name()}: {free_gb} GB free on / after trimming")
+    if free_gb < 5:
+        log(f"warning: {node.get_name()} has under 5 GB free; a database or routing pod "
+            "there may run out of disk (docs/KUBERNETES.md, 'City-sharded databases')")
 
 
 def checkout(server, branch: str) -> None:
@@ -341,7 +423,7 @@ def status(slice_, profile) -> None:
         server,
         f"export KUBECONFIG={KUBECONFIG}; kubectl get nodes -L safety.io/tier; echo; "
         "kubectl -n safety get pods -o wide; echo; kubectl -n safety get hpa; echo; "
-        "kubectl -n safety get cluster safety-db 2>/dev/null; echo; "
+        "kubectl -n safety get clusters.postgresql.cnpg.io 2>/dev/null; echo; "
         "kubectl -n safety logs job/safety-bootstrap --tail=15 2>/dev/null || true",
         check=False,
     ))

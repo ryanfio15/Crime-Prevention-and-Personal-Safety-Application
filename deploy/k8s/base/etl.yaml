@@ -72,7 +72,7 @@ spec:
           containers:
             - name: etl
               image: safety-app
-              args: ["python", "-m", "safety.joblock", "--", "python", "-m", "safety.etl.run", "incremental", "--all", "--due-only", "--skip-hourly"]
+              args: ["python", "-m", "safety.joblock", "--", "python", "-m", "safety.shards", "run", "--", "python", "-m", "safety.etl.run", "incremental", "--all", "--due-only", "--skip-hourly"]
               envFrom:
                 - configMapRef:
                     name: safety-config
@@ -164,7 +164,7 @@ spec:
           containers:
             - name: etl
               image: safety-app
-              args: ["python", "-m", "safety.joblock", "--", "python", "-m", "safety.etl.run", "hourly", "--all"]
+              args: ["python", "-m", "safety.joblock", "--", "python", "-m", "safety.shards", "run", "--", "python", "-m", "safety.etl.run", "hourly", "--all"]
               envFrom:
                 - configMapRef:
                     name: safety-config
@@ -256,7 +256,7 @@ spec:
           containers:
             - name: etl
               image: safety-app
-              args: ["python", "-m", "safety.joblock", "--", "python", "-m", "safety.ops"]
+              args: ["python", "-m", "safety.joblock", "--", "python", "-m", "safety.shards", "run", "--", "python", "-m", "safety.ops"]
               envFrom:
                 - configMapRef:
                     name: safety-config

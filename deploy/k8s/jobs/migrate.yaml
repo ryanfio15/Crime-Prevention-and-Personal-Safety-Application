@@ -43,7 +43,7 @@ spec:
       containers:
         - name: main
           image: safety-app
-          args: ["python", "-m", "safety.migrate"]
+          args: ["python", "-m", "safety.shards", "run", "--", "python", "-m", "safety.migrate"]
           envFrom:
             - configMapRef:
                 name: safety-config

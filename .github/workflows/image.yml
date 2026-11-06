@@ -61,6 +61,25 @@ jobs:
             echo "::endgroup::"
           done
           kubeconform -strict -summary -kubernetes-version 1.34.0 deploy/k8s/loadtest/k6-job.yaml
+      # What the schemas cannot see: the sharded overlay swaps the base's one
+      # database for three, all in the namespace, and every one of them is in
+      # DB_SHARDS.
+      - name: Check the sharded overlay
+        run: |
+          set -o pipefail
+          pip install --quiet pyyaml
+          kubectl kustomize deploy/k8s/overlays/fabric-sharded | python3 -c '
+          import sys, yaml
+          docs = [d for d in yaml.safe_load_all(sys.stdin) if d]
+          clusters = sorted(f"{d[\"metadata\"].get(\"namespace\")}/{d[\"metadata\"][\"name\"]}"
+                            for d in docs if d["kind"] == "Cluster")
+          print("clusters:", clusters)
+          assert clusters == ["safety/safety-db1", "safety/safety-db2", "safety/safety-db3"], clusters
+          shards = next(d["data"]["DB_SHARDS"] for d in docs if d["kind"] == "ConfigMap")
+          print("DB_SHARDS:", shards)
+          hosts = [part.split("=")[0] for part in shards.split(";")]
+          assert hosts == [f"{c.split(\"/\")[1]}-rw" for c in clusters], hosts
+          '
 
   image:
     name: image

@@ -51,7 +51,7 @@ spec:
       containers:
         - name: main
           image: safety-app
-          args: ["python", "-m", "safety.bootstrap"]
+          args: ["python", "-m", "safety.shards", "run", "--", "python", "-m", "safety.bootstrap"]
           envFrom:
             - configMapRef:
                 name: safety-config

@@ -4,20 +4,22 @@
 # The database: its own instances (replication), the CloudNativePG operator
 # (cnpg-system, status and control on 8000), and pods labelled
 # safety.io/db-client=true -- the API, the ETL, the jobs and the backup.
+# Selected by the operator's cluster label whatever its value, so it covers
+# safety-db or, with the cities split across databases, safety-db1..3.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: safety-db
 spec:
   podSelector:
-    matchLabels:
-      cnpg.io/cluster: safety-db
+    matchExpressions:
+      - {key: cnpg.io/cluster, operator: Exists}
   policyTypes: ["Ingress"]
   ingress:
     - from:
         - podSelector:
-            matchLabels:
-              cnpg.io/cluster: safety-db
+            matchExpressions:
+              - {key: cnpg.io/cluster, operator: Exists}
     - from:
         - namespaceSelector:
             matchLabels:

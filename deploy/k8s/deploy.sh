@@ -3,7 +3,8 @@
 #
 #   deploy/k8s/deploy.sh <overlay> [image]
 #
-#   overlay   fabric | aws | azure | local   (deploy/k8s/overlays/<overlay>)
+#   overlay   fabric | fabric-small | fabric-minimal | fabric-sharded | aws | azure | local
+#             (deploy/k8s/overlays/<overlay>)
 #   image     default ghcr.io/ryanfio15/crime-prevention-and-personal-safety-application:horizontal-scaling
 #             -- the image workflow also publishes :<full commit sha>, which
 #             pins a release and lets the smoke test check the commit.
@@ -18,7 +19,7 @@
 #   1. the CloudNativePG operator, if the cluster does not have it yet;
 #   2. the overlay (namespace, config, database, API, routing, ETL CronJobs,
 #      ingress, policies), with the image substituted;
-#   3. the database cluster becoming ready;
+#   3. the database cluster(s) becoming ready (three with fabric-sharded);
 #   4. the migrate Job, run fresh for this release;
 #   5. the API and Valhalla rollouts (new API pods wait for step 4 by
 #      themselves: safety/schemawait.py);
@@ -33,7 +34,7 @@ set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 
-overlay=${1:?usage: $0 <fabric|aws|azure|local> [image]}
+overlay=${1:?usage: $0 <overlay: see deploy/k8s/overlays> [image]}
 default_image=ghcr.io/ryanfio15/crime-prevention-and-personal-safety-application:horizontal-scaling
 image=${2:-$default_image}
 ns=safety
@@ -41,7 +42,7 @@ cnpg_version=1.30.1
 cnpg_manifest=https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.30/releases/cnpg-${cnpg_version}.yaml
 
 [ -d "$here/overlays/$overlay" ] || { echo "no overlay '$overlay' in $here/overlays" >&2; exit 2; }
-for cmd in kubectl curl jq; do
+for cmd in kubectl curl jq openssl; do
     command -v "$cmd" > /dev/null || { echo "deploy.sh needs $cmd" >&2; exit 2; }
 done
 
@@ -84,14 +85,30 @@ fi
 kubectl -n cnpg-system rollout status deploy/cnpg-controller-manager --timeout=300s
 
 # --- 2. the overlay ---------------------------------------------------------
+manifests=$(render "$here/overlays/$overlay")
+# With the cities split across several databases (overlays/fabric-sharded),
+# they share the owner role's credentials: a Secret the operator would
+# otherwise generate per cluster. Created once, before the clusters, and never
+# replaced -- the databases' role already has this password.
+if grep -q 'safety.io/shared-credentials: "true"' <<< "$manifests"; then
+    kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
+    if ! kubectl -n "$ns" get secret safety-db-app > /dev/null 2>&1; then
+        log "creating the shared database credentials (secret safety-db-app)"
+        kubectl -n "$ns" create secret generic safety-db-app \
+            --type=kubernetes.io/basic-auth \
+            --from-literal=username=safety_app \
+            --from-literal=password="$(openssl rand -hex 24)" \
+            --from-literal=dbname=safety
+    fi
+fi
 log "applying overlay '$overlay' with image $image"
-render "$here/overlays/$overlay" | kubectl apply -f -
+printf '%s\n' "$manifests" | kubectl apply -f -
 
 # --- 3. database ------------------------------------------------------------
-log "waiting for the database cluster"
-# The Cluster object exists at once, its Ready condition only once the primary
-# accepts connections; the first initdb takes a minute or two.
-kubectl -n "$ns" wait cluster/safety-db --for=condition=Ready --timeout=1200s
+log "waiting for the database cluster(s)"
+# The Cluster objects exist at once, their Ready condition only once the
+# primary accepts connections; the first initdb takes a minute or two.
+kubectl -n "$ns" wait clusters.postgresql.cnpg.io --all --for=condition=Ready --timeout=1200s
 
 # --- 4. migrate -------------------------------------------------------------
 log "migrating"

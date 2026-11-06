@@ -60,16 +60,27 @@ spec:
                 - /bin/bash
                 - -ec
                 - |
+                  # One dump per database: DB_HOSTS is one host, or several
+                  # when the cities are split (safety/shards.py). Named after
+                  # the host, so `safety-db-<stamp>.dump` with one database.
                   stamp=$(date -u +%Y%m%dT%H%M%SZ)
-                  out="/backups/safety-$stamp.dump"
-                  pg_dump -Fc -h safety-db-rw -U "$PGUSER" -d "$PGDATABASE" -f "$out.partial"
-                  mv "$out.partial" "$out"
-                  # The restore test the host's monthly verify does, cheaply:
-                  # the archive's table of contents must read back.
-                  pg_restore -l "$out" > /dev/null
-                  ls -1t /backups/safety-*.dump | tail -n +8 | xargs -r rm -f
+                  for host in $DB_HOSTS; do
+                      name=${host%-rw}
+                      out="/backups/$name-$stamp.dump"
+                      pg_dump -Fc -h "$host" -U "$PGUSER" -d "$PGDATABASE" -f "$out.partial"
+                      mv "$out.partial" "$out"
+                      # The restore test the host's monthly verify does,
+                      # cheaply: the archive's table of contents must read back.
+                      pg_restore -l "$out" > /dev/null
+                      ls -1t "/backups/$name"-2*.dump | tail -n +"$((KEEP + 1))" | xargs -r rm -f
+                  done
                   ls -lh /backups
               env:
+                - name: DB_HOSTS
+                  value: safety-db-rw
+                # Dumps kept per database.
+                - name: KEEP
+                  value: "7"
                 - name: PGUSER
                   valueFrom:
                     secretKeyRef: {name: safety-db-app, key: username}

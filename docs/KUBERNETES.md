@@ -39,7 +39,7 @@ Everything lives in the `safety` namespace, from `deploy/k8s/`:
 |---|---|
 | `base/` | The cloud-neutral manifests: config, database cluster, API, Valhalla, ETL CronJobs, backups, ingress, network policies |
 | `jobs/` | The migrate and bootstrap Jobs (rendered per release by `deploy.sh`, because Jobs are immutable) |
-| `overlays/fabric`, `fabric-small`, `fabric-minimal` | k3s on a FABRIC slice (`deploy/fabric/create_slice.py`); `fabric-minimal` fits the default per-VM caps of a project without the VM.NoLimit tag (Philadelphia, one month, no routing) |
+| `overlays/fabric`, `fabric-small`, `fabric-minimal`, `fabric-sharded` | k3s on a FABRIC slice (`deploy/fabric/create_slice.py`). `fabric-minimal` and `fabric-sharded` fit the default per-VM caps of a project without the VM.NoLimit tag: the first with Philadelphia only, one month and no routing; the second with everything, the cities split across three databases ("City-sharded databases") |
 | `overlays/aws`, `overlays/azure` | EKS and AKS: storage classes, pod CIDR, Traefik values |
 | `overlays/local` | One machine (k3d, kind): one of everything, Philadelphia only, one month |
 | `deploy.sh` | Operator, overlay, database, migrate, rollouts, bootstrap, smoke, in order |
@@ -138,6 +138,64 @@ and the API and Valhalla each keep at least one pod.
 The same labels and taint are how node pools are laid out on EKS and AKS. The base manifests only
 *prefer* the labels, so an unlabelled cluster still schedules everything. The FABRIC overlay
 *requires* them.
+
+## City-sharded databases
+
+A FABRIC project without the **VM.NoLimit** tag is capped at 2 cores, 10 GB RAM and 10 GB of disk
+per VM. A year of all six cities is about 6 GB of live data, and 7.5 GB with WAL and the dead rows
+that gold's delete-and-reinsert refreshes leave. The OS, k3s and the PostGIS image take about
+4.5 GB of the same disk. So no capped VM holds the whole database. The map layers are the bulk of
+it, and they scale with a city's area, not its months of history: every cell gets a row, incidents
+or not.
+
+The `sharded` profile (`create_slice.py up --profile sharded`, overlay `fabric-sharded`) spreads
+the cities over three databases instead, two cities each. The pairs are chosen to balance the
+estimated sizes:
+
+| Database | Node | Cities | Live data (est.) |
+|---|---|---|---|
+| `safety-db1` | `db1` | Los Angeles, Washington DC | ~2.2 GB |
+| `safety-db2` | `db2` | Austin, Philadelphia | ~1.8 GB |
+| `safety-db3` | `db3` | Chicago, Seattle | ~1.8 GB |
+
+Each database is a complete, ordinary instance: the full schema, the reference tables, the
+registry. It just has only its own cities enabled. The configuration is one setting,
+`DB_SHARDS=safety-db1-rw=lax,dc;safety-db2-rw=aus,phl;safety-db3-rw=chi,sea`
+(`safety/shards.py`).
+
+- **Jobs.** Migrate, the bootstrap, the schema wait and the three ETL CronJobs run their command
+  through `python -m safety.shards run -- <cmd>`. That runs it once per database with
+  `POSTGRES_HOST` pointed there. Without `DB_SHARDS` it runs the command once, unchanged, which is
+  why the base manifests use it everywhere. The bootstrap enables a database's two cities and
+  disables the rest there; a fresh database starts with Philadelphia enabled.
+- **ETL lock.** `JOBLOCK_HOST=safety-db1-rw` puts the lock on one database for all of them. A
+  CronJob takes it once and then works through the three databases in turn, so only one ETL ever
+  runs on `etl1`'s memory.
+- **API.** Each pod opens a pool per database and sends every request to its city's database:
+  - by `city` or the `/cities/{id}` path;
+  - for cell endpoints, by the database whose `gold.cell_geometry` has that cell (asked once per
+    cell, then remembered);
+  - for `/cells/lookup`, by the point's cell.
+
+  `/cities` and `/health`, and `/version` without a city, read every database and merge the
+  results. Provider budgets are counted on the first database.
+- **One database down.** Its two cities stop answering (503) and drop out of `/cities`. The other
+  four keep serving, and `/health` returns 200 with `"status": "degraded"` and a per-database map,
+  so the API pods stay in the load balancer.
+- **Disk.** Each database caps its WAL (`max_wal_size` 512 MB, `wal_keep_size` 64 MB, compressed)
+  and its temporary files (`temp_file_limit` 1.5 GB), so a big sort fails its query rather than
+  filling the disk under the server.
+  - On capped profiles the kubelet evicts only below 4% free, not its default 10%.
+  - `create_slice.py` removes snapd, caps the journal and prints each VM's free space before k3s
+    goes on.
+- **Backups.** The nightly CronJob is suspended in this overlay: three dumps don't fit beside the
+  ETL on `etl1`. Run it by hand to keep one dump per database:
+  `kubectl -n safety create job --from=cronjob/db-backup db-backup-now`. The data itself can always
+  be reloaded from the portals by the bootstrap.
+
+There is no standby: each database is one instance, because a standby needs a second node with the
+same disk to spare. When the project gets the VM.NoLimit tag, the `standard` profile is the better
+layout, with one database, a standby and automatic failover.
 
 ## First deploy
 

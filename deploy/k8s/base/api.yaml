@@ -62,7 +62,7 @@ spec:
         # this image ships (safety/schemawait.py); the old pods keep serving.
         - name: wait-for-schema
           image: safety-app
-          args: ["python", "-m", "safety.schemawait", "--timeout", "1800"]
+          args: ["python", "-m", "safety.shards", "run", "--", "python", "-m", "safety.schemawait", "--timeout", "1800"]
           envFrom:
             - configMapRef:
                 name: safety-config
