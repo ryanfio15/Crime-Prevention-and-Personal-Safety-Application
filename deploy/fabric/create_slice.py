@@ -318,6 +318,36 @@ def check_egress(slice_, profile) -> bool:
     return True
 
 
+# The management NIC's MTU is 9000, so the VM advertises an MSS of ~8940 and
+# servers send full 1500-byte IPv4 segments. NAT64 grows each one by 20 bytes
+# to 1520 bytes of IPv6, which doesn't fit the path, and the Packet Too Big
+# never reaches servers that ignore or filter it. Small replies get through and
+# big ones vanish: Austin's Imperva-fronted GIS server answers plain HTTP but
+# never finishes a TLS handshake (its certificate flight is lost). An MSS of
+# 1400 keeps every segment under 1500 bytes after translation.
+NAT64_MSS = 1400
+MSS_UNIT = "nat64-mss-clamp.service"
+
+
+def clamp_nat64_mss(node) -> None:
+    """Clamp the MSS of outgoing IPv6 SYNs on `node`, now and at every boot."""
+    rule = f"-t mangle -%s OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss {NAT64_MSS}"
+    unit = (
+        "[Unit]\nDescription=Clamp TCP MSS for FABRIC NAT64\n"
+        "After=network-online.target\nWants=network-online.target\n\n"
+        "[Service]\nType=oneshot\nRemainAfterExit=yes\n"
+        f"ExecStart=/bin/sh -c '/usr/sbin/ip6tables {rule % 'C'} 2>/dev/null || "
+        f"/usr/sbin/ip6tables {rule % 'A'}'\n"
+        f"ExecStop=-/usr/sbin/ip6tables {rule % 'D'}\n\n"
+        "[Install]\nWantedBy=multi-user.target\n"
+    )
+    run(
+        node,
+        f"printf %s {shlex.quote(unit)} | sudo tee /etc/systemd/system/{MSS_UNIT} >/dev/null && "
+        f"sudo systemctl daemon-reload && sudo systemctl enable --quiet --now {MSS_UNIT}",
+    )
+
+
 def setup_egress_proxy(slice_, profile, ips: dict[str, str]) -> str:
     """tinyproxy on cp1, on the private bridge, for the pods; returns its URL.
 
@@ -341,6 +371,7 @@ def setup_egress_proxy(slice_, profile, ips: dict[str, str]) -> str:
         f"'ConnectPort 443' 'ConnectPort 80' | sudo tee -a {conf} >/dev/null && "
         "sudo systemctl enable --quiet tinyproxy && sudo systemctl restart tinyproxy",
     )
+    clamp_nat64_mss(server)
     url = f"http://{ip}:{PROXY_PORT}"
     # From another VM, over the bridge, the way a pod's traffic arrives.
     probe = slice_.get_node(names[-1])
