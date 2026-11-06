@@ -22,6 +22,13 @@ The slice (profile `standard`, docs/KUBERNETES.md "Node layout"):
 `--profile small` drops data2 and app2 (one database instance, no standby) for
 a project with a smaller allocation; it deploys the `fabric-small` overlay.
 
+Both need the project to hold FABRIC's VM.NoLimit tag (or VM.NoLimitCPU,
+-RAM and -Disk): without it a VM is capped at 2 cores, 10 GB RAM and 10 GB of
+disk. `--profile minimal` fits those caps -- cp1, data1, app1, app2 at
+2 cores / 8 GB / 10 GB -- and deploys the `fabric-minimal` overlay: the whole
+pipeline, but Philadelphia over one month and no routing pods, since the disk
+holds little more than the OS and the images.
+
 All five VMs sit at one site on one L2 bridge (10.20.0.0/24). Kubernetes
 traffic -- the API server, flannel's VXLAN, the database's replication -- uses
 that dataplane network, never the management network, which FABRIC reserves
@@ -68,8 +75,16 @@ PROFILES = {
         "data1": (8, 32, 150, "data"),
         "app1": (8, 16, 60, "app"),
     },
+    # FABRIC's caps for a project without the VM.NoLimit tag: 2 cores,
+    # 10 GB RAM, 10 GB disk per VM.
+    "minimal": {
+        "cp1": (2, 8, 10, "control"),
+        "data1": (2, 8, 10, "data"),
+        "app1": (2, 8, 10, "app"),
+        "app2": (2, 8, 10, "app"),
+    },
 }
-OVERLAY = {"standard": "fabric", "small": "fabric-small"}
+OVERLAY = {"standard": "fabric", "small": "fabric-small", "minimal": "fabric-minimal"}
 
 
 def log(message: str) -> None:
@@ -130,7 +145,33 @@ def create(fablib, args) -> None:
         )
         interfaces.append(node.add_component(model="NIC_Basic", name="nic1").get_interfaces()[0])
     slice_.add_l2network(name=NETWORK, interfaces=interfaces)
-    slice_.submit(wait=True, progress=True)
+    try:
+        slice_.submit(wait=True, progress=True)
+    except Exception as exc:
+        if "NoLimit" not in str(exc):
+            raise
+        # FABRIC's policy check refused the request before creating anything.
+        sys.exit(
+            f"FABRIC refused the slice: {_policy_detail(exc)}\n\n"
+            "Your project caps each VM at 2 cores, 10 GB RAM and 10 GB disk until it is "
+            "granted the VM.NoLimit tag. Either\n"
+            "  * ask the project owner (your PI or instructor) to request VM.NoLimit for the "
+            "project in the FABRIC portal, then rerun this command; or\n"
+            "  * run now within the caps: python create_slice.py up --profile minimal "
+            f"--site {args.site}\n"
+            "    (the full pipeline, but Philadelphia over one month and no routing; "
+            "README, 'Without the VM.NoLimit tag')."
+        )
+    log("slice is up")
+
+
+def _policy_detail(exc: Exception) -> str:
+    """The orchestrator's own words from its JSON error body, if it gave one."""
+    text = str(exc)
+    marker = "Policy Violation:"
+    if marker in text:
+        return text[text.index(marker) + len(marker):].split('"')[0].strip()
+    return text[-500:]
     log("slice is up")
 
 
@@ -269,6 +310,15 @@ def deploy(slice_, args) -> None:
 # --------------------------------------------------------------------------- misc
 
 
+def profile_of(slice_) -> str:
+    """Which profile built this slice: each has its own set of node names."""
+    names = {node.get_name() for node in slice_.get_nodes()}
+    for name, profile in PROFILES.items():
+        if names == set(profile):
+            return name
+    sys.exit(f"slice nodes {sorted(names)} match no profile; pass --profile")
+
+
 def print_tunnel(slice_, profile) -> None:
     server = slice_.get_node(next(iter(profile)))
     ssh = server.get_ssh_command()
@@ -303,23 +353,30 @@ def main(argv: list[str] | None = None) -> int:
                                            "tunnel", "renew", "delete"])
     parser.add_argument("--slice", default="safety-k8s", help="slice name (default safety-k8s)")
     parser.add_argument("--site", help="FABRIC site for `up`/`create`, e.g. MAX or TACC")
-    parser.add_argument("--profile", choices=sorted(PROFILES), default="standard")
+    parser.add_argument(
+        "--profile", choices=sorted(PROFILES),
+        help="slice size for `up`/`create` (default standard); other actions read it off "
+             "the slice's nodes",
+    )
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument("--branch", default=DEFAULT_BRANCH)
     parser.add_argument("--days", type=int, default=14, help="lease extension for `renew`")
     args = parser.parse_args(argv)
 
     fablib = fablib_manager()
-    profile = PROFILES[args.profile]
 
     if args.action in ("up", "create"):
         if not args.site:
             parser.error("--site is required to create a slice (see README: choosing a site)")
+        args.profile = args.profile or "standard"
         create(fablib, args)
         if args.action == "create":
             return 0
 
     slice_ = fablib.get_slice(name=args.slice)
+    if args.profile is None:
+        args.profile = profile_of(slice_)
+    profile = PROFILES[args.profile]
 
     if args.action in ("up", "install"):
         check_ipv4_egress(slice_, profile)

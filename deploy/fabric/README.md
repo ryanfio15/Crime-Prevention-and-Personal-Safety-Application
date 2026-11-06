@@ -17,6 +17,35 @@ Five Ubuntu VMs at one FABRIC site on a private L2 network (10.20.0.0/24):
 That is 36 cores, 104 GB RAM and 520 GB disk. If your project's allocation is smaller,
 `--profile small` builds three VMs (cp1, data1, app1: 20 cores, 56 GB) with one database instance.
 
+### Without the VM.NoLimit tag
+
+Both profiles above need VMs larger than FABRIC allows by default. A project without the
+**VM.NoLimit** tag is capped at 2 cores, 10 GB RAM and 10 GB disk per VM. A slice request beyond
+that is refused with `Your project is lacking VM.NoLimitRAM or VM.NoLimit tag`, and nothing is
+created.
+
+1. **For the full site,** ask your project's owner (for a student account, usually your PI or
+   instructor) to request the `VM.NoLimit` tag for the project in the FABRIC portal
+   (<https://portal.fabric-testbed.net>, the project's page). FABRIC staff grant it. Once the project
+   has it, `up --site …` works as described below.
+2. **To test now within the caps:**
+   ```bash
+   python create_slice.py up --profile minimal --site MAX
+   ```
+   This builds four VMs at 2 cores / 8 GB / 10 GB each: `cp1`, `data1`, and `app1` and `app2` with
+   one API pod each. It runs the whole pipeline: k3s, the database operator, migrations, the
+   bootstrap, the CronJobs, the ingress, and two API replicas. A 10 GB disk holds little more than
+   the OS and the container images, so this profile cuts two things:
+   - the bootstrap loads **Philadelphia over one month**;
+   - there are **no routing pods**, so drive, walk and bike directions show as unavailable. The map
+     and transit still work.
+
+   It uses the `deploy/k8s/overlays/fabric-minimal` overlay. When the tag arrives, `delete` this
+   slice and build the standard one.
+
+The other commands (`status`, `tunnel`, `deploy`, `renew`, `delete`) work out the profile from the
+slice's nodes, so `--profile` is only needed with `up`.
+
 ## Before you start (once)
 
 1. **Make the container image public.** The first push of the `horizontal-scaling` branch runs

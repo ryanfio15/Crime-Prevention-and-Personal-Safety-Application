@@ -1,0 +1,93 @@
+# FABRIC with the `minimal` slice profile (deploy/fabric/create_slice.py
+# --profile minimal): four VMs inside FABRIC's default per-VM caps (2 cores,
+# 10 GB RAM, 10 GB disk), for a project that has not been granted the
+# VM.NoLimit tag. cp1 runs the control plane, data1 the database and the ETL,
+# app1/app2 one API pod each.
+#
+# It proves the whole pipeline -- slice, k3s, operator, migrate, bootstrap,
+# CronJobs, ingress, two API replicas behind it -- but not the full dataset:
+# a 10 GB disk holds the OS, k3s and the images with only a few GB to spare,
+# so the bootstrap loads Philadelphia over one month, and there are no routing
+# pods (Valhalla's image plus its 1.2 GB of tiles do not fit beside the API;
+# drive/walk/bike directions report unavailable, transit and the map work).
+#
+# Everything the `fabric` overlay does, scaled down.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../fabric
+patches:
+  - target: {kind: ConfigMap, name: safety-config}
+    patch: |-
+      - op: replace
+        path: /data/BOOTSTRAP_CITIES
+        value: "phl"
+      - op: replace
+        path: /data/BACKFILL_MONTHS
+        value: "1"
+      - op: replace
+        path: /data/CACHE_MAX_BYTES
+        value: "134217728"
+  - target: {group: postgresql.cnpg.io, kind: Cluster, name: safety-db}
+    patch: |-
+      - op: replace
+        path: /spec/instances
+        value: 1
+      - op: replace
+        path: /spec/storage/size
+        value: 4Gi
+      - op: replace
+        path: /spec/resources
+        value:
+          requests: {cpu: 500m, memory: 3Gi}
+          limits: {memory: 3Gi}
+      - op: replace
+        path: /spec/postgresql/parameters/shared_buffers
+        value: 768MB
+      - op: replace
+        path: /spec/postgresql/parameters/effective_cache_size
+        value: 2GB
+      - op: replace
+        path: /spec/postgresql/parameters/maintenance_work_mem
+        value: 256MB
+      - op: replace
+        path: /spec/postgresql/parameters/max_connections
+        value: "60"
+  - target: {kind: HorizontalPodAutoscaler, name: safety-api}
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 2
+      - op: replace
+        path: /spec/maxReplicas
+        value: 4
+  - target: {kind: Deployment, name: safety-api}
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests
+        value: {cpu: 250m, memory: 512Mi}
+  - target: {kind: Deployment, name: valhalla}
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 0
+  - target: {kind: HorizontalPodAutoscaler, name: valhalla}
+    patch: |-
+      $patch: delete
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: valhalla
+  - target: {kind: PersistentVolumeClaim, name: bronze}
+    patch: |-
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 1Gi
+  - target: {kind: PersistentVolumeClaim, name: db-backups}
+    patch: |-
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 2Gi

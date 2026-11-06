@@ -39,7 +39,7 @@ Everything lives in the `safety` namespace, from `deploy/k8s/`:
 |---|---|
 | `base/` | The cloud-neutral manifests: config, database cluster, API, Valhalla, ETL CronJobs, backups, ingress, network policies |
 | `jobs/` | The migrate and bootstrap Jobs (rendered per release by `deploy.sh`, because Jobs are immutable) |
-| `overlays/fabric`, `fabric-small` | k3s on a FABRIC slice (`deploy/fabric/create_slice.py`) |
+| `overlays/fabric`, `fabric-small`, `fabric-minimal` | k3s on a FABRIC slice (`deploy/fabric/create_slice.py`); `fabric-minimal` fits the default per-VM caps of a project without the VM.NoLimit tag (Philadelphia, one month, no routing) |
 | `overlays/aws`, `overlays/azure` | EKS and AKS: storage classes, pod CIDR, Traefik values |
 | `overlays/local` | One machine (k3d, kind): one of everything, Philadelphia only, one month |
 | `deploy.sh` | Operator, overlay, database, migrate, rollouts, bootstrap, smoke, in order |
