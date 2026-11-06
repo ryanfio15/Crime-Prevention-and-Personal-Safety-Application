@@ -246,9 +246,11 @@ the deployment behind a corporate egress proxy: set `EGRESS_PROXY` when running 
 2. applies the overlay;
 3. waits for the database (initdb, PostGIS created by the superuser);
 4. runs the `safety-migrate` Job: all migrations, as the non-superuser owner;
-5. waits for the API and Valhalla rollouts (each Valhalla pod first downloads about 1.2 GB of tiles);
+5. waits for the API rollout;
 6. starts the `safety-bootstrap` Job unless it has already completed;
-7. smoke-tests through a port-forward with `deploy/lib/smoke.sh`, checking the commit when the image
+7. waits for the Valhalla rollout (each Valhalla pod first downloads about 1.2 GB of tiles); a
+   timeout is a warning, not a failure;
+8. smoke-tests through a port-forward with `deploy/lib/smoke.sh`, checking the commit when the image
    is tagged by commit.
 
 **The bootstrap** (`python -m safety.bootstrap`):
@@ -257,15 +259,17 @@ the deployment behind a corporate egress proxy: set `EGRESS_PROXY` when running 
   `safety.etl.run enable`, readiness checks included;
 - runs `safety.ops` under the ETL lock.
 
-ops works out what each city is missing and does it in order: a `BACKFILL_MONTHS`-deep backfill (12,
-set in the ConfigMap), census blocks and jobs, gold, and the time-of-day layers. Each city appears
-on the map as soon as its own load is done. The whole first load is one to a few hours, mostly spent
+ops works out what each city is missing and does it in order: a one-year backfill (`BACKFILL_MONTHS`
+12, clamped to `RETENTION_DAYS` 365 in the ConfigMap), census blocks and jobs, then one gold build with
+the time-of-day layers. Each city appears on the map as soon as its own load is done, and while the load
+runs the site shows a progress bar with the estimated time left (`GET /api/v1/progress`). The whole first load is one to a few hours, mostly spent
 waiting on the city portals. If the pod is killed, the Job retries and ops carries on from what the
 data says is still missing. `OPS_RETRY_COOLDOWN_HOURS=0` on the Job stops the retry from waiting
 behind the killed pod's ledger row.
 
-The full-history load (`history_enabled`) stays off, so nothing loads further back than 12 months.
-With about a year stored, gold builds the `last_3m`, `last_6m`, `last_9m` and `last_1y` windows.
+Each city keeps exactly one rolling year: incidents 366 or more days old are deleted from the
+database and the `bronze` volume by every incremental and by the `retain` step of `ops-converge`
+(docs/OPERATIONS.md, "One year of data"). Gold builds one window, `last_1y`, at resolutions 8 and 9.
 
 > Austin: docs/DEPLOYMENT.md asks for the City of Austin's reuse terms to be confirmed before enabling
 > `aus` on a new host. To leave it off, set `BOOTSTRAP_CITIES` to the other five in
@@ -282,7 +286,7 @@ The CronJobs run the home server's timers, with the same commands, each wrapped 
 | CronJob | Schedule (UTC) | Command |
 |---|---|---|
 | `etl-incremental` | every 6 h | `safety.etl.run incremental --all --due-only --skip-hourly` |
-| `etl-hourly` | Sundays 04:00 | `safety.etl.run hourly --all` |
+| `etl-hourly` | daily 04:00 | `safety.etl.run hourly --all` (the layers the map is coloured by) |
 | `ops-converge` | hourly at :20 | `safety.ops` (whatever an enabled city is missing) |
 | `db-backup` | 02:30 | `pg_dump -Fc`, newest seven kept |
 
@@ -348,7 +352,7 @@ For either cloud:
 | Task | Command |
 |---|---|
 | What is running where | `kubectl -n safety get pods -o wide` |
-| First-load progress | `kubectl -n safety logs -f job/safety-bootstrap` |
+| First-load progress | the progress bar on the site, `GET /api/v1/progress`, or `kubectl -n safety logs -f job/safety-bootstrap` |
 | City status, pulls, data quality | `kubectl -n safety exec deploy/safety-api -- python -m safety.etl.run status` |
 | Run convergence now | `kubectl -n safety create job --from=cronjob/ops-converge ops-now` |
 | Pull new data now | `kubectl -n safety create job --from=cronjob/etl-incremental pull-now` |

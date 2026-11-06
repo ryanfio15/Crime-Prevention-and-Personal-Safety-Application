@@ -27,8 +27,10 @@
 #   5. the API rollout (new API pods wait for step 4 by themselves:
 #      safety/schemawait.py);
 #   6. the bootstrap Job, if it has never completed: enable the cities and
-#      load BACKFILL_MONTHS of data. It runs on in the background; the site
-#      serves each city as soon as its own load is done;
+#      load the last year of data. It runs on in the background; the site
+#      shows a progress bar with an estimate of the time left
+#      (GET /api/v1/progress) and serves each city as soon as its own load is
+#      done;
 #   7. the Valhalla rollout -- after the bootstrap has started, and not fatal:
 #      each new pod downloads ~1.2 GB first, slowly on some networks;
 #   8. a smoke test through a port-forward (deploy/lib/smoke.sh).
@@ -172,9 +174,10 @@ if [ "${SKIP_BOOTSTRAP:-0}" != 1 ]; then
         running) log "bootstrap is already running: kubectl -n $ns logs -f job/safety-bootstrap" ;;
         *)
             [ -z "$state" ] || kubectl -n "$ns" delete job safety-bootstrap --wait=true
-            log "starting the first load (all enabled cities, BACKFILL_MONTHS deep)"
+            log "starting the first load (all enabled cities, the last year of each)"
             printf '%s\n' "$jobs" | kubectl apply -f - -l app.kubernetes.io/name=safety-bootstrap
             echo "follow it with: kubectl -n $ns logs -f job/safety-bootstrap"
+            echo "or on the site itself: a progress bar shows how much longer it will take"
             ;;
     esac
     if [ "${FOLLOW_BOOTSTRAP:-0}" = 1 ]; then

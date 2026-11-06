@@ -1,7 +1,9 @@
 # First load of a fresh deployment (safety/bootstrap.py): migrate, enable
-# BOOTSTRAP_CITIES (all six by default), then converge -- a BACKFILL_MONTHS
-# (12) backfill, census blocks, gold and the time-of-day layers, city by city.
-# Expect one to a few hours, mostly waiting on the city portals.
+# BOOTSTRAP_CITIES (all six by default), then converge -- a one-year backfill
+# (clamped to RETENTION_DAYS), census blocks, then one gold build with the
+# time-of-day layers, city by city. Expect one to a few hours, mostly waiting on
+# the city portals; the site shows a progress bar with the time left
+# (etl.load_progress, GET /api/v1/progress).
 #
 # deploy.sh creates it when it has never completed, and leaves a running or
 # completed one alone. Re-running is always safe. Pod retries pick up where the

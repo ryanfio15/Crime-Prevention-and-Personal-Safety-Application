@@ -26,15 +26,19 @@ checks on the production host. Anything that could not be verified is marked ⚠
 **Who uses it.** Residents, commuters and visitors who want to know whether an area is typically quieter or busier
 than others nearby, and researchers who want a documented API (see [docs/DESIGN.md §2](docs/DESIGN.md)).
 
-**What it shows.**
-- For each H3 cell, a percentile and tier of reported incidents compared with other cells in the same city, over
-  windows of 3, 6 and 9 months, then 1, 2, 3 … years back to the oldest incident stored for that city
-  (each city has its own list; see [ARCHITECTURE.md → Windows](docs/ARCHITECTURE.md#time-windows)).
+**What it shows.** Every covered city on one map, over the last year and nothing else: each city keeps one rolling
+year of incidents and deletes anything 366 or more days old ([ARCHITECTURE.md → One year](docs/ARCHITECTURE.md#one-rolling-year)).
+The only controls are Show tiles and the violent / non-violent toggle; nothing else chooses the data.
+- Each H3 cell is coloured by its relative risk: its rate as a multiple of its own city's average, at the hour and
+  weekday it is now in that city. Cities are never compared with each other, because reporting differs too much
+  between police departments. Tapping a cell shows that rating and the cell's 24-hour and 7-day patterns.
 - A severity-weighted "safety" ranking per 1,000 residents plus jobs, kept as two separate rankings: violent and
   non-violent.
 - Time-of-day rankings. For each track, a cell's rate is multiplied by its hour factor, which is how much of the cell's
-  day falls in that hour, blended toward the city's pattern when the cell has little data. Every cell is then ranked
-  again at that hour.
+  day falls in that hour, blended toward the city's pattern when the cell has little data, and by its weekday factor.
+  Every cell is then ranked again at that time.
+- While a city's first load (the backfill) runs, a progress bar on the map shows how far it has got and roughly how
+  much longer it will take (`GET /api/v1/progress`).
 
 It deliberately does not give an address-level "risk score".
 
@@ -178,7 +182,8 @@ and systemd and python-dotenv parse anything fancier differently.
 | `API_PORT` | *(none)* | **server: yes** | `deploy/systemd/safety-api@.service` | 8000 prod, 8001 dev. Must match `deploy/lib/install.sh:53-54` and the nginx upstreams |
 | `COMPOSE_PROJECT_NAME` | directory name | **prod server: yes** | docker compose | Must be `crime-prevention-and-personal-safety-application`, or compose creates an empty volume. Never set it in dev. **Missing from `.env.example`** |
 | `BRONZE_ROOT` | `REPO_ROOT/data/bronze` | — | `safety/etl/bronze.py` | Raw pull storage. Leave it unset on the server; `.env.example`'s `./data/bronze` depends on the working directory |
-| `BACKFILL_MONTHS` | `24` | — | `etl/run.py` | Backfill window |
+| `RETENTION_DAYS` | `365` | — | `etl/retention.py` | Days of incidents each city keeps; older rows and bronze pulls are deleted and never fetched |
+| `BACKFILL_MONTHS` | `12` | — | `etl/run.py` | Backfill window, clamped to the retention cutoff |
 | `ENABLE_DOCS` | `true` | — | `api/main.py:86-88` | Serves `/docs`, `/redoc` and `/openapi.json`. On in prod today |
 | `ENABLE_RATE_LIMIT` | `true` | — | `api/main.py:95` | In-app limiter. Set `false` only locally or for load tests |
 | `CACHE_MAX_ENTRIES` | `192` | — | `api/main.py` | Response cache entry cap |
@@ -193,9 +198,6 @@ and systemd and python-dotenv parse anything fancier differently.
 | `SOCRATA_APP_TOKEN` | *(empty)* | — | `etl/adapters/socrata.py` | Optional `X-App-Token` for chi, sea and lax; raises the quota. Not used by Austin, despite the comment in `config.py` |
 | `OPS_CITY` · `OPS_FORCE` · `OPS_DRY_RUN` | empty · false · false | — | `safety/ops.py` | Steer `safety.ops`; CLI flags win |
 | `OPS_RETRY_COOLDOWN_HOURS` | `6` | — | `safety/ops.py` | How long a failed ops step is left alone |
-| `OPS_HISTORY_MINUTES` | `25` | — | `safety/ops.py` | How long one ops run spends on the history load before it stops starting slices |
-| `SAFETY_MAX_WINDOW_YEARS` | *(unset)* | — | `etl/gold.py` | Fallback for disk: windows longer than this many years get counts but no safety ranking |
-| `GOLD_LEGACY_WINDOWS` | `false` | — | `etl/gold.py` | Also write `last_90d`/`last_12m`/`last_24m` for a rollback to the release before 018; off by default, and a refresh with it off deletes the copies |
 | `WITHDRAWN_RECONCILE` | `report` | — | `etl/run.py` | `off` / `report` / `delete` for rows that vanish upstream. Prod stays `report` |
 | `WITHDRAWN_RETENTION_DAYS` | `90` | — | `etl/run.py` | Archive retention for deleted rows |
 | `DIRECTIONS_ENABLED` | `true` | — | `config.py` | Kill switch for directions and address search |
@@ -260,9 +262,8 @@ docker compose ps                                      # wait for "healthy"
 - There is no sample dataset: the first load is a live pull from the portal.
 - Hot reload: `--reload` restarts on Python changes, and `web/` is served from disk with no build step.
 - A smaller load with `--months` is never widened later by `incremental` or `ops`. Run `backfill` again without
-  `--months` to get the full 24 months.
-- Older years come from the separate history load (`safety.etl.run history --city <id> --force`), described in
-  [OPERATIONS.md → Loading a city's full history](docs/OPERATIONS.md#loading-a-citys-full-history).
+  `--months` to get the full year.
+- Nothing older than a year is kept: `safety.etl.run prune --city <id>` (also run by every incremental) deletes it.
 - `docs/PHASE1.md` uses Windows paths (`.venv/Scripts/python.exe`); use `.venv/bin/python` on macOS and Linux.
 
 ### Tests and lint
@@ -337,7 +338,7 @@ Diagram, all 14 routes and the dependency table: [ARCHITECTURE.md → Networking
 - **Stores**:
   - PostGIS: `reference`, `etl`, `silver` and `gold` schemas, with the two databases `safety` and `safety_dev` in one
     cluster.
-  - Bronze raw files: `I/data/bronze`, never pruned.
+  - Bronze raw files: `I/data/bronze`, pruned to the same one-year cutoff as the database.
   - An in-process API cache.
 - **Migrations**: `python -m safety.migrate`, 18 checksummed forward-only files under an advisory lock. Every run also
   reloads the crosswalk and severity CSVs.

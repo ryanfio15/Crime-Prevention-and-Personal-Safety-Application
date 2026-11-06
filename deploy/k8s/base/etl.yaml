@@ -117,13 +117,15 @@ spec:
               emptyDir:
                 sizeLimit: 4Gi
 ---
-# Sundays 04:00 UTC: rebuild the time-of-day layers (safety-etl-hourly@.timer).
+# Daily 04:00 UTC: rebuild the time-of-day layers (safety-etl-hourly@.timer).
+# The map is coloured by them -- each city at its current hour and weekday --
+# and with one window they are a few minutes' work, so daily rather than weekly.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: etl-hourly
 spec:
-  schedule: "0 4 * * 0"
+  schedule: "0 4 * * *"
   timeZone: Etc/UTC
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 900

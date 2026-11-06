@@ -192,84 +192,57 @@ ingestion `run.py:360-558`, and the gold rebuild `safety/etl/gold.py:1698-1779`.
 
 | Layer | Where | What |
 |---|---|---|
-| **Bronze** | Files: `I/data/bronze/source_id=<id>/dataset=<ds>/pull_date=<YYYY-MM-DD>/pull_<NNNNNN>/{manifest.json,*.gz}` | Raw responses, gzipped byte-for-byte. Used for audit and `reprocess`. **Never pruned, never backed up.** |
-| **Silver** | `silver.incident`, partitioned LIST(`source_id`) then RANGE(`occurred_year`); partitions created on demand | One normalized row per incident, with H3 r8/r9/r10, offense class mapped through the crosswalk, and local hour |
-| **Gold** | `gold.*`: `cell_geometry`, `cell_activity`, `cell_safety`, `cell_hour_safety`, `cell_hour_profile`, `cell_monthly`, `cell_offense_mix`, `cell_daily`, `cell_exposure`, `cell_neighbor`, `city_snapshot`, `city_window` | Per-city, per-cell rollups, and the windows each city is built for. **The only tables the map reads** (one exception: a cell's offense list for a custom date range, below). Rebuilt delete-then-insert, except `cell_daily`, which is written as a difference; these are ordinary tables, not materialized views |
+| **Bronze** | Files: `I/data/bronze/source_id=<id>/dataset=<ds>/pull_date=<YYYY-MM-DD>/pull_<NNNNNN>/{manifest.json,*.gz}` | Raw responses, gzipped byte-for-byte. Used for audit and `reprocess`. Pull folders dated before the retention cutoff are deleted ([one rolling year](#one-rolling-year)); never backed up. |
+| **Silver** | `silver.incident`, partitioned LIST(`source_id`) then RANGE(`occurred_year`); partitions created on demand | One normalized row per incident from the last year, with H3 r8/r9/r10, offense class mapped through the crosswalk, and local hour. Year partitions older than the cutoff are dropped |
+| **Gold** | `gold.*`: `cell_geometry`, `cell_activity`, `cell_safety`, `cell_hour_safety`, `cell_hour_profile`, `cell_dow_factor`, `cell_exposure`, `cell_neighbor`, `city_snapshot`, `city_window` | Per-city, per-cell rollups over the one window (`last_1y`) at r8 and r9. **The only tables the map reads.** Rebuilt delete-then-insert; ordinary tables, not materialized views. Migration 024 dropped `cell_daily`, `cell_monthly` and `cell_offense_mix` |
 | Reference | `reference.*`: `source_registry`, `offense_crosswalk`, `city_boundary`, `severity_scheme`, `offense_severity_weight`, `census_block`, `source_series_caveat` | Per-city config, the `enabled` and `history_*` settings, recording-change caveats, crosswalks loaded from `reference/crosswalk/*.csv` on every migrate |
-| Bookkeeping | `etl.*`: `pull_run`, `validation_issue`, `staging_incident` (UNLOGGED), `ops_run`, `withdrawn_incident` | Pull history, data-quality issues, the ops retry ledger, and a 90-day archive of rows withdrawn upstream |
+| Bookkeeping | `etl.*`: `pull_run`, `validation_issue`, `staging_incident` (UNLOGGED), `ops_run`, `withdrawn_incident`, `load_progress` | Pull history, data-quality issues, the ops retry ledger, a 90-day archive of rows withdrawn upstream, and how far each city's first load has got (the site's progress bar) |
 | Migrations | `public.schema_migration(filename, applied_at, checksum)` | Applied files with SHA-256 checksums |
 
 **Glossary**
-- **Cell**: one H3 hexagon. r8 ≈ 0.74 km² (main map layer), r9 ≈ 0.105 km², r10 ≈ 0.015 km² (only for `last_1y`/`last_2y` × `all`).
-- **Window**: a cumulative period counted back from the newest incident date for that city, not from today. See
-  [Time windows](#time-windows).
+- **Cell**: one H3 hexagon. r8 ≈ 0.74 km² (zoomed out), r9 ≈ 0.105 km² (zoomed in). Silver still records r10; gold does not build it.
+- **Window**: the last year, counted back from the newest incident date for that city, not from today. See
+  [One rolling year](#one-rolling-year).
 - **Crosswalk**: maps each raw offense code and text to NIBRS/UCR and to the product's own category. Unmapped offenses are kept and flagged.
 - **Severity scheme**: the safety ranking settings. `nscs_v2_percapita` (per 1,000 residents + jobs) is enabled; `nscs_v1` is disabled (`reference/severity/schemes.csv`).
-- **"Hourly" layer**: hour-of-day buckets (0–23), rebuilt **weekly**.
+- **"Hourly" layer**: hour-of-day buckets (0–23) and the weekday factor, rebuilt **daily**. The map is coloured by it.
 
-### Time windows
+### One rolling year
 
-Every city gets `last_3m`, `last_6m`, `last_9m`, then `last_1y`, `last_2y`, … `last_<N>y`. The list
-stops at the first window that reaches the city's oldest stored date (`gold.resolve_windows`):
+Each city keeps the last 365 days of incidents and nothing older (`RETENTION_DAYS`, `safety/etl/retention.py`):
 
-- **Anchor.** Windows end on the city's newest incident date, so a publication lag is not shown as a quiet period.
-- **Floor.** The oldest date is how far back the city's completed pulls reached (`etl.pull_run.window_start`), never
-  earlier than `source_registry.history_start_date`. Not the oldest incident: DC's pulls filter on report date, so
-  recently reported cold cases carry occurrence dates back to 2008, and those alone would otherwise offer "the last
-  19 years".
-- **Partial oldest window.** If the history starts inside the last window, that window is marked `partial` with its
-  real `data_start` ("Last 3 years (partial)", "Data from Jan 2008"). It is dropped if it would add less than a
-  quarter of a step's data, so a 24-month backfill does not produce a "last 3 years" holding two years and a week.
-- **What is built per window** is recorded in `gold.city_window` (written in the same transaction as the layers) and
-  returned by `/api/v1/cities`:
-  - counts and the safety ranking: every window (unless `SAFETY_MAX_WINDOW_YEARS` is set, the fallback for disk);
-  - the time-of-day layer: `last_1y` only;
-  - resolution 10: `last_1y` and `last_2y`, category `all` only.
+- **Cutoff.** The city's local today minus 365 days. A row whose `occurred_local_date` is before it -- 366 or more days
+  old -- is deleted. Silver year partitions wholly before the cutoff are dropped, and the rest of the cutoff's year is
+  trimmed with a `DELETE`. The withdrawn-upstream archive and bronze pull folders get the same cutoff. Gold is then
+  marked for a full rebuild (`etl.gold_pending`).
+- **When.** Every incremental (six-hourly), `safety.etl.run prune`, and the `retain` step `safety.ops` plans when a
+  city's oldest incident is past the cutoff (so the first deploy onto an older database purges it).
+- **Never fetched.** The backfill and incremental windows are clamped to the cutoff (`windows.retention_floor`), and
+  promotion drops staged records older than it: DC filters on report date, so its pulls carry cold cases with old
+  occurrence dates.
+- **The window.** Gold builds one window, `last_1y`: the year ending on the city's newest incident date, so a
+  publication lag is not shown as a quiet period. Its floor is never older than the cutoff (`gold.history_floor`); a
+  lagging source's year reaches past it and is marked `partial`. It is recorded in `gold.city_window` and returned
+  by `/api/v1/cities`.
+- **What is built.** Resolutions 8 and 9; activity counts for all categories together; the safety ranking on both
+  tracks; the time-of-day layer and the weekday factor. Nothing else is stored, and the API serves nothing else:
+  there are no other windows, date ranges, categories or cell sizes to ask for.
 - **Caveats.** `reference.source_series_caveat` lists periods recorded differently from today (Seattle before
-  May 2019, DC in 2008). A window that reaches into one carries its caveat text, shown under the window control.
-- **Custom date ranges** (migration 020). The map's controls are two calendar dates: by default from one year
-  before today to today, and anything from `city_snapshot.selectable_start` (the oldest stored day on or after the
-  floor) to today, a single day included. The windows above are presets that fill both dates in. The API takes
-  `from`/`to` in place of `window`:
-  - a range equal to a stored window (once `to` is clamped to the newest reported day) is served as that window,
-    from its stored rows, time-of-day layer included;
-  - any other range is ranked on request. `gold.cell_daily` holds sparse per-cell, per-day counts and
-    severity-weighted sums at r8/r9. The API sums it over the range and runs the same ranking SQL the ETL uses
-    for the stored windows (`safety/ranking_sql.py`), so the two cannot drift. Results go through the stamped cache,
-    keyed by the dates;
-  - not served for custom ranges: resolution 10 (no daily rollup there) and the time-of-day layer. The safety
-    ranking follows `SAFETY_MAX_WINDOW_YEARS`, and is ranked only while `city_snapshot.daily_scheme_version` is
-    the city's active scheme;
-  - a cell's top offenses for a custom range are read from silver for that one cell (indexed), because a daily
-    rollup of offense text would be several times the size of `cell_daily`;
-  - a city whose gold predates `cell_daily` has no `selectable_start`; it refuses custom ranges and the map
-    offers only its presets.
-- **Legacy names.** Until a later contract migration, gold also writes `last_90d`, `last_12m` and `last_24m` as copies of
-  `last_3m`, `last_1y` and `last_2y` (`GOLD_LEGACY_WINDOWS`), so the previous release still has a map after a
-  rollback. The API accepts the old names as aliases, and a city not rebuilt since migration 018 is served its four
-  legacy windows. The 30-day window was retired on 2026-10-08 (the owner wants 3 months as the shortest); a saved
-  `last_30d` link opens on `last_3m`.
+  May 2019, DC in 2008); the window carries any that it reaches into.
+- **Census.** One vintage only: 2020 blocks and the latest loaded LODES jobs year.
 
-**How gold builds many windows cheaply.** Each layer reads silver once into a temp aggregate keyed by *bucket*: one
-per month for the first year back from the anchor, then one per year. Every window start falls on a bucket edge
-(`tests/test_windows.py` checks this for every day of a leap year as the anchor), so a window is a sum over
-`bucket < limit`. The original per-window SQL is kept behind `gold.PREAGGREGATE = False`,
-and a CI database test checks that both give the same layers. `refresh_all` reports per-phase timings.
+**How gold builds the window.** Each layer reads silver once into a temp aggregate keyed by *bucket*, one per month
+back from the anchor, and sums `bucket < 12`. Every window start falls on a bucket edge (`tests/test_windows.py` checks
+this for every day of a leap year as the anchor). The original per-window SQL is kept behind
+`gold.PREAGGREGATE = False`, and a CI database test checks that both give the same layers. `refresh_all` reports
+per-phase timings.
 
-**History depth.** The backfill loads 24 months. Older years come from the history load
-([OPERATIONS.md](OPERATIONS.md#loading-a-citys-full-history)), back to:
-
-| City | `history_start_date` | Source |
-|---|---|---|
-| Chicago | 2001-01-01 | same dataset, same IUCR codes |
-| Philadelphia | 2006-01-01 | same dataset, same UCR codes |
-| Washington DC | 2008-01-01 | same yearly layers; 2008 does not separate theft from vehicles |
-| Seattle | 2008-01-01 | same dataset; before May 2019 SPD converted older records to NIBRS codes (crosswalk rows marked `approximate`) |
-| Austin | 2021-10-01 | the CrimeViewer services begin 2021-09-23; older Austin data has no coordinates |
-| Los Angeles | 2010-01-01 | three datasets, read newest first: NIBRS (`k7nn-b2ep`) back to January 2024, then LAPD's legacy "Crime Data" for 2020–2024 (`2nrs-mtv8`) and 2010–2019 (`63jg-8b9z`). Both systems are read for 2024, when LAPD moved over gradually. The legacy rows are one per report under LAPD's own crime codes, stored as `CRM-<code>` because the numbers collide with NIBRS codes, and mapped by hand (migration 019) |
-
-A city's older datasets are listed in `safety/etl/adapters/__init__.py` (`HISTORY_DATASETS`, `DATASET_ADAPTERS`). The
-history load gives each dataset its own reader and tracks how far back each has got from its own pulls.
+**First load and its progress bar.** `safety.ops` loads a new city as backfill (silver only), census, then one gold
+build with the time-of-day layers. Each phase writes `etl.load_progress` over its own autocommit connection: the
+fetch counts chunks against `adapter.expected_chunks` (months for Socrata and Carto, pages from a count query for
+Esri). `GET /api/v1/progress` reads it from every database, weights the phases (fetch 60%, promote 10%, census 10%,
+gold 20%), and estimates the time left from the elapsed time; the map shows it as a bar and adds each city as it
+becomes ready.
 
 ### Migrations
 
@@ -348,22 +321,20 @@ Other services on the host are out of scope. The firewall rules were not reviewe
 
 ### API endpoints
 
-All routes are `GET` with no authentication. nginx limits `/api/v1/cells` to 2 r/s per IP (burst 10) and every other
+All routes are `GET` with no authentication. The map can only ask for the last year: there is no window, date-range,
+category or resolution-10 parameter, and an undeclared query parameter is ignored. nginx limits `/api/v1/cells` to 2 r/s per IP (burst 10) and every other
 `/api/v1/*` route to 10 r/s per IP (burst 20). The app applies the same limits again.
 
 | Path | Main parameters (default) | Purpose |
 |---|---|---|
 | `/api/v1/health` | — | `status`, deployed `commit`, `pipeline_version`, data timestamps, `incidents`, cache stats |
 | `/api/v1/version` | `city` | Refresh stamp that browsers poll |
-| `/api/v1/cities` | — | Cities that have a snapshot, each with its `windows` list, `default_window`, `selectable_start`, `coverage_end`, `custom_range_resolutions` and `series_caveats` |
-| `/api/v1/cities/{source_id}` | — | One city's metadata and windows; 404 if unknown |
-| `/api/v1/categories` | `city`=phl | Categories, tiers, windows and resolutions |
+| `/api/v1/progress` | — | How far the cities' first load has got and the estimated time left, across every database. Never cached |
+| `/api/v1/cities` | — | Cities that have a snapshot, each with its one window (`last_1y`), `coverage_end` and `series_caveats` |
+| `/api/v1/cities/{source_id}` | — | One city's metadata; 404 if unknown |
 | `/api/v1/quality` | `city`=phl | Validation issues, recent pulls, provenance mix |
-| `/api/v1/cells` | `city`=phl, `res`=8, `window`=last_1y or `from`+`to` (YYYY-MM-DD), `category`=all, `min_count`=0, `hour`, `measure`, `bbox` | Whole-city GeoJSON layer. A window the city does not have is a 400; legacy names are aliases. See [custom date ranges](#time-windows) |
-| `/api/v1/cells/ring` | `h3` (required), `k`=1 (0–6), `window` or `from`+`to` | A cell and its neighbours |
-| `/api/v1/cells/lookup` | `lat`, `lng` (required), `res`=8, `window` or `from`+`to` | Point → cell detail |
-| `/api/v1/cells/{h3_index}` | `window` or `from`+`to`, `hour` | One cell's detail |
-| `/api/v1/summary` | `city`=phl, `window` or `from`+`to`, `res` | City totals |
+| `/api/v1/cells` | `city`=phl, `res`=8 (8 or 9), `hour`, `day` | Whole-city GeoJSON layer over the last year; `hour` and `day` add the time-of-day ratings |
+| `/api/v1/cells/{h3_index}` | `hour` | One cell: ratings, hour profile and weekday profile |
 | `/api/v1/methodology` | `city`=phl | Methodology text |
 | `/docs`, `/redoc`, `/openapi.json` | — | Served when `ENABLE_DOCS=true` (the default). Public on prod today |
 | `/` | — | Static `web/` |

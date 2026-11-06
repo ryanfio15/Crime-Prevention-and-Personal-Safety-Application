@@ -15,8 +15,11 @@ data:
   POSTGRES_HOST: safety-db-rw
   POSTGRES_PORT: "5432"
 
-  # First load and every later backfill: 12 months (docs/KUBERNETES.md,
-  # "First deploy"). The full-history load stays off (history_enabled false).
+  # One rolling year per city (safety/etl/retention.py): incidents 366 or more
+  # days old are deleted, in the database and the bronze volume, and never
+  # fetched. The backfill asks for 12 months and is clamped to the same cutoff
+  # (docs/KUBERNETES.md, "First deploy").
+  RETENTION_DAYS: "365"
   BACKFILL_MONTHS: "12"
   BOOTSTRAP_CITIES: "phl,chi,sea,lax,dc,aus"
   BRONZE_ROOT: /data/bronze
@@ -24,7 +27,6 @@ data:
   # --- serving ---
   ENABLE_DOCS: "true"
   ENABLE_RATE_LIMIT: "true"
-  EXTRA_FRONTENDS: "false"
   CACHE_MAX_ENTRIES: "192"
   CACHE_MAX_BYTES: "268435456"
   # Trust a city's refresh stamp for 5 s, so a cache hit costs no database
@@ -62,6 +64,5 @@ data:
   # --- ETL ---
   WITHDRAWN_RECONCILE: report
   OPS_RETRY_COOLDOWN_HOURS: "6"
-  OPS_HISTORY_MINUTES: "25"
   # How long an ETL pod waits for another to finish (safety/joblock.py).
   JOBLOCK_WAIT_SECONDS: "21600"

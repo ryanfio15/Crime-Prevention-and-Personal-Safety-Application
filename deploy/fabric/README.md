@@ -157,9 +157,10 @@ What happens (about 30–60 minutes until the site serves; the data load continu
    2. migrations run;
    3. the API and routing pods roll out (each routing pod downloads about 1.2 GB);
    4. the **bootstrap** Job starts.
-5. The bootstrap enables all six cities and loads **12 months** of incidents plus census data. This
-   takes one to a few hours, mostly spent waiting on the city portals. Each city appears on the map
-   as soon as its own load finishes.
+5. The bootstrap enables all six cities and loads **the last year** of incidents plus census data
+   (nothing older is ever kept). This takes one to a few hours, mostly spent waiting on the city
+   portals. Each city appears on the map as soon as its own load finishes, and meanwhile the site
+   shows a progress bar with the estimated time left.
 
 The script ends by printing the tunnel command.
 

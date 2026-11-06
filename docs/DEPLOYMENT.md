@@ -187,6 +187,21 @@ Migration 018 replaced the four fixed windows with per-city ones (`last_3m`, `la
   the legacy rows and tightens the window CHECKs, and `GOLD_LEGACY_WINDOWS` goes. The API keeps accepting the old
   names as aliases one release longer, for bookmarked links.
 
+### One rolling year (migration 024)
+
+Migration 024 is that contract step, and more: the site now serves one window, `last_1y`, and nothing older is kept.
+
+- **The migration** deletes every gold row for any other window, the per-category and resolution-10 activity rows,
+  and drops `gold.cell_daily`, `gold.cell_monthly` and `gold.cell_offense_mix`. It switches `history_enabled` off and
+  creates `etl.load_progress` for the site's progress bar. A release older than this one reads the dropped tables,
+  so do not roll back past it without restoring a dump.
+- **After the deploy.** `PIPELINE_VERSION` moved to `phase3.0.0`, so the post-deploy `safety-ops@` run rebuilds gold
+  for every city, then plans `retain` for each city with incidents older than 365 days: it drops their old silver
+  year partitions and bronze pull folders. On a city with years of history that is the moment the disk comes back.
+- **Settings gone:** `GOLD_LEGACY_WINDOWS`, `SAFETY_MAX_WINDOW_YEARS`, `OPS_HISTORY_MINUTES`, `EXTRA_FRONTENDS`
+  (`/dev/` is gone with `web-dev/`). **New:** `RETENTION_DAYS` (365). Remove the old ones from each instance's `.env`;
+  unknown keys are ignored, so leaving them is harmless.
+
 ---
 
 ## From-zero setup

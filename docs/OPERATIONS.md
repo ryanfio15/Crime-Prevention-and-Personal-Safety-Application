@@ -17,13 +17,13 @@ All schedules are systemd timers. The host clock is UTC. The ETL timers have no 
 | Timer | Schedule | Runs |
 |---|---|---|
 | `safety-autodeploy@{prod,dev}` | 2 min after boot, then every ~60–70 s | `/usr/local/sbin/safety-autodeploy <i>` as root |
-| `safety-etl@prod` | `00/6:00` + up to 15 min random delay | `safety.etl.run incremental --all --due-only --skip-hourly` |
+| `safety-etl@prod` | `00/6:00` + up to 15 min random delay | `safety.etl.run incremental --all --due-only --skip-hourly` (also deletes anything past the one-year cutoff) |
 | `safety-etl@dev` | `03/6:00` (drop-in `safety-etl@dev.timer.d/offset.conf`) | same |
-| `safety-etl-hourly@prod` / `@dev` | Sun 04:00 / Sun 06:00 | `safety.etl.run hourly --all` (time-of-day layers) |
+| `safety-etl-hourly@prod` / `@dev` | daily 04:00 / 06:00 | `safety.etl.run hourly --all` (time-of-day layers, which the map is coloured by) |
 | `safety-backup` | daily 02:15 UTC + up to 15 min | `backup.sh dump` (both databases) |
 | `safety-backup-verify` | 1st of the month, 03:15 UTC | `backup.sh verify` (test restore of prod). **Has not run yet**; first run 2026-11-01 |
 | `certbot.timer` (distro) | twice daily | `certbot -q renew` |
-| `safety-ops@<i>` | started after every successful deploy; also hourly at :20 UTC once `safety-ops@<i>.timer` is enabled by hand | `safety.ops` (loads history in runs of up to 25 min) |
+| `safety-ops@<i>` | started after every successful deploy; also hourly at :20 UTC once `safety-ops@<i>.timer` is enabled by hand | `safety.ops` (first loads, gold after a release, and the `retain` prune) |
 | `safety-valhalla-fetch` | Sun 06:30 UTC + up to 30 min, once enabled by hand | `valhalla/fetch.sh` as root: installs the newest routing tiles if they are new ([Valhalla routing tiles](#valhalla-routing-tiles)) |
 | GitHub Actions `valhalla-tiles` | 1st Sunday of the month, 03:30 UTC (not on the host) | `deploy/valhalla/build.sh`, published as release `valhalla-tiles-YYYYMMDD` |
 
@@ -320,54 +320,29 @@ Remove `hold` (`sudo rm /srv/valhalla/hold`) once a fixed release is published.
 - *Valhalla error codes* the API maps (every one is HTTP 400 from Valhalla): 171 no road near a point (outside the
   tiles), 154 over the distance limit, 442 no path between the points, 120/125/130 bad request.
 
-### Loading a city's full history
+### One year of data, and nothing older
 
-The backfill keeps 24 months. The history load walks a city back to `reference.source_registry.history_start_date`
-(Chicago 2001, Philadelphia 2006, DC and Seattle 2008, Los Angeles 2010), one pull per slice of 6 months
-(Chicago 3), newest first. Los Angeles reads three datasets one after another (NIBRS, then LAPD's legacy 2020–2024
-and 2010–2019 datasets); `log` shows which dataset each pull read.
-Each loaded year adds a window to that city's list on the next gold refresh. It is off until switched on per city and
-per instance, and **dev goes first**: prod and dev share one disk, and the full history makes each database several
-times larger (step 1 gives the estimate).
+Each city keeps the last 365 days (`RETENTION_DAYS`); see [ARCHITECTURE.md → One rolling year](ARCHITECTURE.md#one-rolling-year).
+Incidents 366 or more days old, and bronze pull folders dated before the cutoff, are deleted by every incremental, by
+the `retain` step `safety.ops` plans, or by hand:
 
-1. **Measure before loading** (read-only; dev shown):
-   ```bash
-   sudo -u safety-dev env -C /srv/safety/Crime-Prevention-and-Personal-Safety-Application/dev/current \
-       PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/storage.py history-gate
-   ```
-   It projects silver, bronze and gold growth per city from today's bytes per row, times 2 instances, against free
-   space on `/`, and fails if less than 20 GB would be left.
-2. **Load one slice of one city on dev, and measure again** (`runlocked` as defined above, with `-u safety-dev` and
-   `…/dev/current`):
-   ```bash
-   run safety.etl.run enable --city phl --history
-   runlocked safety.etl.run history --city phl --max-slices 1
-   ```
-   Re-run `history-gate`: the bytes per row are now the real ones for older data.
-3. **Let ops finish it.** The timer is a new unit file, so install it once from an up-to-date checkout, then enable it
-   per instance: `sudo deploy/install-deployer.sh --units`, then `sudo systemctl enable --now safety-ops@dev.timer`.
-   Each hourly run loads slices for up to
-   `OPS_HISTORY_MINUTES` (25) and stops, so the six-hourly pull and deploys never wait long. Watch it with
-   `run safety.etl.run log --city phl --since 1d` or `journalctl -u safety-ops@dev -f`. When a city's history is
-   complete, its last run rebuilds gold; until then the six-hourly pull's own refresh picks up each new year.
-4. **Check the cost of a refresh.** Every gold refresh logs `gold refresh for <city> took {...}` with per-phase
-   seconds (also in the `timings_seconds` field of `gold`'s JSON output). If one city's refresh holds the ETL lock
-   for more than about 15 minutes, use the fallback below.
-5. **Then the next city**, smallest first: phl, sea, dc, chi. Run `history-gate` between cities.
-6. **Prod**, the same way, one city at a time, after dev has run the full set for a few days.
+```bash
+runlocked safety.etl.run prune --city phl     # or --all; rebuilds gold when it deleted anything
+```
 
-**Fallback if it does not fit.** Set `SAFETY_MAX_WINDOW_YEARS=2` in `I/.env` (as the instance user). Windows longer
-than two years then keep their incident counts but are built without the safety ranking, and the map says so. The next
-gold refresh applies it (`runlocked safety.etl.run gold --city <id> --skip-hourly` for one city now). To give the space
-back as well, run `scripts/storage.py compact` in a quiet window.
+It drops whole silver year partitions, so the disk space comes back at once; the trimmed rows in the cutoff's year
+are reused by autovacuum (`scripts/storage.py compact` hands them back to the OS in a quiet window). There is no
+history load any more: the `history` command, `enable --history` and `OPS_HISTORY_MINUTES` are gone, and migration
+024 switched `history_enabled` off everywhere. `census --replay` needs the census bronze pull, so after a year it
+re-downloads instead.
 
-**Turning it off.** `run safety.etl.run enable --city <id> --history --off` stops further loading. Rows already
-loaded stay. Removing them means deleting that city's older `silver.incident_<id>_<year>` partitions by hand and
-rebuilding gold.
+**Watching a first load.** On the site, a progress bar along the bottom of the map shows how far the load has got
+and roughly how long is left, and each city appears as it finishes. From a shell: `GET /api/v1/progress`, or
+`SELECT * FROM etl.load_progress`.
 
-**Seattle** before May 2019, **DC** in 2008 and **Los Angeles** before 2025 were recorded differently from today.
-Their windows carry that caveat (`reference.source_series_caveat`). Seattle's older rows are mapped through crosswalk
-rows marked `approximate`; Los Angeles' through hand-mapped `CRM-<code>` rows for LAPD's own crime codes.
+**Seattle** before May 2019, **DC** in 2008 and **Los Angeles** before 2025 were recorded differently from today; a
+window reaching into one carries the caveat (`reference.source_series_caveat`). Within one rolling year none of them
+apply any more.
 
 ### First steps when the site is down
 
