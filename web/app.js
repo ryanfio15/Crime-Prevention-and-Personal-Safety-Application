@@ -726,7 +726,26 @@ async function loadCities() {
   const { cities } = await response.json();
   state.cities = cities;
   renderCityMarkers();
+  renderCitySelect();
   return cities;
+}
+
+/** The city picker's options, by name. Shows the city the map is on, else
+    DEFAULT_CITY until the map has opened. One city is not a choice, so it
+    stays hidden until a second is served. */
+function renderCitySelect() {
+  const select = $("f-city");
+  const sorted = [...state.cities].sort((a, b) => a.city_name.localeCompare(b.city_name));
+  select.replaceChildren(
+    ...sorted.map((city) => {
+      const option = document.createElement("option");
+      option.value = city.source_id;
+      option.textContent = city.city_name;
+      return option;
+    })
+  );
+  select.value = cityById(state.city)?.source_id ?? cityById(DEFAULT_CITY)?.source_id ?? sorted[0]?.source_id ?? "";
+  $("f-city-field").hidden = state.cities.length < 2;
 }
 
 /** Frame one city from its own stored bounding box. */
@@ -757,6 +776,7 @@ function updateFocus() {
   if (!city || city.source_id === state.city) return;
   state.city = city.source_id;
   state.cityRecord = city;
+  $("f-city").value = city.source_id;
   document.title = `${city.city_name} — reported-incident risk`;
   $("map").setAttribute(
     "aria-label",
@@ -2592,6 +2612,9 @@ function setTiles(on) {
    There is nothing else to choose -- every city, the last year, coloured for
    the hour and day it is now in each city. */
 function wireControls() {
+  // Only moves the map; updateFocus keeps the picker on the city it lands in.
+  $("f-city").onchange = (event) => switchCity(event.target.value);
+
   $("f-tiles").querySelectorAll("[data-tiles]").forEach((button) => {
     button.onclick = () => setTiles(button.dataset.tiles === "on");
   });

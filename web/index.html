@@ -31,6 +31,14 @@
          day it is now in each city. -->
     <div class="map-controls">
       <div class="map-controls-row">
+        <!-- Moves the map to a city (switchCity); every city stays drawn. It
+             follows the map, so panning to another city updates it
+             (updateFocus). Hidden until two or more cities are served. -->
+        <label class="field map-control" id="f-city-field" hidden>
+          <span class="field-label">City</span>
+          <select id="f-city"></select>
+        </label>
+
         <!-- Address search in the city on screen. A match drops a pin and opens
              its cell's popup; Directions then routes to it. Shown once
              /directions/status answers (hidden while the server has directions
