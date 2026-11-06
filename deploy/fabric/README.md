@@ -214,11 +214,22 @@ In a second shell, `kubectl -n safety get hpa -w` shows the API scaling out.
 
 ## New code
 
-Push to `horizontal-scaling`, wait for the `image` workflow to finish, then:
+Push to `horizontal-scaling`, wait for the `image` workflow to finish (a minute or two), then:
 
 ```bash
-python create_slice.py deploy --image ghcr.io/ryanfio15/crime-prevention-and-personal-safety-application:<full commit sha>
+git pull
+python create_slice.py deploy
 ```
+
+`deploy` pins the image to the commit it just checked out
+(`ghcr.io/ryanfio15/crime-prevention-and-personal-safety-application:<sha>`). Deploying the
+moving branch tag again wouldn't work: a node that already pulled it keeps its old copy. If the
+workflow hasn't published the commit yet, `deploy` says so and falls back to the branch tag; rerun
+it once the workflow is done.
+
+`--rerun-bootstrap` also replaces the first-load Job, whether it completed or is still running,
+with a fresh one on the new image. A Job keeps the image and settings it was created with, so this
+is how a fix reaches cities that failed to load. Cities that already loaded are skipped.
 
 ## Keeping and removing the slice
 

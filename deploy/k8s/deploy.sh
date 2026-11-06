@@ -13,7 +13,7 @@
 #   EGRESS_PROXY=<url>   pods reach the internet through this forward proxy
 #                        (FABRIC sites without IPv4; see step 2)
 #   SKIP_BOOTSTRAP=1     do not create the first-load Job
-#   RERUN_BOOTSTRAP=1    delete a completed bootstrap Job and run it again
+#   RERUN_BOOTSTRAP=1    delete the bootstrap Job (completed or running) and run it again
 #   FOLLOW_BOOTSTRAP=1   stream the bootstrap's log until it finishes
 #   ROUTING_WAIT_SECONDS how long to wait for routing before going on (1800)
 #
@@ -112,7 +112,11 @@ fi
 # create_slice.py runs a proxy on the control-plane node and sets this. Kept
 # in the `safety-egress` ConfigMap, which every app container loads when it
 # exists; leaving EGRESS_PROXY unset on a later deploy leaves it in place.
-# (Running pods pick a change up on their next restart.)
+# (Running pods pick a change up on their next restart.) Two more settings
+# ride along, because that path is the flaky one: OPENSSL_CONF drops the
+# post-quantum key share whose oversized TLS greeting the NAT64 path to the
+# Socrata and Esri portals drops (openssl-classic-groups.cnf says how that was
+# measured), and the adapters retry six times rather than four.
 if [ -n "${EGRESS_PROXY:-}" ]; then
     kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
     log "outbound traffic goes through $EGRESS_PROXY (configmap safety-egress)"
@@ -125,6 +129,8 @@ if [ -n "${EGRESS_PROXY:-}" ]; then
         --from-literal=NO_PROXY="$no_proxy" \
         --from-literal=no_proxy="$no_proxy" \
         --from-literal=ROUTING_HTTPS_PROXY="$EGRESS_PROXY" \
+        --from-literal=OPENSSL_CONF=/app/deploy/k8s/openssl-classic-groups.cnf \
+        --from-literal=HTTP_MAX_RETRIES=6 \
         --dry-run=client -o yaml | kubectl apply -f -
 fi
 
@@ -155,7 +161,10 @@ if [ "${SKIP_BOOTSTRAP:-0}" != 1 ]; then
         if (.status.succeeded // 0) > 0 then "done"
         elif any(.status.conditions[]?; .type == "Failed" and .status == "True") then "failed"
         else "running" end' || true)
-    if [ "$state" = "done" ] && [ "${RERUN_BOOTSTRAP:-0}" = 1 ]; then
+    # RERUN_BOOTSTRAP=1 replaces a completed or a still-running bootstrap:
+    # a Job's pods keep the image and settings it was created with, so this
+    # is how a fix reaches a load that is failing.
+    if [ "$state" != "" ] && [ "${RERUN_BOOTSTRAP:-0}" = 1 ]; then
         state=failed
     fi
     case $state in

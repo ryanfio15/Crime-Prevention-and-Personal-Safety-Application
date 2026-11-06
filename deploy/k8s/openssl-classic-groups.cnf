@@ -1,0 +1,23 @@
+# OpenSSL configuration for pods behind FABRIC's NAT64 (OPENSSL_CONF, set in
+# the `safety-egress` ConfigMap by deploy.sh; docs/KUBERNETES.md, "Outbound
+# access on IPv6-only sites").
+#
+# The image's OpenSSL (3.5) offers a post-quantum hybrid key share,
+# X25519MLKEM768, by default. That makes the TLS ClientHello ~1.5 KB, more
+# than one packet, and on the NAT64 path to the Socrata and Esri portals those
+# handshakes time out or are reset -- measured on a FABRIC slice: 0 of 10
+# with the default groups, 10 of 10 with these. Classic groups only, so the
+# ClientHello fits one packet again. Everything else matches the Debian
+# default (TLS 1.2 minimum, security level 2).
+openssl_conf = openssl_init
+
+[openssl_init]
+ssl_conf = ssl_sect
+
+[ssl_sect]
+system_default = system_default_sect
+
+[system_default_sect]
+Groups = X25519:secp256r1:secp384r1
+MinProtocol = TLSv1.2
+CipherString = DEFAULT:@SECLEVEL=2

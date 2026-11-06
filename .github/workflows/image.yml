@@ -140,9 +140,14 @@ jobs:
           from safety.config import WEB_DIR, MIGRATIONS_DIR, CROSSWALK_DIR, REPO_ROOT
           assert WEB_DIR.exists() and MIGRATIONS_DIR.exists() and CROSSWALK_DIR.exists()
           assert (REPO_ROOT / 'scripts' / 'fetch_valhalla_tiles.py').exists()
+          assert (REPO_ROOT / 'deploy' / 'k8s' / 'openssl-classic-groups.cnf').exists()
           import safety.api.main, safety.bootstrap, safety.joblock, safety.schemawait
           print('paths ok')"
           test "$(docker run --rm safety:check cat /app/DEPLOYED_COMMIT)" = "${{ github.sha }}"
+          # The NAT64 sites' OpenSSL config (deploy.sh, OPENSSL_CONF) must
+          # load in this image's OpenSSL and still complete a handshake.
+          docker run --rm -e OPENSSL_CONF=/app/deploy/k8s/openssl-classic-groups.cnf safety:check \
+            python -c "import ssl, httpx; print(ssl.OPENSSL_VERSION, httpx.get('https://github.com', timeout=30).status_code)"
           test "$(docker run --rm safety:check id -u safety)" = 10001
       - name: Push
         if: github.event_name != 'pull_request'

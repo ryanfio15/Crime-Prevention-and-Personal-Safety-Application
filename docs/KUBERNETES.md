@@ -227,6 +227,14 @@ it. So `create_slice.py`:
    - `ROUTING_HTTPS_PROXY` for the routing client, which ignores proxy variables by design and
      sends only its `https://` providers through the proxy, never Valhalla.
 
+Two more settings ride in the same ConfigMap, because that path is the flaky one:
+- **`OPENSSL_CONF`** points at `deploy/k8s/openssl-classic-groups.cnf`. The image's OpenSSL 3.5
+  offers a post-quantum key share by default, which makes the TLS greeting larger than one packet.
+  Through FABRIC's NAT64, those handshakes to the Socrata and Esri portals time out or are reset:
+  measured from a pod, 0 of 10 succeeded with the defaults and 10 of 10 with classic groups only.
+  Python's own HTTP client shows the failure; `curl` on the VM, on OpenSSL 3.0, never does.
+- **`HTTP_MAX_RETRIES=6`**, up from 4.
+
 On any other cluster the ConfigMap doesn't exist and nothing changes. The proxy is also how to run
 the deployment behind a corporate egress proxy: set `EGRESS_PROXY` when running `deploy.sh`.
 

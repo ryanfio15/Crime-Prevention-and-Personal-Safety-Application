@@ -7,7 +7,8 @@ keys already. See deploy/fabric/README.md for the walkthrough.
     python create_slice.py up --site MAX            # create + install + deploy
     python create_slice.py status                   # nodes, pods, bootstrap progress
     python create_slice.py tunnel                   # print the SSH tunnel command
-    python create_slice.py deploy --image <ref>     # roll out another image
+    python create_slice.py deploy                   # roll out the branch's latest commit
+    python create_slice.py deploy --rerun-bootstrap # ... and restart the first load on it
     python create_slice.py renew --days 14          # extend the slice's lease
     python create_slice.py delete                   # tear it all down
 
@@ -466,10 +467,46 @@ def checkout(server, branch: str) -> None:
     )
 
 
+def resolve_image(server, image: str) -> str:
+    """The default image pinned to the commit just checked out, once CI has published it.
+
+    The branch tag moves, but a node that pulled it once keeps that copy
+    (imagePullPolicy IfNotPresent), so deploying `:horizontal-scaling` again
+    would quietly run the old code. The image workflow also tags every build
+    with its commit sha; that tag never moves, and deploy.sh's smoke test then
+    checks the running commit too. Until the workflow has published it (a
+    minute or two after a push) this falls back to the branch tag and says so.
+    """
+    if image != DEFAULT_IMAGE:
+        return image
+    sha = run(server, f"git -C {REMOTE_REPO} rev-parse HEAD").strip()
+    name = DEFAULT_IMAGE.rsplit(":", 1)[0]
+    repo = name.removeprefix("ghcr.io/")
+    accept = ("application/vnd.oci.image.index.v1+json,"
+              "application/vnd.docker.distribution.manifest.list.v2+json,"
+              "application/vnd.oci.image.manifest.v1+json,"
+              "application/vnd.docker.distribution.manifest.v2+json")
+    found = run(
+        server,
+        f"tok=$(curl -fsS --max-time 20 'https://ghcr.io/token?scope=repository:{repo}:pull' "
+        "| jq -r .token) && "
+        f"curl -fsS --max-time 20 -o /dev/null -H \"Authorization: Bearer $tok\" "
+        f"-H 'Accept: {accept}' https://ghcr.io/v2/{repo}/manifests/{sha} && echo published || true",
+        check=False,
+    )
+    if "published" in found:
+        return f"{name}:{sha}"
+    log(f"warning: no image for commit {sha[:12]} yet (the image workflow publishes it a "
+        "minute or two after a push); deploying the branch tag, which nodes that already "
+        "have it will not re-pull. Rerun `deploy` once the workflow has finished.")
+    return image
+
+
 def deploy(slice_, args) -> None:
     profile = PROFILES[args.profile]
     server = slice_.get_node(next(iter(profile)))
     checkout(server, args.branch)
+    args.image = resolve_image(server, args.image)
     proxy = egress_proxy_of(server, node_ip(0))
     log(f"deploying {args.image} with overlay {OVERLAY[args.profile]} (this takes a while: "
         "the database initialises and each routing pod downloads ~1.2 GB of tiles)")
@@ -478,6 +515,7 @@ def deploy(slice_, args) -> None:
         server,
         f"cd {REMOTE_REPO} && KUBECONFIG={KUBECONFIG} "
         + (f"EGRESS_PROXY={shlex.quote(proxy)} " if proxy else "")
+        + ("RERUN_BOOTSTRAP=1 " if args.rerun_bootstrap else "")
         + f"deploy/k8s/deploy.sh {OVERLAY[args.profile]} {shlex.quote(args.image)}",
         quiet=False,
     )
@@ -540,6 +578,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument("--branch", default=DEFAULT_BRANCH)
     parser.add_argument("--days", type=int, default=14, help="lease extension for `renew`")
+    parser.add_argument(
+        "--rerun-bootstrap", action="store_true",
+        help="with `deploy`: replace the first-load Job (completed or still running) with a "
+             "fresh one on this image, e.g. to retry cities that failed",
+    )
     args = parser.parse_args(argv)
 
     fablib = fablib_manager()
