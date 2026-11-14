@@ -215,11 +215,12 @@ Verified on 2026-11-14:
   - `down.sh` refuses without the exact project name.
   - Missing or conflicting tokens and API errors stop the script with a clear message.
 - **CLI flags:** every flag used matches Railway CLI 5.74.0.
+- **The live GraphQL schema** (`railway api schema`): every query, mutation, argument, input field and enum value
+  `up.sh` sends exists with a matching type, including the volume and domain listings.
 
 Not yet verified against a live Railway project:
-- the exact JSON `railway init --json` prints (the script falls back to `railway status --json`);
-- the GraphQL queries that list volumes and domains, which Railway documents no examples for (the script falls back
-  if they fail);
+- the exact JSON `railway init --json` prints (the script tries `.id`, `.projectId` and `.project.id`, then falls back
+  to `railway status --json`);
 - whether a custom start command keeps the image's entrypoint (the start commands call it explicitly, so it works
   either way);
 - `railway ssh` running a one-off command as written above.
