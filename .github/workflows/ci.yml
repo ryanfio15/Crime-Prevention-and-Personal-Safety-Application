@@ -61,7 +61,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Byte-compile
-        run: python -m compileall -q safety
+        run: python -m compileall -q safety deploy/railway
       # Importing the entry points catches a missing dependency or a broken
       # module-level statement that compileall cannot see.
       - name: Import entry points
@@ -83,9 +83,9 @@ jobs:
       # One file per bash -n: given several, it parses the first and treats the
       # rest as that script's arguments.
       - name: Deploy scripts parse
-        run: for f in deploy/*.sh deploy/lib/*.sh deploy/valhalla/*.sh deploy/k8s/*.sh deploy/k8s/loadtest/*.sh deploy/git-hooks/*; do bash -n "$f"; done
+        run: for f in deploy/*.sh deploy/lib/*.sh deploy/valhalla/*.sh deploy/k8s/*.sh deploy/k8s/loadtest/*.sh deploy/railway/*.sh deploy/git-hooks/*; do bash -n "$f"; done
       - name: Shellcheck deploy scripts
-        run: shellcheck deploy/*.sh deploy/lib/*.sh deploy/valhalla/*.sh deploy/k8s/*.sh deploy/k8s/loadtest/*.sh deploy/git-hooks/*
+        run: shellcheck deploy/*.sh deploy/lib/*.sh deploy/valhalla/*.sh deploy/k8s/*.sh deploy/k8s/loadtest/*.sh deploy/railway/*.sh deploy/git-hooks/*
       # As the superuser, and with main's own code: on the host every object
       # main's migrations created was created by `safety`, and the role switch
       # has to *transfer* them, so CI starts from exactly that shape. This

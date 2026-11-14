@@ -12,6 +12,7 @@ incident-level open data for six US cities: Philadelphia, Chicago, Seattle, Los 
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Routine deploys, promotion, rollback, migrations, from-zero server setup, branch protection, deploy internals, database roles, OS users, container image. Replaces the old `docs/DEPLOY.md` |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Schedules, logs, health checks, alerts, backups and restore, limits, runbook |
 | [docs/KUBERNETES.md](docs/KUBERNETES.md) | The horizontally scaled Kubernetes deployment (FABRIC, AWS, Azure): layout, sizing, first deploy and 12-month bootstrap, runbook. FABRIC walkthrough: [deploy/fabric/README.md](deploy/fabric/README.md) |
+| [docs/RAILWAY.md](docs/RAILWAY.md) | The Railway deployment: the whole site with one API from one command (`deploy/railway/up.sh`), kept current by an hourly cron, taken down with `deploy/railway/down.sh` |
 | [docs/DESIGN.md](docs/DESIGN.md) | The original system design document (target architecture, roadmap, contributors) |
 | [docs/PHASE1.md](docs/PHASE1.md), [docs/PHASE2.md](docs/PHASE2.md) | What each build phase delivered, per-city data notes |
 
@@ -295,7 +296,10 @@ There is no Python or JS linter or formatter configured. Only shell is linted, w
 
 ## 8. Deployment
 
-Full guide: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. In short:
+**Railway** (one command, public URL, no server to run): `export RAILWAY_API_TOKEN=…; deploy/railway/up.sh`. See
+[docs/RAILWAY.md](docs/RAILWAY.md).
+
+**Home server.** Full guide: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. In short:
 
 1. Commit and push `testing`.
 2. CI (`ci`) passes.
