@@ -296,7 +296,7 @@ There is no Python or JS linter or formatter configured. Only shell is linted, w
 
 ## 8. Deployment
 
-**Railway** (one command, public URL, no server to run): `export RAILWAY_API_TOKEN=…; deploy/railway/up.sh`. See
+**Railway** (one command, public URL, no server to run): `railway login`, then `deploy/railway/up.sh`. See
 [docs/RAILWAY.md](docs/RAILWAY.md).
 
 **Home server.** Full guide: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. In short:

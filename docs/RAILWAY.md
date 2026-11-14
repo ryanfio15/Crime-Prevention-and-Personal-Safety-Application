@@ -40,12 +40,13 @@ data").
 1. **A Railway account with a payment method.** The database is several GB and the first data load needs a few GB of
    memory for a while, so plan on the Pro plan if Hobby's limits get in the way. Railway bills by use. The always-on
    costs are the database and the API; the `etl` job costs money only while it runs.
-2. **An account token.** Create one at [railway.com/account/tokens](https://railway.com/account/tokens) and keep it
-   private: it can create and delete projects.
-3. **The tools**, on the machine you deploy from:
+2. **The tools**, on the machine you deploy from:
    - the Railway CLI: `npm i -g @railway/cli` (tested with 5.74.0);
    - `curl`, `jq` and `openssl` (already on most Linux and macOS machines);
    - this repository, checked out on the branch you want to deploy.
+3. **Log the CLI in, once per machine:** `railway login`. It opens the browser to approve; on a machine without one,
+   `railway login --browserless` prints a link and a code instead. No token to create or paste: the script does
+   everything through the logged-in CLI.
 4. **Optional:** a Socrata app token ([signup](https://evergreen.data.socrata.com/signup)). Four of the six cities use
    Socrata, which throttles anonymous callers; the first one-year load across them is faster with a token.
 
@@ -54,10 +55,13 @@ data").
 From the repository root:
 
 ```bash
-export RAILWAY_API_TOKEN=<your account token>
 export SOCRATA_APP_TOKEN=<optional>
 deploy/railway/up.sh
 ```
+
+In CI, or anywhere a browser login is not possible, export `RAILWAY_API_TOKEN` (an account token from
+[railway.com/account/tokens](https://railway.com/account/tokens)) instead of logging in; the CLI uses it. Keep it
+private: it can create and delete projects.
 
 That is the whole deployment. The script:
 
@@ -147,9 +151,10 @@ with the data reloaded from the portals in a few hours. Accounts with two-factor
 **Why a script and not a Railway config file.**
 - Railway's config-as-code files (`railway.toml`/`railway.json`) are deprecated and stop working on 2026-12-01.
 - Their successor (`.railway/railway.ts`) has no cron schedule, start command, Dockerfile path or restart policy.
-- Railway's public GraphQL API can set all of those. So `up.sh` uses the CLI for what it has commands for (create the
-  project, upload code, cron runs) and the API for the rest, including reading what already exists, which is what
-  makes reruns safe.
+- Railway's public GraphQL API can set all of those. So `up.sh` uses the CLI's own commands where they exist (create
+  the project, upload code, cron runs) and the API for the rest, including reading what already exists, which is
+  what makes reruns safe.
+- Every API call goes through `railway api`, the CLI's GraphQL command, so the CLI's login is the only credential.
 
 **One `etl` service instead of four jobs.** Kubernetes runs three CronJobs and a bootstrap Job. On Railway that
 doesn't work:
@@ -213,10 +218,12 @@ Verified on 2026-11-14:
 - **Against a stand-in Railway CLI and API:**
   - `up.sh` creates, then reruns with no duplicate services, volumes or domains, and keeps its passwords.
   - `down.sh` refuses without the exact project name.
-  - Missing or conflicting tokens and API errors stop the script with a clear message.
+  - Not being logged in, a project token in the shell, and API errors stop the script with a clear message.
 - **CLI flags:** every flag used matches Railway CLI 5.74.0.
 - **The live GraphQL schema** (`railway api schema`): every query, mutation, argument, input field and enum value
   `up.sh` sends exists with a matching type, including the volume and domain listings.
+- **`railway api` with only a browser login:** read-only queries return data, and a missing project or an invalid
+  query surfaces Railway's own message.
 
 Not yet verified against a live Railway project:
 - the exact JSON `railway init --json` prints (the script tries `.id`, `.projectId` and `.project.id`, then falls back
@@ -232,8 +239,9 @@ start over.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `up.sh: unset RAILWAY_TOKEN` | A project token is set in the shell | `unset RAILWAY_TOKEN`; the script needs the account token only |
-| `Railway API: Not Authorized` | The token is wrong, expired or a project token | Make a new account token at railway.com/account/tokens |
+| `up.sh: not logged in to Railway` | The CLI has no login on this machine | `railway login`, then rerun |
+| `up.sh: unset RAILWAY_TOKEN` | A project token is set in the shell; it cannot create projects | `unset RAILWAY_TOKEN` and rerun |
+| `Railway API: Not Authorized` | Logged in to a different account, or the project is in a workspace you can't manage | `railway whoami`; `railway logout` and `railway login` as the right account |
 | `api` logs `database not ready (attempt N/600)` for minutes | The database's first start (initdb) | Wait; the API waits up to 20 minutes and its health check allows 25 |
 | `api` crash-loops with `password authentication failed` | The `db` volume was initialised with other passwords | Don't change `SAFETY_APP_PASSWORD` by hand; on a brand-new project, `down.sh` and `up.sh` |
 | Map empty, progress bar never appears | The first `etl` run hasn't started | `railway cron run --service etl --yes`, then `railway logs --service etl` |

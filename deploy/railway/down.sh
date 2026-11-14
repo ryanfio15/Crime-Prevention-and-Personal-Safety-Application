@@ -19,15 +19,15 @@ die() { printf 'down.sh: %s\n' "$*" >&2; exit 1; }
 
 command -v railway > /dev/null || die "the railway CLI is not installed"
 command -v jq > /dev/null || die "jq is not installed"
-[[ -n ${RAILWAY_API_TOKEN:-} ]] || die "set RAILWAY_API_TOKEN (railway.com/account/tokens)"
-[[ -z ${RAILWAY_TOKEN:-} ]] || die "unset RAILWAY_TOKEN: this needs the account token only"
+[[ -z ${RAILWAY_TOKEN:-} ]] || die "unset RAILWAY_TOKEN: a project token cannot delete projects; use \`railway login\`"
+railway whoami > /dev/null 2>&1 || die "not logged in to Railway: run \`railway login\` (or export RAILWAY_API_TOKEN)"
 [[ -s $state_file ]] || die "no $state_file: nothing deployed from this checkout"
 
 project_id=$(< "$state_file")
-name=$(curl -sS -X POST https://backboard.railway.com/graphql/v2 \
-        -H "Authorization: Bearer $RAILWAY_API_TOKEN" -H 'Content-Type: application/json' \
-        --data "$(jq -nc --arg id "$project_id" '{query: "query($id: String!) { project(id: $id) { name } }", variables: {id: $id}}')" \
-    | jq -r '.data.project.name // empty')
+# shellcheck disable=SC2016  # $id is GraphQL's, not the shell's
+name=$(railway api 'query($id: String!) { project(id: $id) { name } }' \
+        --variables "$(jq -nc --arg id "$project_id" '{id: $id}')" --compact 2> /dev/null \
+    | jq -r '.data.project.name // empty' 2> /dev/null || true)
 [[ -n $name ]] || die "project $project_id was not found (already deleted?). Remove $state_file to start fresh."
 
 if [[ $yes != 1 ]]; then

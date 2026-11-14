@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploy the whole site to Railway with one command, or update a deployment.
 #
-#   export RAILWAY_API_TOKEN=...          # railway.com/account/tokens
+#   railway login                         # once per machine
 #   deploy/railway/up.sh                  # create (first run) or update
 #   deploy/railway/up.sh --name my-site --workspace "My Team"
 #   deploy/railway/up.sh --no-routing     # no Valhalla (drive/walk/bike off)
@@ -19,13 +19,17 @@
 # project in place: settings and variables re-applied, every service rebuilt
 # from the working tree, generated passwords kept. Data is never touched.
 #
-# Why two tools: the Railway CLI creates the project, uploads the code
-# (`railway up`), makes the domain and triggers cron runs; everything it has no
-# command for -- cron schedule, start command, health check, restart policy,
-# Dockerfile path, volumes -- goes through Railway's public GraphQL API, which
-# is also what keeps reruns idempotent. Railway's config-as-code files
-# (railway.toml) are deprecated as of 2026-12-01, and its IaC SDK has no cron
-# field, so neither is used.
+# Everything goes through the Railway CLI and its login, so there is no token
+# to create or paste. The CLI's own commands create the project, upload the
+# code (`railway up`) and trigger cron runs. What it has no command for -- cron
+# schedule, start command, health check, restart policy, Dockerfile path,
+# volumes, the domain -- goes through Railway's public GraphQL API by way of
+# `railway api`, which is also what keeps reruns idempotent. Railway's
+# config-as-code files (railway.toml) are deprecated as of 2026-12-01, and its
+# IaC SDK has no cron field, so neither is used.
+#
+# In CI or anywhere without a browser login, export RAILWAY_API_TOKEN (an
+# account token from railway.com/account/tokens) instead; the CLI uses it.
 #
 # Requires: railway (CLI), curl, jq, openssl.
 
@@ -36,7 +40,6 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 cd "$repo"
 
-api_url=https://backboard.railway.com/graphql/v2
 state_file=$here/.project-id
 
 name=safety-map
@@ -68,10 +71,13 @@ for cmd in railway curl jq openssl; do
     command -v "$cmd" > /dev/null || die "$cmd is not installed$( [[ $cmd == railway ]] && printf '%s' \
         ' (npm i -g @railway/cli, or see https://docs.railway.com/cli)')"
 done
-[[ -n ${RAILWAY_API_TOKEN:-} ]] || die "set RAILWAY_API_TOKEN to an account token from https://railway.com/account/tokens"
-# The CLI refuses to run with both set; a project token cannot create projects.
-[[ -z ${RAILWAY_TOKEN:-} ]] || die "unset RAILWAY_TOKEN: this script needs the account token (RAILWAY_API_TOKEN) only"
-export RAILWAY_API_TOKEN
+# A project token (RAILWAY_TOKEN) cannot create projects or services.
+[[ -z ${RAILWAY_TOKEN:-} ]] || die "unset RAILWAY_TOKEN: a project token cannot create projects; use \`railway login\` (or RAILWAY_API_TOKEN)"
+who=$(railway whoami 2>&1) || die "not logged in to Railway: run \`railway login\` (or export RAILWAY_API_TOKEN), then try again"
+echo "$who"
+
+tmp_err=$(mktemp)
+trap 'rm -f "$tmp_err"' EXIT
 
 # --- GraphQL -----------------------------------------------------------------
 
@@ -83,24 +89,21 @@ gql() {
 }
 
 # gql_try QUERY [VARIABLES_JSON] -> prints .data, or the error text and fails.
+# `railway api` prints the whole response ({"data", "errors"}) on stdout, a
+# one-line summary on stderr, and exits non-zero on any error -- validation,
+# resolver or authorization alike.
 gql_try() {
-    local body resp
-    body=$(jq -nc --arg q "$1" --argjson v "${2:-"{}"}" '{query: $q, variables: $v}')
-    if ! resp=$(curl -sS -X POST "$api_url" \
-            -H "Authorization: Bearer $RAILWAY_API_TOKEN" \
-            -H 'Content-Type: application/json' --data "$body"); then
-        printf 'request failed\n'
-        return 1
+    local resp
+    if resp=$(railway api "$1" --variables "${2:-"{}"}" --compact 2> "$tmp_err"); then
+        jq -c '.data' <<< "$resp"
+        return 0
     fi
-    if ! jq -e . > /dev/null 2>&1 <<< "$resp"; then
-        printf '%s\n' "$resp"
-        return 1
-    fi
-    if jq -e '(.errors // []) | length > 0' > /dev/null <<< "$resp"; then
+    if jq -e '(.errors // []) | length > 0' > /dev/null 2>&1 <<< "$resp"; then
         jq -r '[.errors[].message] | join("; ")' <<< "$resp"
-        return 1
+    else
+        printf '%s\n' "$(cat "$tmp_err")${resp:+ $resp}"
     fi
-    jq -c '.data' <<< "$resp"
+    return 1
 }
 
 project_query='query($id: String!) {
