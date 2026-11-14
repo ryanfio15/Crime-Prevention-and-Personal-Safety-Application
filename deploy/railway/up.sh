@@ -6,27 +6,38 @@
 #   deploy/railway/up.sh --name my-site --workspace "My Team"
 #   deploy/railway/up.sh --no-routing     # no Valhalla (drive/walk/bike off)
 #   deploy/railway/up.sh --config-only    # settings and variables, no deploys
+#   deploy/railway/up.sh --github railway-deployment   # build from GitHub instead
 #
 # What it builds (docs/RAILWAY.md):
 #
 #   db        PostGIS 17-3.5 (deploy/railway/db.Dockerfile), volume, private
 #   api       the site and API, ONE replica, public https://*.up.railway.app
 #   valhalla  street routing, tiles baked in (deploy/railway/valhalla.Dockerfile)
-#   etl       hourly cron (deploy/railway/etl_tick.py), volume for bronze
+#   etl       always-on worker, a tick hourly (deploy/railway/etl_tick.py),
+#             volume for bronze
 #
 # The first run creates the project and remembers its id in
 # deploy/railway/.project-id (git-ignored). Every later run updates that same
 # project in place: settings and variables re-applied, every service rebuilt
 # from the working tree, generated passwords kept. Data is never touched.
 #
+# --github BRANCH builds every service from this repository on GitHub instead
+# of uploading the working tree, and keeps its project id in
+# deploy/railway/.template-project-id. That is the project the one-click
+# template is generated from (deploy/railway/make-template.sh): a template can
+# only point at a GitHub repo or an image, never at an upload. Everything the
+# services need is therefore in what a template carries -- variables (the
+# Dockerfile path too, as RAILWAY_DOCKERFILE_PATH), start command, health
+# check, volume, domain -- and nothing in settings it drops, such as a cron
+# schedule.
+#
 # Everything goes through the Railway CLI and its login, so there is no token
-# to create or paste. The CLI's own commands create the project, upload the
-# code (`railway up`) and trigger cron runs. What it has no command for -- cron
-# schedule, start command, health check, restart policy, Dockerfile path,
-# volumes, the domain -- goes through Railway's public GraphQL API by way of
-# `railway api`, which is also what keeps reruns idempotent. Railway's
-# config-as-code files (railway.toml) are deprecated as of 2026-12-01, and its
-# IaC SDK has no cron field, so neither is used.
+# to create or paste. The CLI's own commands create the project and upload the
+# code (`railway up`). What it has no command for -- start command, health
+# check, restart policy, Dockerfile path, volumes, GitHub source, the domain --
+# goes through Railway's public GraphQL API by way of `railway api`, which is
+# also what keeps reruns idempotent. Railway's config-as-code files
+# (railway.toml) are deprecated as of 2026-12-01, so they are not used.
 #
 # In CI or anywhere without a browser login, export RAILWAY_API_TOKEN (an
 # account token from railway.com/account/tokens) instead; the CLI uses it.
@@ -41,13 +52,14 @@ repo=$(cd "$here/../.." && pwd)
 cd "$repo"
 
 state_file=$here/.project-id
+github_branch=
+github_repo=${RAILWAY_GITHUB_REPO:-ryanfio15/Crime-Prevention-and-Personal-Safety-Application}
 
 name=safety-map
 workspace=
 routing=1
 deploy=1
 cities=${BOOTSTRAP_CITIES:-phl,chi,sea,lax,dc,aus}
-etl_cron="20 * * * *"
 
 usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 while [[ $# -gt 0 ]]; do
@@ -57,10 +69,13 @@ while [[ $# -gt 0 ]]; do
         --no-routing) routing=0; shift ;;
         --config-only) deploy=0; shift ;;
         --cities) cities=$2; shift 2 ;;
+        --github) github_branch=$2; shift 2 ;;
         -h|--help) usage 0 ;;
         *) echo "unknown option: $1" >&2; usage 2 ;;
     esac
 done
+
+[[ -n $github_branch ]] && state_file=$here/.template-project-id
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'up.sh: %s\n' "$*" >&2; exit 1; }
@@ -221,9 +236,11 @@ app_pw=$(jq -r '.SAFETY_APP_PASSWORD // empty' <<< "$db_vars")
 [[ -n $superuser_pw ]] || superuser_pw=$(openssl rand -hex 24)
 [[ -n $app_pw ]] || app_pw=$(openssl rand -hex 24)
 
+# RAILWAY_DOCKERFILE_PATH as well as the dockerfilePath setting below: a
+# template carries a service's variables but not its build settings.
 set_vars "$db_id" "$(jq -nc --arg su "$superuser_pw" --arg app "$app_pw" '{
     POSTGRES_USER: "postgres", POSTGRES_PASSWORD: $su, POSTGRES_DB: "safety",
-    SAFETY_APP_PASSWORD: $app }')"
+    SAFETY_APP_PASSWORD: $app, RAILWAY_DOCKERFILE_PATH: "deploy/railway/db.Dockerfile" }')"
 
 # Settings both app services read (safety/config.py), as in the Kubernetes
 # ConfigMap (deploy/k8s/base/config.yaml) with the cluster-only ones dropped.
@@ -247,6 +264,7 @@ common=$(jq -nc --arg cities "$cities" --arg socrata "${SOCRATA_APP_TOKEN:-}" --
   + (if $socrata != "" then {SOCRATA_APP_TOKEN: $socrata} else {} end)')
 
 set_vars "$api_id" "$(jq -c '. + {
+    RAILWAY_DOCKERFILE_PATH: "Dockerfile",
     PORT: "8080",
     ENABLE_DOCS: "true",
     ENABLE_RATE_LIMIT: "true",
@@ -261,6 +279,7 @@ set_vars "$api_id" "$(jq -c '. + {
   }' <<< "$common")"
 
 set_vars "$etl_id" "$(jq -c '. + {
+    RAILWAY_DOCKERFILE_PATH: "Dockerfile",
     BRONZE_ROOT: "/data/bronze",
     WITHDRAWN_RECONCILE: "report",
     OPS_RETRY_COOLDOWN_HOURS: "6",
@@ -277,7 +296,8 @@ if [[ $routing == 1 ]]; then
         | sort_by(.published_at) | last | .tag_name // empty' 2> /dev/null || true)
     tiles_tag=${tiles_tag:-latest}
     echo "    routing tiles: $tiles_tag"
-    set_vars "$valhalla_id" "$(jq -nc --arg t "$tiles_tag" '{VALHALLA_TILES_TAG: $t}')"
+    set_vars "$valhalla_id" "$(jq -nc --arg t "$tiles_tag" '{
+        VALHALLA_TILES_TAG: $t, RAILWAY_DOCKERFILE_PATH: "deploy/railway/valhalla.Dockerfile" }')"
 fi
 
 # --- service settings --------------------------------------------------------
@@ -301,15 +321,16 @@ configure "$api_id" '{
   "numReplicas": 1
 }'
 
-# A cron job must exit; restart policy NEVER, or Railway treats a finished run
-# as a crash and starts it again.
-configure "$etl_id" "$(jq -nc --arg cron "$etl_cron" '{
-  dockerfilePath: "Dockerfile",
-  startCommand: "/usr/local/bin/docker-entrypoint.sh python deploy/railway/etl_tick.py",
-  cronSchedule: $cron,
-  restartPolicyType: "NEVER",
-  numReplicas: 1
-}')"
+# An always-on worker that schedules its own hourly ticks (etl_tick.py --loop),
+# not a Railway cron job: a template does not carry a cron schedule. A null
+# cronSchedule clears one a deployment from before this change still has.
+configure "$etl_id" '{
+  "dockerfilePath": "Dockerfile",
+  "startCommand": "/usr/local/bin/docker-entrypoint.sh python deploy/railway/etl_tick.py --loop",
+  "cronSchedule": null,
+  "restartPolicyType": "ALWAYS",
+  "numReplicas": 1
+}'
 
 if [[ $routing == 1 ]]; then
     configure "$valhalla_id" '{
@@ -321,22 +342,31 @@ fi
 
 # --- deploy ------------------------------------------------------------------
 
+# deploy SERVICE ID WHAT: upload the working tree, or (--github) connect the
+# service to the repository branch, which starts a build from GitHub.
+deploy_service() {
+    log "building and deploying $1 ($3)"
+    if [[ -n $github_branch ]]; then
+        gql 'mutation($id: String!, $input: ServiceConnectInput!) { serviceConnect(id: $id, input: $input) { id } }' \
+            "$(jq -nc --arg id "$2" --arg r "$github_repo" --arg b "$github_branch" \
+                '{id: $id, input: {repo: $r, branch: $b}}')" > /dev/null
+        echo "    building from github.com/$github_repo, branch $github_branch"
+    else
+        railway up --service "$1" --ci
+    fi
+}
+
 if [[ $deploy == 1 ]]; then
     # The database first: the API waits for it, but a database still building
     # when the API starts only makes the first deploy's logs harder to read.
-    log "building and deploying db (the first start runs initdb: several minutes)"
-    railway up --service db --ci
-
+    deploy_service db "$db_id" "the first start runs initdb: several minutes"
     if [[ $routing == 1 ]]; then
-        log "building and deploying valhalla (downloads ~1.2 GB of tiles into the image)"
-        railway up --service valhalla --ci
+        deploy_service valhalla "$valhalla_id" "downloads ~1.2 GB of tiles into the image"
     fi
-
-    log "building and deploying api (one replica)"
-    railway up --service api --ci
-
-    log "building and deploying etl (hourly cron at minute 20)"
-    railway up --service etl --ci
+    deploy_service api "$api_id" "one replica"
+    # Its first tick starts as soon as it is up: on a new project that enables
+    # the cities and begins the one-year load.
+    deploy_service etl "$etl_id" "worker, a tick now and then hourly at :20"
 fi
 
 # --- public URL --------------------------------------------------------------
@@ -352,17 +382,6 @@ if [[ -z $domain ]]; then
         | jq -r '.serviceDomainCreate.domain')
 fi
 
-# --- first data load ---------------------------------------------------------
-
-if [[ $deploy == 1 ]]; then
-    # Start the first tick now rather than at the next :20. On a new project it
-    # enables the cities and begins the one-year load; on an update it is an
-    # ordinary tick (Railway skips it if one is already running).
-    log "starting an etl tick now"
-    railway cron run --service etl --yes \
-        || echo "    could not trigger it; the schedule runs it at the next minute 20"
-fi
-
 cat << EOF
 
 Done.
@@ -376,6 +395,6 @@ appears on the map as soon as its own load finishes.
 
   Data job logs:   railway logs --service etl
   Site logs:       railway logs --service api
-  Run a tick now:  railway cron run --service etl --yes
+  Run a tick now:  railway restart --service etl --yes
   Take it down:    deploy/railway/down.sh
 EOF

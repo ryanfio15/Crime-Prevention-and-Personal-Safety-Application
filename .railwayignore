@@ -17,3 +17,5 @@ node_modules/
 
 # This checkout's link to its Railway project.
 deploy/railway/.project-id
+deploy/railway/.template-project-id
+deploy/railway/.template-draft.json

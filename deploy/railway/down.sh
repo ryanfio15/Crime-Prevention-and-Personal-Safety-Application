@@ -2,8 +2,10 @@
 # Take the Railway deployment down: delete the project made by up.sh, with
 # every service, volume, domain and the data in them. Billing stops with it.
 #
-#   deploy/railway/down.sh            # asks you to type the project name
-#   deploy/railway/down.sh --yes      # no question (scripts)
+#   deploy/railway/down.sh              # asks you to type the project name
+#   deploy/railway/down.sh --yes        # no question (scripts)
+#   deploy/railway/down.sh --template   # the template's reference project
+#                                       # (make-template.sh) instead
 #
 # Permanent: Railway cannot undo a project delete. The data itself can be
 # rebuilt from the cities' portals by running up.sh again (a few hours).
@@ -13,7 +15,13 @@ set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 state_file=$here/.project-id
 yes=0
-[[ ${1:-} == --yes ]] && yes=1
+for arg in "$@"; do
+    case $arg in
+        --yes) yes=1 ;;
+        --template) state_file=$here/.template-project-id ;;
+        *) echo "unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
 
 die() { printf 'down.sh: %s\n' "$*" >&2; exit 1; }
 
