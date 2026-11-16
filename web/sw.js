@@ -1,7 +1,7 @@
 /* ---------------------------------------------------------------------------
    Web cache: a service worker that keeps the last good copy of the front end.
 
-   Every request for the app's own files (index.html, the scripts, styles.css)
+   Every request for the app's own files (index.html, the scripts, styles.css, fonts)
    still goes to the network first, exactly as it would without this file. The
    server sends them with Cache-Control: no-cache (RevalidatedStaticFiles in
    safety/api/main.py), so the browser checks the ETag on every load and gets a
@@ -40,7 +40,7 @@
 
 /* Only used to find and delete this worker's caches. Network first refreshes
    the stored copy on every online load, so a deploy never needs a bump here. */
-const CACHE_NAME = "safety-app-shell-v4";
+const CACHE_NAME = "safety-app-shell-v5";
 // "shell-", not just "safety-app-": only this worker's own caches are swept.
 const CACHE_PREFIX = "safety-app-shell-";
 
@@ -48,6 +48,12 @@ const SHELL = [
   "./",
   "./index.html",
   "./styles.css",
+  "./theme.js",
+  "./fonts/nunito-latin-500-normal.woff2",
+  "./fonts/nunito-latin-600-normal.woff2",
+  "./fonts/nunito-latin-700-normal.woff2",
+  "./fonts/nunito-latin-800-normal.woff2",
+  "./fonts/nunito-latin-900-normal.woff2",
   "./html.js",
   "./progress.js",
   "./hours.js",

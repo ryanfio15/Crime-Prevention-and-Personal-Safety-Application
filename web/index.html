@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -17,6 +17,9 @@
 <link href="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.css" rel="stylesheet"
       integrity="sha384-gNYNsUmuZqDYiT3gbirWTV5K7rt71RoveS/yXAaU09d4ZUmeDVTD3XoqB6uJAIFR"
       crossorigin="anonymous">
+<!-- Before the stylesheet's tokens are used: sets html[data-theme] (saved
+     choice, else the system's), so the page never paints the wrong theme. -->
+<script src="theme.js"></script>
 <link href="styles.css" rel="stylesheet">
 </head>
 <body>

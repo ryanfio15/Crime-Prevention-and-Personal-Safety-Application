@@ -16,70 +16,39 @@ const API = "/api/v1";
    known. Every city is loaded either way; this only picks where to look first. */
 const DEFAULT_CITY = "phl";
 
-/* A distinct state, not the bottom of the ramp: nothing was reported here. */
-const ZERO_FILL = "#e1e0d9";
-const SERIES_1 = "#2a78d6";
-const INK_SECONDARY = "#52514e";
-const BASELINE = "#c3c2b7";
+/** A colour token from styles.css, as the current theme sets it. MapLibre
+    paints the map itself, so anything it draws in a page colour reads the
+    token here rather than repeating the hex. */
+function themeColor(name, fallback) {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
 
-/* Safety ramp, least safe -> safest, applied continuously to the percentile.
+/* A distinct state, not the bottom of the ramp: nothing was reported here.
+   Light keeps the original #e1e0d9; dark has its own (--zero-fill). */
+const zeroFill = () => themeColor("--zero-fill", "#e1e0d9");
+const primaryColor = () => themeColor("--primary", "#f06a3f");
 
-   Built in OKLCH, running red -> orange -> yellow -> green with chroma held as
-   high as sRGB allows at every step, so the whole ramp stays vivid. An earlier
-   version pinched chroma to nothing at the midpoint, and the two arms met in a
-   dull grey that read as "no data" rather than "middling"; passing through
-   yellow keeps the centre as saturated as the ends.
+/* UI 5's five map colours, low -> high (docs/ui5/UI5_SPEC.md), the same in
+   light and dark. They sit on every fifth step of the 21-step ramp, so on
+   RAMP_HINGES below: green at 0, light green at 0.75x, yellow exactly at the
+   1.5x hinge, orange at 2x, red from 3x. The steps between are blended. */
+const RAMP_ANCHORS = ["#3fae86", "#a8d47e", "#ffd166", "#ff9a6b", "#e85a72"];
 
-   Lightness rises from red to a peak at yellow and settles back for green, so
-   the safest end is not the lightest. Red-green is still separated by
-   lightness (dark red against mid green), and the table view carries the exact
-   percentile for anyone who cannot rely on hue.
-
-   Out-of-gamut steps are mapped by reducing chroma rather than letting
-   channels clamp, so no two steps collapse onto the same hex. All twenty are
-   distinct. */
-const SAFETY = [
-  "#db0118", "#e32503", "#e74001", "#ea5403", "#ef6403",
-  "#f47204", "#f68a07", "#f9a000", "#fab60a", "#f9cc06",
-  "#f0d80a", "#dfd80d", "#cdd904", "#b9da04", "#a2dc02",
-  "#8bd802", "#73d216", "#5acc25", "#39c631", "#09bf3f",
-];
-
-/* The incident count rides the same ramp, reversed: both views then agree that
-   red is the concerning end, so switching between them is a change of measure
-   and not a change of vocabulary. Quiet cells land in the green. */
-const COUNT_RAMP = [...SAFETY].reverse();
-
-/** Midpoint of two hexes in sRGB. Adjacent ramp steps are ~0.025 apart in
-    lightness, so averaging channels here is indistinguishable from doing it in
-    OKLCH, and it avoids carrying a colour-space conversion for one blend. */
-function mixHex(a, b) {
+/** `count` colours spread evenly over `anchors`, blended in sRGB. */
+function spreadRamp(anchors, count) {
   const parse = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-  const [ar, ag, ab] = parse(a);
-  const [br, bg, bb] = parse(b);
-  const channel = (x, y) => Math.round((x + y) / 2).toString(16).padStart(2, "0");
-  return `#${channel(ar, br)}${channel(ag, bg)}${channel(ab, bb)}`;
+  const span = (count - 1) / (anchors.length - 1);
+  return Array.from({ length: count }, (_, i) => {
+    const k = Math.min(Math.floor(i / span), anchors.length - 2);
+    const t = i / span - k;
+    const [a, b] = [parse(anchors[k]), parse(anchors[k + 1])];
+    return `#${a.map((x, c) => Math.round(x + (b[c] - x) * t).toString(16).padStart(2, "0")).join("")}`;
+  });
 }
 
-/**
- * The ramp with an explicit centre step inserted.
- *
- * Twenty steps have no middle one: they sit at i/19, and 0.5 falls between the
- * tenth and eleventh. The value scale puts 150% of the city average on the centre step,
- * so without a stop there the average lands inside a segment and its colour is
- * a blend rather than the yellow it is meant to be.
- */
-function withMidpoint(colors) {
-  const half = colors.length / 2;
-  return [
-    ...colors.slice(0, half),
-    mixHex(colors[half - 1], colors[half]),
-    ...colors.slice(half),
-  ];
-}
-
-/* Twenty-one steps: the ramp plus the centre the yellow point sits on. */
-const VALUE_RAMP = withMidpoint(COUNT_RAMP);
+/* Twenty-one steps, the same count RAMP_HINGES is laid out over (0..20). */
+const VALUE_RAMP = spreadRamp(RAMP_ANCHORS, 21);
 
 /* Where the ramp is pinned, as [step, multiple of the city average]: green up
    to one and a half times the average, yellow there, orange by double, the
@@ -357,7 +326,7 @@ function fillColorExpression() {
   const ratio = ["coalesce", ["get", RATIO_PROPS[state.track]], -1];
   return [
     "case",
-    ["<", ratio, 0], ZERO_FILL,
+    ["<", ratio, 0], zeroFill(),
     ["interpolate", ["linear"], ratio, ...valueRampStops(VALUE_RAMP)],
   ];
 }
@@ -812,7 +781,7 @@ function initCityMarkers() {
     maxzoom: CITY_MARKER_MAX_ZOOM,
     paint: {
       "circle-radius": 7,
-      "circle-color": SERIES_1,
+      "circle-color": primaryColor(),
       "circle-stroke-color": "#ffffff",
       "circle-stroke-width": 2,
     },
@@ -831,7 +800,7 @@ function initCityMarkers() {
       // shows the dots.
       "text-font": ["Montserrat Medium", "Open Sans Regular"],
     },
-    paint: { "text-color": INK_SECONDARY, "text-halo-color": "#ffffff", "text-halo-width": 1.5 },
+    paint: { "text-color": themeColor("--text", "#3a2b26"), "text-halo-color": themeColor("--panel", "#ffffff"), "text-halo-width": 1.5 },
   });
   map.on("click", "city-dots", (event) => {
     const id = event.features?.[0]?.properties?.id;
@@ -1021,7 +990,7 @@ let cellPopup = null;
     interpolation the fill's `interpolate` expression makes over
     valueRampStops, so the outline matches the cell it belongs to. */
 function colorForRatio(ratio) {
-  if (ratio === null || ratio === undefined || ratio < 0) return ZERO_FILL;
+  if (ratio === null || ratio === undefined || ratio < 0) return zeroFill();
   const stops = valueRampStops(VALUE_RAMP);
   const parse = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
   for (let k = 2; k < stops.length; k += 2) {
@@ -1936,7 +1905,7 @@ function renderDirections() {
   $("dir-cards").innerHTML = html`${cards.map((card) => {
     const route = result.routes[card.index];
     const words = activitySentence(card.activity, track);
-    const swatch = card.activity?.comparable ? colorForRatio(card.activity.mean_ratio) : ZERO_FILL;
+    const swatch = card.activity?.comparable ? colorForRatio(card.activity.mean_ratio) : zeroFill();
     const legs = route.mode === "transit" ? route.legs.map(transitLegSummary) : [];
     return html`<li>
       <button type="button" class="route-card" data-index="${card.index}"
@@ -2297,26 +2266,26 @@ function initRouteLayers() {
   map.addLayer({
     id: "route-alt-line", type: "line", source: "route-alt",
     layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": INK_SECONDARY, "line-width": 4, "line-opacity": 0.6, "line-dasharray": [1.5, 1.5] },
+    paint: { "line-color": themeColor("--route-alt", "#8a766b"), "line-width": 4, "line-opacity": 0.6, "line-dasharray": [1.5, 1.5] },
   }, before);
   // A dark casing: the route sits on cells painted in the same ramp it is
   // coloured with, and only an edge keeps a green route off a green cell.
   map.addLayer({
     id: "route-casing", type: "line", source: "route-line",
     layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": "#1b1b1a", "line-width": 10, "line-opacity": 0.55 },
+    paint: { "line-color": themeColor("--route-casing", "#3a2b26"), "line-width": 10, "line-opacity": 0.55 },
   }, before);
   map.addLayer({
     id: "route-line", type: "line", source: "route-line",
     filter: ["!", ["get", "walk"]],
     layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": ["coalesce", ["get", "color"], SERIES_1], "line-width": 6 },
+    paint: { "line-color": ["coalesce", ["get", "color"], primaryColor()], "line-width": 6 },
   }, before);
   map.addLayer({
     id: "route-walk", type: "line", source: "route-line",
     filter: ["get", "walk"],
     layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": SERIES_1, "line-width": 6, "line-dasharray": [0.1, 1.8] },
+    paint: { "line-color": primaryColor(), "line-width": 6, "line-dasharray": [0.1, 1.8] },
   }, before);
   // The reported activity along the route, on the map's own ramp, drawn over
   // the plain line. Only scored stretches have segments, so a transit ride
@@ -2326,7 +2295,7 @@ function initRouteLayers() {
     layout: { "line-cap": "round", "line-join": "round" },
     paint: {
       "line-color": [
-        "case", ["<", ["get", "ratio"], 0], "#9b9a94",
+        "case", ["<", ["get", "ratio"], 0], zeroFill(),
         ["interpolate", ["linear"], ["get", "ratio"], ...valueRampStops(VALUE_RAMP)],
       ],
       "line-width": 6,
@@ -2500,7 +2469,7 @@ async function initMap() {
     id: "cells-fill",
     type: "fill",
     source: "cells",
-    paint: { "fill-color": ZERO_FILL, "fill-opacity": cellsOpacity() },
+    paint: { "fill-color": zeroFill(), "fill-opacity": cellsOpacity() },
   }, cellsBeforeId());
 
   // Building footprints are fills the basemap draws after its roads. Left above
@@ -2585,11 +2554,13 @@ function repaint() {
     hit-test a layer with visibility "none", and the popup needs the click. */
 function cellsOpacity() {
   if (!state.tiles) return 0;
+  // UI 5: about 0.5 in light and 0.46 in dark, so street names stay readable.
+  const base = Number(themeColor("--cell-opacity", "0.5")) || 0.5;
   return [
     "case",
-    ["boolean", ["feature-state", "selected"], false], 0.95,
-    ["boolean", ["feature-state", "hover"], false], 0.9,
-    0.74,
+    ["boolean", ["feature-state", "selected"], false], Math.min(1, base + 0.3),
+    ["boolean", ["feature-state", "hover"], false], Math.min(1, base + 0.2),
+    base,
   ];
 }
 

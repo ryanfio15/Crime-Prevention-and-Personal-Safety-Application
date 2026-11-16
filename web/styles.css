@@ -1,44 +1,107 @@
 /* ---------------------------------------------------------------------------
-   Design tokens.
+   UI 5 ("Friendly"): fonts and design tokens (docs/ui5/UI5_SPEC.md).
 
-   Light is a *selected* mode, not a flipped one: the sequential ramp steps below
-   are the same documented blue family, re-ordered so the light end recedes
-   toward the page and the dark end carries the high values, and the ink and
-   surface tokens are the light-surface pair rather than inverted dark ones.
-   Text always wears ink tokens -- never a series colour.
+   Nunito is self-hosted from web/fonts/ (SIL OFL, web/fonts/OFL-LICENSE.txt):
+   the CSP in safety/api/security.py allows same-origin fonts only.
    --------------------------------------------------------------------------- */
+
+@font-face { font-family: "Nunito"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/nunito-latin-500-normal.woff2") format("woff2"); }
+@font-face { font-family: "Nunito"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/nunito-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "Nunito"; font-style: normal; font-weight: 700; font-display: swap; src: url("fonts/nunito-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Nunito"; font-style: normal; font-weight: 800; font-display: swap; src: url("fonts/nunito-latin-800-normal.woff2") format("woff2"); }
+@font-face { font-family: "Nunito"; font-style: normal; font-weight: 900; font-display: swap; src: url("fonts/nunito-latin-900-normal.woff2") format("woff2"); }
+
+/* Light and dark are two sets of the same tokens. web/theme.js sets
+   html[data-theme] before first paint: the visitor's saved choice, else the
+   system's. The media block covers a page whose script has not run. Map
+   colours that MapLibre paints are read from these tokens in app.js
+   (themeColor), so the map and the page cannot drift apart. */
 :root {
   color-scheme: light;
 
-  --surface-1:      #fcfcfb;   /* chart / panel surface */
-  --page:           #f9f9f7;   /* page plane */
-  --text-primary:   #0b0b0b;
-  --text-secondary: #52514e;
-  --text-muted:     #898781;
-  --danger:         #b91c1c;   /* errors; 6.1:1 on --page, 6.3:1 on --surface-1 */
-  --gridline:       #e1e0d9;
-  --baseline:       #c3c2b7;
-  --border:         rgba(11, 11, 11, 0.10);
+  --land:     #fbf4ea;   /* page / map background */
+  --panel:    #ffffff;
+  --soft:     #fdf0e3;   /* inputs, chips, idle buttons */
+  --border:   #f0dfcd;
+  --text:     #3a2b26;
+  --muted:    #8a766b;
+  --primary:  #f06a3f;   /* actions, selection */
+  --on-primary: #ffffff;
+  --calm-bg:  #e4f5ec;  --calm-text: #23845f;
+  --typ-bg:   #fff3d1;  --typ-text:  #94690a;
+  --busy-bg:  #fde2e6;  --busy-text: #b93850;
+  --shadow:   0 10px 30px rgba(120, 70, 40, 0.14);
+  --me:       #4b7be5;   /* my-location blue */
+  --danger:   #b93850;
+  --scrim:    rgba(58, 43, 38, 0.32);
 
-  /* Slot 1, light step. Single-series bars and the sparkline use this. */
-  --series-1:       #2a78d6;
+  /* The map ramp, low -> high (app.js builds the 21 steps from these). */
+  --ramp-0: #3fae86;
+  --ramp-1: #a8d47e;
+  --ramp-2: #ffd166;
+  --ramp-3: #ff9a6b;
+  --ramp-4: #e85a72;
+  /* "Nothing was reported here": its own state, not the low end of the ramp. */
+  --zero-fill: #e1e0d9;
+  --cell-opacity: 0.5;
+  --route-casing: #3a2b26;
+  --route-alt: #8a766b;
 
-  /* Sequential blue, low -> high on a light surface. */
-  --seq-1: #cde2fb;
-  --seq-2: #9ec5f4;
-  --seq-3: #6da7ec;
-  --seq-4: #3987e5;
-  --seq-5: #256abf;
-  --seq-6: #184f95;
+  --r-card: 30px;
+  --r-inner: 18px;
+  --pill: 999px;
+  --tap: 44px;
+  --gap: 16px;
 
-  /* "Nothing was reported here" recedes toward the surface. It is a distinct
-     state from "the quietest fifth of the city", so it gets its own colour. */
-  --seq-zero: #e1e0d9;
+  /* Legacy names, kept so older rules read the new tokens. */
+  --surface-1: var(--panel);
+  --page: var(--land);
+  --text-primary: var(--text);
+  --text-secondary: var(--muted);
+  --text-muted: var(--muted);
+  --gridline: var(--soft);
+  --baseline: var(--border);
+  --series-1: var(--primary);
 
-  --radius: 10px;
-  --pad: 16px;
+  font-family: "Nunito", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-weight: 600;
+}
 
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --land:     #221c22;
+  --panel:    #2c242b;
+  --soft:     #3a3038;
+  --border:   #4a3e47;
+  --text:     #fbeee4;
+  --muted:    #bba79c;
+  --primary:  #ff8a5c;
+  --on-primary: #2c1a14;
+  --calm-bg:  rgba(76, 196, 149, 0.16);  --calm-text: #7fdcb5;
+  --typ-bg:   rgba(255, 209, 102, 0.16); --typ-text:  #ffd166;
+  --busy-bg:  rgba(232, 90, 114, 0.18);  --busy-text: #ff9aab;
+  --shadow:   0 10px 30px rgba(0, 0, 0, 0.45);
+  --me:       #8fb0ff;
+  --danger:   #ff9aab;
+  --scrim:    rgba(0, 0, 0, 0.5);
+  --zero-fill: #5a5058;
+  --cell-opacity: 0.46;
+  --route-casing: #120e12;
+  --route-alt: #bba79c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --land: #221c22; --panel: #2c242b; --soft: #3a3038; --border: #4a3e47;
+    --text: #fbeee4; --muted: #bba79c; --primary: #ff8a5c; --on-primary: #2c1a14;
+    --calm-bg: rgba(76, 196, 149, 0.16); --calm-text: #7fdcb5;
+    --typ-bg: rgba(255, 209, 102, 0.16); --typ-text: #ffd166;
+    --busy-bg: rgba(232, 90, 114, 0.18); --busy-text: #ff9aab;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.45); --me: #8fb0ff; --danger: #ff9aab;
+    --scrim: rgba(0, 0, 0, 0.5); --zero-fill: #5a5058; --cell-opacity: 0.46;
+    --route-casing: #120e12; --route-alt: #bba79c;
+  }
 }
 
 * { box-sizing: border-box; }
@@ -205,7 +268,7 @@ select:disabled { opacity: 0.55; cursor: not-allowed; }
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: rgba(252, 252, 251, 0.94);
+  background: var(--panel);
   backdrop-filter: blur(6px);
   text-align: center;
 }
@@ -520,7 +583,7 @@ select:disabled { opacity: 0.55; cursor: not-allowed; }
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: rgba(252, 252, 251, 0.94);
+  background: var(--panel);
   backdrop-filter: blur(6px);
 }
 .map-control[hidden] { display: none; }
@@ -554,7 +617,7 @@ select:disabled { opacity: 0.55; cursor: not-allowed; }
 .cp .hours { height: 44px; }
 /* The lower-risk window, in the map ramp's green; "now" (data-selected) still
    wins where the two overlap, being declared after it in the base styles. */
-.cp .hours i[data-safer] { background: #39c631; }
+.cp .hours i[data-safer] { background: var(--ramp-0); }
 .cp .hours i[data-selected] { background: var(--text-primary); }
 /* The week chart: seven wider bars under the hour chart, Monday first. */
 .cp .hours.days { grid-template-columns: repeat(7, 1fr); gap: 4px; height: 36px; }
@@ -729,7 +792,7 @@ select:disabled { opacity: 0.55; cursor: not-allowed; }
   padding: 10px 14px 9px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: rgba(252, 252, 251, 0.96);
+  background: var(--panel);
   backdrop-filter: blur(6px);
   box-shadow: 0 2px 10px rgba(11, 11, 11, 0.08);
 }

@@ -207,7 +207,8 @@ test("debounce runs once after the quiet period", async () => {
 // cellRatio is lifted out of app.js as written, so a change there that the
 // server's port does not follow fails here.
 const app = readFileSync(new URL("../../web/app.js", import.meta.url), "utf8");
-const match = app.match(/function cellRatio\([\s\S]*?\n}\n/);
+// \r?\n: a Windows checkout (core.autocrlf) has CRLF line endings.
+const match = app.match(/function cellRatio\([\s\S]*?\r?\n}\r?\n/);
 assert.ok(match, "cellRatio not found in web/app.js");
 const appCtx = {};
 vm.runInNewContext(`${match[0]}; this.cellRatio = cellRatio;`, appCtx);
