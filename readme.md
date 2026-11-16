@@ -298,7 +298,9 @@ There is no Python or JS linter or formatter configured. Only shell is linted, w
 ## 8. Deployment
 
 **Railway** (public URL, no server to run): `railway login`, then
-`deploy/railway/up.sh --cities phl,chi,sea,lax,dc,aus`. See [docs/RAILWAY.md](docs/RAILWAY.md).
+`deploy/railway/up.sh --cities phl,chi,sea,lax,dc,aus`. On Windows that second line is
+`& "C:\Program Files\Git\bin\bash.exe" deploy/railway/up.sh --cities phl,chi,sea,lax,dc,aus`, typed into
+PowerShell. Full walkthrough: [docs/RAILWAY.md](docs/RAILWAY.md).
 
 **Home server.** Full guide: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. In short:
 
