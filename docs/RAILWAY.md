@@ -76,12 +76,27 @@ leaves set in this directory.
 ```bash
 railway login            # opens a browser; --browserless on a machine without one
 railway whoami           # confirm it is the account that should own the project
-unset RAILWAY_TOKEN      # a *project* token cannot create projects; up.sh refuses if one is set
 ```
 
-In CI, export `RAILWAY_API_TOKEN` (an account token from
-[railway.com/account/tokens](https://railway.com/account/tokens)) instead of logging in. Keep it private: it can
-create and delete projects.
+**That is the whole credential.** There is no token to create, paste or set: `up.sh` uses this login for everything,
+including the GraphQL calls Railway has no CLI command for. The two token variables below exist only for the cases
+that are not this one.
+
+| Variable | What it is | When to set it |
+|---|---|---|
+| — | The `railway login` session | **Deploying from your own machine. This is you.** |
+| `RAILWAY_API_TOKEN` | An *account* token, from [railway.com/account/tokens](https://railway.com/account/tokens) | CI, or a machine with no browser, instead of logging in. Keep it private: it can create and delete projects |
+| `RAILWAY_TOKEN` | A *project* token, scoped to one project | Never, here. It can deploy to a service that exists but cannot create projects or services |
+
+If `RAILWAY_TOKEN` is already set in your shell — from a Railway CI snippet, a `.env`, an earlier experiment —
+`up.sh` stops before it changes anything and says so, because the deploy would otherwise fail partway through with
+an authorization error. Clear it and rerun:
+
+```bash
+unset RAILWAY_TOKEN
+```
+
+If you have never set one, there is nothing to do.
 
 The account needs a payment method on file, and enough plan headroom for an always-on database of several GB
 (see [What it builds](#what-it-builds)). Railway refuses the deploy otherwise, usually with a quota error on the
