@@ -12,7 +12,10 @@ on:
     # only reads check runs on the head of main/testing, so runs on other
     # branches do not change what deploys. horizontal-scaling carries the
     # Kubernetes deployment (docs/KUBERNETES.md) until it is merged.
-    branches: [main, testing, "remediation/**", horizontal-scaling]
+    # railway-deployment likewise carries the Railway deployment
+    # (docs/RAILWAY.md); Railway's "Wait for CI" deploys a push to it only
+    # once this run has passed.
+    branches: [main, testing, "remediation/**", horizontal-scaling, railway-deployment]
   pull_request:
 
 permissions:
