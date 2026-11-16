@@ -448,9 +448,9 @@ svg { width: 22px; height: 22px; flex: none; }
 /* MapLibre's own controls (scale, attribution) in the page's type. */
 .maplibregl-ctrl, .maplibregl-ctrl-attrib { font-family: inherit; }
 .maplibregl-ctrl-attrib.maplibregl-compact { background: var(--panel); color: var(--text); }
-/* MapLibre's attribution button, at the page's 44 px minimum. */
-.maplibregl-ctrl-attrib.maplibregl-compact { min-height: var(--tap); }
-.maplibregl-ctrl-attrib-button { width: var(--tap) !important; height: var(--tap) !important; background-position: center !important; }
+/* MapLibre's attribution button keeps its own 24 px look; an invisible
+   margin around it makes the tap target the page's 44 px minimum. */
+.maplibregl-ctrl-attrib-button::after { content: ""; position: absolute; inset: -10px; }
 .maplibregl-ctrl-attrib a { color: var(--text); }
 .maplibregl-ctrl-scale { background: color-mix(in srgb, var(--panel) 80%, transparent); border-color: var(--muted); color: var(--text); }
 
@@ -744,9 +744,20 @@ svg { width: 22px; height: 22px; flex: none; }
   right: calc(var(--safe-r) + var(--edge) + 304px + var(--edge));
   bottom: calc(var(--safe-b) + var(--edge));
   max-height: min(46dvh, 420px);
-  overflow-y: auto;
+  /* The card does not scroll; its body does. A rounded, shadowed scroll box
+     over the WebGL map makes Chrome skip painting part of the map canvas
+     behind it (a blank cream rectangle in shorter windows, where the card
+     overflows). Scrolling one level down keeps the look and avoids that. */
+  display: flex;
+  flex-direction: column;
   padding: 22px 24px;
   border-radius: 34px;
+}
+.cell-card > .cell-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .card-close { position: absolute; top: 14px; right: 14px; }
 
