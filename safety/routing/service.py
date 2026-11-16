@@ -9,6 +9,7 @@ and nothing leaks between instances the way module globals would.
 
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
@@ -20,10 +21,12 @@ import httpx
 
 from safety.config import settings
 from safety.routing.breaker import CircuitBreaker
-from safety.routing.budget import DailyBudget
+from safety.routing.budget import DailyBudget, SharedDailyBudget
 from safety.routing.errors import TooSoon
 from safety.routing.providers import PhotonClient, TransitousClient, ValhallaClient
 from safety.routing.ttlcache import TTLCache
+
+log = logging.getLogger(__name__)
 
 # Provider cache sizes and lifetimes (plan S2). Sized by what one entry costs:
 # a Valhalla answer with alternates is 20-200 KB of JSON, a MOTIS plan ~40 KB,
@@ -87,7 +90,7 @@ class Routing:
     )
 
     @classmethod
-    def build(cls, http: httpx.AsyncClient) -> Routing:
+    def build(cls, http: httpx.AsyncClient, pool=None) -> Routing:
         return cls(
             http=http,
             valhalla=ValhallaClient(
@@ -98,26 +101,52 @@ class Routing:
             transitous=TransitousClient(
                 http,
                 cache=TTLCache(TRANSIT_ENTRIES, TRANSIT_TTL_S),
-                budget=DailyBudget(settings.transit_daily_budget, "transitous"),
+                budget=_budget(settings.transit_daily_budget, "transitous", pool),
                 breaker=CircuitBreaker(),
             ),
             photon=PhotonClient(
                 http,
                 cache=TTLCache(PHOTON_ENTRIES, PHOTON_TTL_S),
-                budget=DailyBudget(settings.geocode_daily_budget, "photon"),
+                budget=_budget(settings.geocode_daily_budget, "photon", pool),
                 breaker=CircuitBreaker(),
             ),
             cities=TTLCache(1, CITIES_TTL_S),
         )
 
 
+def _budget(limit: int, provider: str, pool) -> DailyBudget:
+    """The provider's daily budget, per process or shared (settings.routing_budget_backend).
+
+    `db` needs the API's connection pool; without one (a test building Routing
+    on its own) it falls back to the in-memory counter.
+    """
+    backend = settings.routing_budget_backend.strip().lower()
+    if backend == "db" and pool is not None:
+        return SharedDailyBudget(limit, provider, pool.connection)
+    if backend not in ("", "memory", "db"):
+        log.warning("unknown ROUTING_BUDGET_BACKEND %r; counting in memory", backend)
+    return DailyBudget(limit, provider)
+
+
 def new_http_client() -> httpx.AsyncClient:
     """The one outbound client. No redirects (a provider cannot bounce us to
     a host settings did not name), no proxy from the environment, bounded
-    connections."""
+    connections.
+
+    settings.routing_https_proxy, when set, carries the https:// providers
+    (Photon, Transitous) only; Valhalla's plain-http calls stay direct."""
+    limits = httpx.Limits(max_connections=32, max_keepalive_connections=8)
+    mounts = None
+    if settings.routing_https_proxy:
+        mounts = {
+            "https://": httpx.AsyncHTTPTransport(
+                proxy=settings.routing_https_proxy, limits=limits
+            )
+        }
     return httpx.AsyncClient(
         timeout=settings.routing_timeout_seconds,
         follow_redirects=False,
         trust_env=False,
-        limits=httpx.Limits(max_connections=32, max_keepalive_connections=8),
+        limits=limits,
+        mounts=mounts,
     )

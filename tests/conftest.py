@@ -54,6 +54,7 @@ def _reset_api_state() -> None:
     inflight = getattr(main, "_inflight", None)
     if inflight is not None:
         inflight.clear()
+    main._stamp_memo.clear()
     main.app.dependency_overrides.clear()
     # The directions endpoints' provider clients, caches, budgets and breakers
     # (safety/routing/service.py); a test that needs them installs its own.

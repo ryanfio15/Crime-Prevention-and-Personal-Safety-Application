@@ -108,3 +108,43 @@ def test_eviction_respects_max_entries(monkeypatch):
 def test_health_reads_stats_under_the_lock():
     snapshot = main._cache_stats_snapshot()
     assert set(snapshot) == {"hits", "misses", "bytes", "evictions"}
+
+
+# ---------------------------------------------------------------- stamp memo
+
+
+def test_stamp_is_checked_on_every_lookup_by_default(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        main, "_refresh_stamp", lambda conn, source_id=None: calls.append(source_id) or "s1"
+    )
+    for _ in range(3):
+        main.cached(None, ("k",), lambda: "v", source_id="phl")
+    assert calls == ["phl", "phl", "phl"]
+
+
+def test_stamp_ttl_spares_the_database_and_still_expires(monkeypatch):
+    calls = []
+    stamp = {"value": "s1"}
+
+    def refresh(conn, source_id=None):
+        calls.append(source_id)
+        return stamp["value"]
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(main, "_refresh_stamp", refresh)
+    monkeypatch.setattr(main.settings, "cache_stamp_ttl_seconds", 5.0)
+    monkeypatch.setattr(main.time, "monotonic", lambda: clock["now"])
+
+    assert main.cached(None, ("k",), lambda: "old", source_id="phl") == "old"
+    stamp["value"] = "s2"  # an ETL refresh lands
+    # Inside the TTL the memoised stamp is trusted: no query, the old layer.
+    assert main.cached(None, ("k",), lambda: "new", source_id="phl") == "old"
+    assert calls == ["phl"]
+    # Other cities have their own memo.
+    main.cached(None, ("k2",), lambda: "x", source_id="chi")
+    assert calls == ["phl", "chi"]
+    # Past the TTL the stamp is re-read and the new snapshot served.
+    clock["now"] += 5.1
+    assert main.cached(None, ("k",), lambda: "new", source_id="phl") == "new"
+    assert calls == ["phl", "chi", "phl"]

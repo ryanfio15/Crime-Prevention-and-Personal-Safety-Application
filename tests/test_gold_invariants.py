@@ -21,14 +21,16 @@ import pytest
 
 from safety import PIPELINE_VERSION
 from safety.db import ensure_partitions
-from safety.etl import gold
+from safety.etl import gold, retention
 from safety.h3grid import cells_for_point
 
 pytestmark = pytest.mark.db
 
 SOURCE = "phl"
-ANCHOR = date(2025, 6, 30)
-SPAN_DAYS = 800
+# A few days ago, and every row inside the one year the city keeps
+# (safety.etl.retention), so the fixture is never older than what gold reads.
+ANCHOR = date.today() - timedelta(days=3)
+SPAN_DAYS = 360
 N_ROWS = 400
 BOX = (-75.19, 39.94, -75.15, 39.97)  # west, south, east, north
 CATEGORIES = ("violent", "property", "quality_of_life", "other")
@@ -177,7 +179,6 @@ def built(db_conn):
     # nothing above writes gold.cell_safety. Build the area-denominated scheme
     # explicitly so the safety ranking's invariants are exercised too.
     safety_rows, _ = gold.refresh_safety_layer(conn, SOURCE, windows, scheme_version=AREA_SCHEME)
-    gold.write_legacy_windows(conn, SOURCE, ("cell_safety",))
     conn.commit()
     assert safety_rows > 0
     return {"conn": conn, "rows": rows, "windows": windows, "result": result}
@@ -257,23 +258,24 @@ def test_percentile_strictly_monotone_in_density(built):
     assert bad == 0
 
 
-def test_categories_add_up_to_all(built):
-    # gold.py _ACTIVITY_SQL: c_all = count(*); the four category counts FILTER on
-    # product_category, which silver constrains to exactly those four values.
-    bad = _rows(
+def test_activity_is_built_for_all_categories_together_only(built):
+    # gold.ACTIVITY_CATEGORIES: nothing filters by category any more.
+    cats = _rows(
         built["conn"],
-        """
-        SELECT h3_index, h3_res, time_window
-        FROM gold.cell_activity
-        WHERE source_id = %s
-        GROUP BY 1, 2, 3
-        HAVING count(*) = 5
-           AND sum(incident_count) FILTER (WHERE category <> 'all')
-               <> sum(incident_count) FILTER (WHERE category = 'all')
-        """,
+        "SELECT DISTINCT category FROM gold.cell_activity WHERE source_id = %s",
         (SOURCE,),
     )
-    assert bad == []
+    assert [r["category"] for r in cats] == ["all"]
+
+
+def test_only_resolutions_8_and_9_are_built(built):
+    for table in ("cell_geometry", "cell_activity", "cell_safety"):
+        res = _rows(
+            built["conn"],
+            f"SELECT DISTINCT h3_res FROM gold.{table} WHERE source_id = %s ORDER BY 1",
+            (SOURCE,),
+        )
+        assert [r["h3_res"] for r in res] == [8, 9], table
 
 
 def test_incidents_are_conserved_per_window(built):
@@ -526,12 +528,8 @@ def test_hour_ranking_orders_by_the_adjusted_rate(hour_built):
 # ---------------------------------------------------------------- windows (018)
 
 
-def test_fixture_spans_the_two_year_window_list(built):
-    # 800 days of history: the three short windows, one and two years, and no
-    # third year (70 days past last_2y is under PARTIAL_WINDOW_MIN_SHARE).
-    assert [w.name for w in built["windows"]] == [
-        "last_3m", "last_6m", "last_9m", "last_1y", "last_2y"
-    ]
+def test_the_city_has_one_window(built):
+    assert [w.name for w in built["windows"]] == ["last_1y"]
 
 
 def test_city_window_matches_what_was_built(built):
@@ -546,7 +544,7 @@ def test_city_window_matches_what_was_built(built):
     for row, w in zip(rows, built["windows"]):
         assert (row["window_start"], row["window_end"]) == (w.start, w.end)
         assert row["hourly_built"] == (w.name in gold.HOURLY_WINDOWS)
-        assert row["res10_built"] == gold.activity_builds(10, w.name)
+        assert row["res10_built"] is False
         assert row["safety_built"] is True
         n = _scalar(
             built["conn"],
@@ -561,10 +559,10 @@ def test_city_window_matches_what_was_built(built):
 
 def test_no_layer_holds_a_window_outside_the_city_list(built):
     # Every refresh deletes all windows for the city before rebuilding, so a
-    # window the list no longer has cannot linger. Legacy names are the one
-    # exception while settings.gold_legacy_windows is on.
-    allowed = {w.name for w in built["windows"]} | set(gold.LEGACY_WINDOWS)
-    for table in gold.ALL_HOURS_TABLES + gold.HOURLY_TABLES:
+    # window the list no longer has cannot linger.
+    allowed = {w.name for w in built["windows"]}
+    for table in ("cell_activity", "cell_safety", "cell_hour_safety", "cell_hour_profile",
+                  "cell_dow_factor"):
         names = {
             r["time_window"]
             for r in _rows(
@@ -576,49 +574,9 @@ def test_no_layer_holds_a_window_outside_the_city_list(built):
         assert names <= allowed, (table, names - allowed)
 
 
-@pytest.mark.parametrize("table", ["cell_activity", "cell_safety", "cell_offense_mix",
-                                   "cell_hour_profile"])
-def test_legacy_names_are_exact_copies(built, table, monkeypatch):
-    # gold.write_legacy_windows: last_12m / last_24m / last_90d are the rows of
-    # last_1y / last_2y / last_3m under the old name, so the previous release
-    # reads the same numbers the new one serves. settings.gold_legacy_windows is
-    # off by default, so turn it on for the copy, and off again after to check
-    # a refresh with it off deletes them (and to leave the fixture as built).
-    from safety.config import settings
-
-    conn = built["conn"]
-
-    def fingerprint(name):
-        (row,) = _rows(
-            conn,
-            f"""
-            SELECT count(*) AS n, md5(string_agg(j, ',' ORDER BY j)) AS digest
-            FROM (
-                SELECT (to_jsonb(t) - 'time_window')::text AS j
-                FROM gold.{table} t
-                WHERE source_id = %s AND time_window = %s
-            ) rows
-            """,
-            (SOURCE, name),
-        )
-        return row["n"], row["digest"]
-
-    monkeypatch.setattr(settings, "gold_legacy_windows", True)
-    gold.write_legacy_windows(conn, SOURCE, (table,))
-    conn.commit()
-    for legacy, current in gold.LEGACY_WINDOWS.items():
-        if table == "cell_hour_profile" and current not in gold.HOURLY_WINDOWS:
-            continue
-        old_n, old_digest = fingerprint(legacy)
-        new_n, new_digest = fingerprint(current)
-        assert new_n > 0, (table, current)
-        assert (old_n, old_digest) == (new_n, new_digest), (table, legacy)
-
-    monkeypatch.setattr(settings, "gold_legacy_windows", False)
-    gold.write_legacy_windows(conn, SOURCE, (table,))
-    conn.commit()
-    for legacy in gold.LEGACY_WINDOWS:
-        assert fingerprint(legacy)[0] == 0, (table, legacy)
+def test_dropped_layers_are_gone(built):
+    for table in ("cell_daily", "cell_monthly", "cell_offense_mix"):
+        assert _scalar(built["conn"], "SELECT to_regclass(%s) IS NULL", (f"gold.{table}",))
 
 
 # ---------------------------------------------------------------- pre-aggregation
@@ -648,18 +606,7 @@ def _layer_snapshot(conn):
             (SOURCE,),
         )
     }
-    mix = {
-        (r["h3_index"], r["time_window"], r["rank"]): r
-        for r in _rows(
-            conn,
-            """
-            SELECT h3_index, time_window, rank, raw_offense_text, incident_count
-            FROM gold.cell_offense_mix WHERE source_id = %s
-            """,
-            (SOURCE,),
-        )
-    }
-    return activity, safety, mix
+    return activity, safety
 
 
 def _rebuild(conn, preaggregate, monkeypatch):
@@ -674,19 +621,18 @@ def _rebuild(conn, preaggregate, monkeypatch):
 def test_preaggregated_gold_matches_the_per_window_sql(built, monkeypatch):
     # gold.PREAGGREGATE: each layer reads silver once into bucket aggregates and
     # sums buckets per window, instead of rescanning silver per window. The two
-    # must agree: counts and the offense mix exactly, the severity-weighted
+    # must agree: counts exactly, the severity-weighted
     # sums to float rounding (they are summed in a different order).
     conn = built["conn"]
     direct = _rebuild(conn, False, monkeypatch)
     pre = _rebuild(conn, True, monkeypatch)
 
-    for name, a, b in zip(("activity", "safety", "mix"), direct, pre):
+    for name, a, b in zip(("activity", "safety"), direct, pre):
         assert a.keys() == b.keys(), name
         assert a, name
 
     for key, row in direct[0].items():
         assert row == pre[0][key], key
-    assert direct[2] == pre[2]
 
     differing = 0
     for key, row in direct[1].items():
@@ -725,184 +671,23 @@ def test_floor_follows_pull_coverage_not_stray_old_dates(built):
     try:
         assert gold.history_floor(conn, SOURCE) == covered
         names = [w.name for w in gold.city_windows(conn, SOURCE, ANCHOR)]
-        assert names[-1] == "last_1y", names
+        assert names == ["last_1y"], names
+        # A pull that reached further back than the city keeps: the floor is
+        # the retention cutoff, never older.
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE etl.pull_run SET window_start = %s WHERE pull_id = %s",
+                (ANCHOR - timedelta(days=4000), pull_id),
+            )
+        assert gold.history_floor(conn, SOURCE) == retention.city_cutoff(conn, SOURCE)
     finally:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM etl.pull_run WHERE pull_id = %s", (pull_id,))
         conn.commit()
 
 
-# ------------------------------------------------------- custom ranges (020)
-
-
-def _daily(conn):
-    return {
-        (r["h3_res"], r["day"], r["h3_index"]): r
-        for r in _rows(
-            conn,
-            "SELECT * FROM gold.cell_daily WHERE source_id = %s",
-            (SOURCE,),
-        )
-    }
-
-
-def test_daily_rollup_conserves_incidents(built):
-    # gold.refresh_cell_daily: every incident from the floor to the anchor is in
-    # exactly one row per daily resolution, and the categories add up to it.
-    conn = built["conn"]
-    daily = _daily(conn)
-    assert {res for res, _, _ in daily} == set(gold.DAILY_RESOLUTIONS)
-    for res in gold.DAILY_RESOLUTIONS:
-        rows = [r for (rr, _, _), r in daily.items() if rr == res]
-        assert sum(r["c_all"] for r in rows) == N_ROWS, res
-    for row in daily.values():
-        assert row["c_all"] == (
-            row["c_violent"] + row["c_property"] + row["c_quality_of_life"] + row["c_other"]
-        )
-    per_day = Counter(r["date"] for r in built["rows"])
-    by_day = Counter()
-    for (res, day, _), row in daily.items():
-        if res == 8:
-            by_day[day] += row["c_all"]
-    assert by_day == per_day
-
-
-def test_selectable_start_is_the_oldest_stored_day(built):
-    conn = built["conn"]
-    oldest = min(r["date"] for r in built["rows"])
-    assert _scalar(
-        conn, "SELECT selectable_start FROM gold.city_snapshot WHERE source_id = %s", (SOURCE,)
-    ) == oldest
-
-
-def test_daily_rebuild_writes_only_what_changed(built):
-    conn = built["conn"]
-    before = _daily(conn)
-    try:
-        assert gold.refresh_cell_daily(conn, SOURCE, built["windows"]) == 0
-        # A withdrawn record: its (cell, day) rows shrink or go, nothing else moves.
-        gone = built["rows"][1]
-        with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM silver.incident WHERE source_id = %s AND incident_key = %s",
-                (SOURCE, gone["key"]),
-            )
-        gold.refresh_cell_daily(conn, SOURCE, built["windows"])
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM gold.cell_daily WHERE source_id = %s", (SOURCE,))
-            after = {(r["h3_res"], r["day"], r["h3_index"]): r for r in cur.fetchall()}
-    finally:
-        conn.rollback()
-    for res in gold.DAILY_RESOLUTIONS:
-        key = (res, gone["date"], gone[f"r{res}"])
-        if before[key]["c_all"] == 1:
-            assert key not in after
-        else:
-            assert after[key]["c_all"] == before[key]["c_all"] - 1
-    changed = {k for k in before if before[k] != after.get(k)}
-    assert len(changed) == len(gold.DAILY_RESOLUTIONS)
-
-
 def _features(document):
-    return {f["id"]: f["properties"] for f in document["features"]}
-
-
-@pytest.mark.parametrize("res", gold.DAILY_RESOLUTIONS)
-def test_range_equal_to_a_window_ranks_like_the_stored_window(built, res):
-    # The API's range path sums gold.cell_daily and runs safety.ranking_sql; the
-    # ETL ranked the stored window with the same SQL over its own aggregates.
-    # Over the same dates the two must agree: counts and the activity ranking
-    # exactly, the severity-weighted ranking to float rounding.
-    from safety.api import repository as repo
-
-    conn = built["conn"]
-    try:
-        # Serve the scheme the fixture built (see `built`), and roll the daily
-        # weights up under it.
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE reference.source_registry SET severity_scheme_version = %s "
-                "WHERE source_id = %s",
-                (AREA_SCHEME, SOURCE),
-            )
-        gold.refresh_cell_daily(conn, SOURCE, built["windows"])
-        assert repo.range_scheme(conn, SOURCE) is not None
-
-        compared = 0
-        for window in built["windows"]:
-            for category in ("all", "violent"):
-                stored = repo.cells_geojson(
-                    conn, source_id=SOURCE, h3_res=res, time_window=window.name,
-                    category=category,
-                )
-                ranged = repo.cells_geojson(
-                    conn, source_id=SOURCE, h3_res=res, time_window=window.name,
-                    category=category,
-                    date_range=repo.DateRange(window.start, window.end),
-                )
-                a, b = _features(stored), _features(ranged)
-                assert a.keys() == b.keys() and a, (window.name, category)
-                assert ranged["metadata"]["total_count"] == stored["metadata"]["total_count"]
-                differing = 0
-                for h3, p in a.items():
-                    q = b[h3]
-                    for field in ("count", "per_km2", "percentile", "tier", "rank", "of_cells"):
-                        assert p[field] == q[field], (window.name, category, h3, field)
-                    for field in ("sw_violent", "sw_nonviolent"):
-                        assert abs((p[field] or 0) - (q[field] or 0)) <= 0.1, (h3, field)
-                    for field in ("safety_violent", "safety_nonviolent"):
-                        assert p[field] is not None and q[field] is not None, (h3, field)
-                        if abs(p[field] - q[field]) > 1e-4:
-                            differing += 1
-                assert differing <= len(a) * 0.02, (window.name, category, differing)
-                compared += 1
-        assert compared
-    finally:
-        conn.rollback()
-
-
-def test_single_day_range_counts_that_day(built):
-    from safety.api import repository as repo
-
-    conn = built["conn"]
-    day = Counter(r["date"] for r in built["rows"]).most_common(1)[0][0]
-    try:
-        totals = repo.city_totals(
-            conn, source_id=SOURCE, time_window="", h3_res=8,
-            date_range=repo.DateRange(day, day),
-        )
-        doc = repo.cells_geojson(
-            conn, source_id=SOURCE, h3_res=8, time_window="", category="all",
-            date_range=repo.DateRange(day, day),
-        )
-    finally:
-        conn.rollback()
-    expected = sum(1 for r in built["rows"] if r["date"] == day)
-    assert next(t for t in totals if t["category"] == "all")["incident_count"] == expected
-    assert doc["metadata"]["total_count"] == expected
-    # Every cell in the universe is ranked, the empty ones at tier 0.
-    assert all(f["properties"]["tier"] == 0 for f in doc["features"]
-               if f["properties"]["count"] == 0)
-
-
-def test_range_cell_detail_matches_the_stored_window(built):
-    from safety.api import repository as repo
-
-    conn = built["conn"]
-    window = next(w for w in built["windows"] if w.name == "last_1y")
-    cell = Counter(r["r9"] for r in built["rows"]).most_common(1)[0][0]
-    try:
-        stored = repo.cell_detail(conn, h3_index=cell, time_window=window.name)
-        ranged = repo.cell_detail(
-            conn, h3_index=cell, time_window=window.name,
-            date_range=repo.DateRange(window.start, window.end),
-        )
-    finally:
-        conn.rollback()
-    assert ranged["headline"] == stored["headline"]
-    assert ranged["by_category"] == stored["by_category"]
-    assert [dict(r) for r in ranged["top_offenses"]] == [dict(r) for r in stored["top_offenses"]]
-    assert ranged["hour_profile"] is None and ranged["range"]["from"] == window.start.isoformat()
+    return {f["properties"]["h3"]: f["properties"] for f in document["features"]}
 
 
 def test_cell_hour_profile_splits_by_track(built):
@@ -961,47 +746,21 @@ def test_incremental_skips_when_nothing_is_pending(built):
     ) == stamp
 
 
-def test_incremental_keeps_long_windows_until_due(built):
+def test_incremental_rebuilds_when_anything_is_pending(built):
     from safety.etl import pending
 
     conn = built["conn"]
-    assert "last_2y" in [w.name for w in built["windows"]]
-    daily_before = _daily(conn)
-    long_before = _window_refreshed_at(conn, "last_2y")
-    short_before = _window_refreshed_at(conn, "last_1y")
-
+    before = _window_refreshed_at(conn, "last_1y")
     pending.mark(conn, SOURCE, ANCHOR - timedelta(days=10))
     conn.commit()
     result = gold.refresh_all(conn, SOURCE, PIPELINE_VERSION, incremental=True)
-    assert "last_2y" not in result["windows_rebuilt"]
-    assert "last_1y" in result["windows_rebuilt"]
-    assert result["daily_rebuilt_from"] == (ANCHOR - timedelta(days=10)).isoformat()
+    assert result["windows"] == ["last_1y"]
     assert pending.get(conn, SOURCE) is None
     conn.rollback()
-    # The kept window's rows are the same rows; the short ones were rewritten.
-    assert _window_refreshed_at(conn, "last_2y") == long_before
-    assert _window_refreshed_at(conn, "last_1y") > short_before
-    # The partial daily rebuild over unchanged silver changes nothing.
-    assert _daily(conn) == daily_before
-
-    # A week behind the data: the next incremental rebuilds it too.
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE gold.city_window SET window_end = window_end - %s "
-            "WHERE source_id = %s AND time_window = 'last_2y'",
-            (gold.LONG_WINDOW_MAX_AGE, SOURCE),
-        )
-    pending.mark(conn, SOURCE, ANCHOR)
+    assert _window_refreshed_at(conn, "last_1y") > before
+    # Leave the area scheme the other tests read in place.
+    gold.refresh_safety_layer(conn, SOURCE, built["windows"], scheme_version=AREA_SCHEME)
     conn.commit()
-    result = gold.refresh_all(conn, SOURCE, PIPELINE_VERSION, incremental=True)
-    assert "last_2y" in result["windows_rebuilt"]
-    conn.rollback()
-    assert _window_refreshed_at(conn, "last_2y") > long_before
-    assert _scalar(
-        conn,
-        "SELECT window_end FROM gold.city_window WHERE source_id = %s AND time_window = 'last_2y'",
-        (SOURCE,),
-    ) == ANCHOR
 
 
 def test_undated_mark_wins_over_a_dated_one(built):
@@ -1210,9 +969,7 @@ def test_day_layer_scales_the_rate_and_ranks_the_whole_city(dow_built, hour_buil
                     (SOURCE, res, window.name, AREA_SCHEME, saturday),
                 )
                 factor = {(r["h3_index"], r["track"]): r["day_factor"] for r in cur.fetchall()}
-            args = dict(
-                source_id=SOURCE, h3_res=res, time_window=window.name, category="all", hour=hour
-            )
+            args = dict(source_id=SOURCE, h3_res=res, time_window=window.name, hour=hour)
             plain = _features(repo.cells_geojson(conn, **args))
             timed = _features(repo.cells_geojson(conn, **args, day=saturday))
             assert timed.keys() == plain.keys() and timed
@@ -1229,12 +986,5 @@ def test_day_layer_scales_the_rate_and_ranks_the_whole_city(dow_built, hour_buil
                 for safer, riskier in zip(ordered[1:], ordered):
                     assert safer[f"hsm_{suffix}"] <= riskier[f"hsm_{suffix}"] + 1e-3
 
-            # A bbox narrows what is returned, never what a cell is ranked against.
-            west, south, east, north = BOX
-            half = (west, south, (west + east) / 2, north)
-            boxed = _features(repo.cells_geojson(conn, **args, day=saturday, bbox=half))
-            assert boxed and len(boxed) < len(timed)
-            for h3, p in boxed.items():
-                assert p["hsafety_violent"] == timed[h3]["hsafety_violent"], h3
     finally:
         conn.rollback()

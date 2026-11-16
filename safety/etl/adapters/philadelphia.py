@@ -68,6 +68,46 @@ _INCIDENT_COLUMNS = (
     "point_y",
 )
 
+# Waits between Carto attempts: 5, 10, 20, 40, 60, 60 ... seconds. Long enough
+# to outlast the few-minute bad patches the endpoint has, short enough that a
+# real outage still fails within a tick.
+_BACKOFF_BASE_SECONDS = 5.0
+_BACKOFF_CAP_SECONDS = 60.0
+# Carto's error bodies are one short JSON line; anything longer is cut here so
+# an HTML error page cannot flood the log or the ops ledger.
+_ERROR_TEXT_LIMIT = 300
+
+
+def _backoff_seconds(attempt: int) -> float:
+    return min(_BACKOFF_BASE_SECONDS * 2.0 ** (attempt - 1), _BACKOFF_CAP_SECONDS)
+
+
+def _describe_failure(exc: Exception) -> str:
+    """One line for the log: the status and what Carto said, not just the URL.
+
+    Carto answers errors as {"error": ["..."]} even when CSV was asked for, and
+    that text is the only way to tell a statement timeout from a bad query.
+    The request URL is left out: it is the whole SQL query and already in the
+    httpx line just above.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        detail = ""
+        try:
+            body = response.json()
+            errors = body.get("error") if isinstance(body, dict) else None
+            if isinstance(errors, list):
+                detail = "; ".join(str(e) for e in errors)
+            elif errors:
+                detail = str(errors)
+        except ValueError:
+            pass
+        if not detail:
+            detail = " ".join(response.text.split())
+        detail = detail[:_ERROR_TEXT_LIMIT] or "(empty body)"
+        return f"HTTP {response.status_code}: {detail}"
+    return f"{type(exc).__name__}: {exc}"
+
 
 class PhiladelphiaCartoAdapter(SourceAdapter):
     api_type: ClassVar[str] = "carto_sql"
@@ -77,9 +117,16 @@ class PhiladelphiaCartoAdapter(SourceAdapter):
     # ------------------------------------------------------------------ fetch
 
     def _get(self, params: dict[str, str]) -> httpx.Response:
-        """GET with bounded exponential backoff on transient upstream failures."""
-        last_exc: Exception | None = None
-        for attempt in range(1, settings.http_max_retries + 1):
+        """GET with capped exponential backoff on upstream failures.
+
+        Every HTTP error is retried, 400 included: Carto answers 400 both for a
+        malformed query and, intermittently, for this adapter's fixed monthly
+        query that succeeds unchanged minutes later. A genuinely bad query just
+        fails after the last attempt, with Carto's own error text attached.
+        """
+        attempts = max(settings.carto_max_retries, 1)
+        last_error = ""
+        for attempt in range(1, attempts + 1):
             try:
                 response = httpx.get(
                     self.config.base_url,
@@ -87,26 +134,23 @@ class PhiladelphiaCartoAdapter(SourceAdapter):
                     timeout=settings.http_timeout_seconds,
                     follow_redirects=True,
                 )
-                if response.status_code >= 500:
-                    raise httpx.HTTPStatusError(
-                        f"upstream {response.status_code}",
-                        request=response.request,
-                        response=response,
-                    )
                 response.raise_for_status()
                 return response
             except (httpx.HTTPError, httpx.TimeoutException) as exc:
-                last_exc = exc
-                backoff = 2.0**attempt
+                last_error = _describe_failure(exc)
+                if attempt == attempts:
+                    break
+                backoff = _backoff_seconds(attempt)
                 log.warning(
                     "carto request failed (attempt %s/%s), retrying in %.0fs: %s",
                     attempt,
-                    settings.http_max_retries,
+                    attempts,
                     backoff,
-                    exc,
+                    last_error,
                 )
                 time.sleep(backoff)
-        raise RuntimeError(f"Carto request failed after retries: {last_exc}")
+        log.error("carto request failed (attempt %s/%s), giving up: %s", attempts, attempts, last_error)
+        raise RuntimeError(f"Carto request failed after {attempts} attempts: {last_error}")
 
     @staticmethod
     def _month_starts(since: datetime, until: datetime) -> Iterator[tuple[datetime, datetime]]:
@@ -118,6 +162,10 @@ class PhiladelphiaCartoAdapter(SourceAdapter):
                 nxt = cursor.replace(month=cursor.month + 1)
             yield cursor, min(nxt, until)
             cursor = nxt
+
+    def expected_chunks(self, since: datetime, until: datetime) -> int | None:
+        """One chunk per calendar month."""
+        return sum(1 for _ in self._month_starts(since, until))
 
     def fetch_incidents(self, since: datetime, until: datetime) -> Iterator[RawChunk]:
         for chunk_start, chunk_end in self._month_starts(since, until):

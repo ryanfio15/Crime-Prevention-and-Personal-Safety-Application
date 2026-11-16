@@ -1,0 +1,16 @@
+# helm install traefik traefik/traefik -n traefik --create-namespace -f traefik-values.yaml
+deployment:
+  replicas: 2
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+ingressClass:
+  enabled: true
+  isDefaultClass: true
+  name: traefik
+service:
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path: /ping
+  spec:
+    # Keeps the visitor's address for the rate limits.
+    externalTrafficPolicy: Local

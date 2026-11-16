@@ -1,0 +1,30 @@
+# The cloud-neutral deployment (docs/KUBERNETES.md). Overlays add what differs
+# per provider: storage classes, node placement, the ingress controller's
+# Service and the pod CIDR the API trusts for X-Forwarded-For.
+#
+# Not here, on purpose:
+# - the CloudNativePG operator, installed once per cluster by deploy.sh;
+# - the migrate and bootstrap Jobs (../jobs/). Jobs are immutable, so deploy.sh
+#   renders them per release rather than letting `kubectl apply` trip over them.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: safety
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: safety
+    includeSelectors: false
+resources:
+  - namespace.yaml
+  - config.yaml
+  - db-cluster.yaml
+  - api.yaml
+  - valhalla.yaml
+  - etl.yaml
+  - backup.yaml
+  - ingress.yaml
+  - networkpolicies.yaml
+# `safety-app` is a placeholder; deploy.sh sets the real image and tag.
+images:
+  - name: safety-app
+    newName: ghcr.io/ryanfio15/crime-prevention-and-personal-safety-application
+    newTag: horizontal-scaling

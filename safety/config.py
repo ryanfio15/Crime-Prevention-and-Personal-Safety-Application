@@ -11,11 +11,6 @@ MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 CROSSWALK_DIR = REPO_ROOT / "reference" / "crosswalk"
 SEVERITY_DIR = REPO_ROOT / "reference" / "severity"
 WEB_DIR = REPO_ROOT / "web"
-# Dev-only alternative front end, served under /<name>/ when `extra_frontends`
-# is on: a frozen copy of the main site before the map-only redesign (the
-# ui-dev tag; scripts/pin-frontend.sh, tests/test_dev_frontend.py). It calls
-# the same /api/v1 as the main one.
-EXTRA_WEB_DIRS = {"dev": REPO_ROOT / "web-dev"}
 
 
 class Settings(BaseSettings):
@@ -44,8 +39,16 @@ class Settings(BaseSettings):
     # Local stand-in for the S3-compatible bronze bucket (design doc S9.2).
     bronze_root: Path = REPO_ROOT / "data" / "bronze"
 
-    # Trailing window the Phase 1 backfill loads (design doc S15).
-    backfill_months: int = 24
+    # How many days of incidents each city keeps (safety/etl/retention.py).
+    # Anything older -- 366 days or more before the city's local today -- is
+    # deleted from silver and never loaded again, and raw bronze pulls older
+    # than this are removed from disk. The product serves exactly one rolling
+    # year; nothing reads further back.
+    retention_days: int = 365
+
+    # Trailing window the backfill asks the source for, in months. The fetch is
+    # clamped to the retention cutoff anyway, so twelve is enough to cover it.
+    backfill_months: int = 12
 
     # Swagger UI / ReDoc / openapi.json. On by default: the frontend is served
     # from the same origin and names every endpoint in plain JavaScript
@@ -61,10 +64,6 @@ class Settings(BaseSettings):
     # development and for load testing your own instance; on anything publicly
     # reachable it is the control doing the real work.
     enable_rate_limit: bool = True
-
-    # Serve the alternative front end in EXTRA_WEB_DIRS at /dev/. Off by
-    # default so prod never grows it by merge; dev turns it on in its .env.
-    extra_frontends: bool = False
 
     # Serving-layer cache bounds (safety/api/main.py), the Redis stand-in from
     # S9.5. Settings rather than constants because the right size depends on how
@@ -90,6 +89,25 @@ class Settings(BaseSettings):
     # minutes and never get a statement timeout.
     api_statement_timeout_ms: int = 15000
     api_pool_timeout_seconds: float = 10.0
+    # Connections per API process. Eight suits the single home-server process;
+    # under Kubernetes the total is replicas x this, which has to stay under the
+    # cluster's max_connections with room for the ETL (docs/KUBERNETES.md).
+    api_pool_max_size: int = 8
+
+    # How long a city's refresh stamp is trusted before cached() asks the
+    # database again. 0 (the default) checks on every cached lookup, as the
+    # single home-server process always has. With many replicas behind a load
+    # balancer that check is the one database query a cache hit still costs, so
+    # Kubernetes sets a few seconds: a new ETL snapshot then reaches the map at
+    # most that much later, and a cache hit touches the database not at all.
+    cache_stamp_ttl_seconds: float = 0.0
+
+    # Warm the response cache when a process starts (safety/api/main.py
+    # _warm_cache): /api/v1/cities and each city's default /cells layer, fetched
+    # over loopback in the background so a freshly scheduled replica does not
+    # hand its first visitors a cold multi-second layer build. Off by default;
+    # the Kubernetes ConfigMap turns it on.
+    cache_warm_on_start: bool = False
 
     # Strict-Transport-Security max-age (safety/api/security.py), sent only on
     # https. One day to start (user decision 2026-10-07): long enough to matter,
@@ -100,6 +118,13 @@ class Settings(BaseSettings):
     # HTTP behaviour for source adapters.
     http_timeout_seconds: float = 120.0
     http_max_retries: int = 4
+    # Philadelphia's Carto endpoint has bad patches of a few minutes in which a
+    # month's query that normally succeeds comes back 400 (seen on Railway,
+    # 2026-11-16: the same URL failed at 02:04 and 02:08 and succeeded unchanged
+    # at 03:20). The shared four attempts over ~30 s lose a whole first load to
+    # one such patch, so Carto gets more attempts with longer, capped waits
+    # (philadelphia.py _get): about 2 minutes of waiting in all.
+    carto_max_retries: int = 6
 
     # Optional Socrata application token, shared by the four Socrata sources
     # (Chicago, Seattle, Los Angeles, Austin). Not credentials -- it identifies
@@ -129,11 +154,6 @@ class Settings(BaseSettings):
     # attempt on every unrelated code change. Six hours is below the ETL's own
     # six-hourly tick, so a genuine outage is still retried promptly.
     ops_retry_cooldown_hours: float = 6.0
-    # How long one `safety.ops` run spends loading city history (the `history`
-    # step) before it stops starting new slices. Keeps the ETL lock short enough
-    # that the six-hourly pull and deploys are never held up for long; the
-    # hourly safety-ops@.timer picks up where the last run stopped.
-    ops_history_minutes: float = 25.0
 
     # Bound on a single connection attempt. Without it libpq waits out the OS
     # TCP timeout, which only matters when a host accepts the packets and never
@@ -161,17 +181,6 @@ class Settings(BaseSettings):
     withdrawn_reconcile: str = "report"
     # How long deleted rows stay in etl.withdrawn_incident for exact recovery.
     withdrawn_retention_days: int = 90
-
-    # Gold time windows (safety/etl/gold.py, migration 018). While on, every
-    # refresh also writes last_3m / last_1y / last_2y under the names the
-    # previous release reads (last_90d / last_12m / last_24m), so rolling back
-    # still finds a map. Off by default now that no deployed release reads the
-    # old names (the API aliases them); a refresh with it off deletes the copies.
-    gold_legacy_windows: bool = False
-    # Fallback if the long windows do not fit: windows longer than this many
-    # years keep their incident counts but are built without the safety
-    # ranking. Unset builds the ranking for every window.
-    safety_max_window_years: int | None = None
 
     # --- directions (safety/routing/, docs/DESIGN.md S13) -----------------
     #
@@ -201,6 +210,12 @@ class Settings(BaseSettings):
     # the public services, so a slow one costs the user a clear "unavailable"
     # within seconds rather than nginx's 60 s gateway timeout.
     routing_timeout_seconds: float = 8.0
+    # A forward proxy for the public providers (https:// only -- Valhalla is
+    # plain http inside the deployment and is always reached directly). Empty:
+    # none. The routing client never reads HTTPS_PROXY from the environment;
+    # this is the one way to give it a proxy. Set from the `safety-egress`
+    # ConfigMap on FABRIC sites without IPv4 (deploy/fabric/create_slice.py).
+    routing_https_proxy: str = ""
     # Upstream calls allowed per UTC day, across all clients, before the mode
     # reports itself unavailable until midnight. Transitous asks for under 720
     # plans a day from us; 500 leaves room for retries and a second instance
@@ -216,9 +231,45 @@ class Settings(BaseSettings):
     # a malformed or hostile request still cannot ask Valhalla or Transitous
     # for a route hundreds of km long.
     route_max_km: float = 100.0
+    # Where the provider daily budgets above are counted (safety/routing/
+    # budget.py): `memory`, per process, which is right for the single home-
+    # server process; or `db`, one shared counter per provider per UTC day in
+    # public.provider_budget (migration 023). Any deployment with more than one
+    # API replica must use `db`, or the Transitous allowance is multiplied by
+    # the replica count and handed back fresh on every restart.
+    routing_budget_backend: str = "memory"
 
-    @property
-    def dsn(self) -> str:
+    # --- Kubernetes jobs (safety/joblock.py, safety/bootstrap.py) -----------
+    #
+    # How long an ETL pod waits for the shared Postgres advisory lock before it
+    # gives up -- the in-cluster equivalent of the host units' `flock -w 21600`.
+    joblock_wait_seconds: float = 21600.0
+    # The cities `python -m safety.bootstrap` enables before converging, comma
+    # separated. Austin's reuse terms are a deployment decision
+    # (docs/DEPLOYMENT.md, "Enabling a city"); drop `aus` here to leave it off.
+    bootstrap_cities: str = "phl,chi,sea,lax,dc,aus"
+
+    # --- Cities split across databases (safety/shards.py) -------------------
+    #
+    # Empty (the default, and every deployment but one): one database holds
+    # every city. Otherwise `host=city,city;host=city,city`, e.g.
+    #   safety-db1-rw=lax,dc;safety-db2-rw=aus,phl;safety-db3-rw=chi,sea
+    # -- for hardware where no single disk holds all six cities (the FABRIC
+    # `sharded` profile, docs/KUBERNETES.md). Every database carries the full
+    # schema; the API routes each request to its city's database, and the
+    # jobs run once per database (`python -m safety.shards run -- <cmd>`).
+    db_shards: str = ""
+    # Set per database by `safety.shards run`, never by hand: the cities the
+    # database it points at holds. The bootstrap disables every other city
+    # there, so no two databases load the same one.
+    shard_cities: str = ""
+    # Where the ETL lock (safety/joblock.py) is taken. Empty: POSTGRES_HOST.
+    # With shards it names one database for all of them, so a job on one
+    # database and a job on another still never overlap -- they share one ETL
+    # node's memory and the city portals' patience.
+    joblock_host: str = ""
+
+    def dsn_for(self, host: str) -> str:
         if not self.postgres_password:
             raise RuntimeError(
                 "POSTGRES_PASSWORD is not set; put it in the instance .env (see .env.example)"
@@ -227,9 +278,13 @@ class Settings(BaseSettings):
         # connections (safety/db.py) and the API's pool (safety/api/main.py).
         return (
             f"postgresql://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+            f"@{host}:{self.postgres_port}/{self.postgres_db}"
             f"?connect_timeout={self.connect_timeout_seconds}"
         )
+
+    @property
+    def dsn(self) -> str:
+        return self.dsn_for(self.postgres_host)
 
 
 settings = Settings()

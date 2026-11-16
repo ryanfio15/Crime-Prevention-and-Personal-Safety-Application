@@ -187,6 +187,21 @@ Migration 018 replaced the four fixed windows with per-city ones (`last_3m`, `la
   the legacy rows and tightens the window CHECKs, and `GOLD_LEGACY_WINDOWS` goes. The API keeps accepting the old
   names as aliases one release longer, for bookmarked links.
 
+### One rolling year (migration 024)
+
+Migration 024 is that contract step, and more: the site now serves one window, `last_1y`, and nothing older is kept.
+
+- **The migration** deletes every gold row for any other window, the per-category and resolution-10 activity rows,
+  and drops `gold.cell_daily`, `gold.cell_monthly` and `gold.cell_offense_mix`. It switches `history_enabled` off and
+  creates `etl.load_progress` for the site's progress bar. A release older than this one reads the dropped tables,
+  so do not roll back past it without restoring a dump.
+- **After the deploy.** `PIPELINE_VERSION` moved to `phase3.0.0`, so the post-deploy `safety-ops@` run rebuilds gold
+  for every city, then plans `retain` for each city with incidents older than 365 days: it drops their old silver
+  year partitions and bronze pull folders. On a city with years of history that is the moment the disk comes back.
+- **Settings gone:** `GOLD_LEGACY_WINDOWS`, `SAFETY_MAX_WINDOW_YEARS`, `OPS_HISTORY_MINUTES`, `EXTRA_FRONTENDS`
+  (`/dev/` is gone with `web-dev/`). **New:** `RETENTION_DAYS` (365). Remove the old ones from each instance's `.env`;
+  unknown keys are ignored, so leaving them is harmless.
+
 ---
 
 ## From-zero setup
@@ -970,7 +985,10 @@ container hosts and local experiments; the home server does not use it.
 ## Container image (alternative target)
 
 The `Dockerfile` (`python:3.12-slim`) builds one image for both the API and ETL roles. The home server does **not**
-use it, and **CI never builds it**.
+use it. `.github/workflows/image.yml` builds it on every push to `main`, `testing` and `horizontal-scaling`, checks it,
+and publishes it to GHCR for the Kubernetes deployment, which supplies everything listed below
+([KUBERNETES.md](KUBERNETES.md)). The image runs as UID 10001 and records its commit in `DEPLOYED_COMMIT`
+(build arg `GIT_SHA`).
 
 ```bash
 docker build -t safety:<tag> .
@@ -994,7 +1012,7 @@ The image does **not** provide any of the following; you must supply them yourse
 - a `BRONZE_ROOT` volume (the entrypoint chowns it and then drops to user `safety`).
 
 Leaving `FORWARDED_ALLOW_IPS` at its default of `*` lets clients spoof their IP to the rate limiter. `/api/v1/health` reports
-`commit: null`, because the image has no `DEPLOYED_COMMIT` file.
+`commit: null` for an image built without `--build-arg GIT_SHA=<sha>`.
 
 > ⚠️ UNVERIFIED: that the image builds and runs today. It was not built during this documentation work, because there
 > was no docker access and building on the production host is not allowed.

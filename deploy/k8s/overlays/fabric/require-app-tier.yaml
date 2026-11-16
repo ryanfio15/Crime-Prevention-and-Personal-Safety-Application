@@ -1,0 +1,8 @@
+- op: add
+  path: /spec/template/spec/affinity/nodeAffinity/requiredDuringSchedulingIgnoredDuringExecution
+  value:
+    nodeSelectorTerms:
+      - matchExpressions:
+          - key: safety.io/tier
+            operator: In
+            values: ["app"]

@@ -10,8 +10,12 @@ on:
     # remediation/** so review-loop branches are tested on every push, before
     # anything is fast-forwarded to testing (which deploys dev). The deployer
     # only reads check runs on the head of main/testing, so runs on other
-    # branches do not change what deploys.
-    branches: [main, testing, "remediation/**"]
+    # branches do not change what deploys. horizontal-scaling carries the
+    # Kubernetes deployment (docs/KUBERNETES.md) until it is merged.
+    # railway-deployment likewise carries the Railway deployment
+    # (docs/RAILWAY.md); Railway's "Wait for CI" deploys a push to it only
+    # once this run has passed.
+    branches: [main, testing, "remediation/**", horizontal-scaling, railway-deployment]
   pull_request:
 
 permissions:
@@ -60,11 +64,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Byte-compile
-        run: python -m compileall -q safety
+        run: python -m compileall -q safety deploy/railway
       # Importing the entry points catches a missing dependency or a broken
       # module-level statement that compileall cannot see.
       - name: Import entry points
-        run: python -c "import safety.api.main, safety.migrate, safety.etl.run"
+        run: python -c "import safety.api.main, safety.migrate, safety.etl.run, safety.bootstrap, safety.joblock, safety.schemawait, safety.shards"
       - name: Unit tests (no database)
         run: python -m pytest -q -m "not db"
       # The shell expands the glob: Node 22's `node --test <dir>` treats a
@@ -75,16 +79,16 @@ jobs:
           node --check web/html.js
           node --check web/hours.js
           node --check web/directions.js
-          node --check web/windows.js
+          node --check web/progress.js
           node --test tests/js/*.test.mjs
       - name: Migrate CLI parses
         run: python -m safety.migrate --help
       # One file per bash -n: given several, it parses the first and treats the
       # rest as that script's arguments.
       - name: Deploy scripts parse
-        run: for f in deploy/*.sh deploy/lib/*.sh deploy/valhalla/*.sh deploy/git-hooks/*; do bash -n "$f"; done
+        run: for f in deploy/*.sh deploy/lib/*.sh deploy/valhalla/*.sh deploy/k8s/*.sh deploy/k8s/loadtest/*.sh deploy/railway/*.sh deploy/git-hooks/*; do bash -n "$f"; done
       - name: Shellcheck deploy scripts
-        run: shellcheck deploy/*.sh deploy/lib/*.sh deploy/valhalla/*.sh deploy/git-hooks/*
+        run: shellcheck deploy/*.sh deploy/lib/*.sh deploy/valhalla/*.sh deploy/k8s/*.sh deploy/k8s/loadtest/*.sh deploy/railway/*.sh deploy/git-hooks/*
       # As the superuser, and with main's own code: on the host every object
       # main's migrations created was created by `safety`, and the role switch
       # has to *transfer* them, so CI starts from exactly that shape. This

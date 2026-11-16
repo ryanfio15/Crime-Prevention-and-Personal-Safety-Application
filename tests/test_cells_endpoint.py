@@ -1,40 +1,25 @@
-"""/api/v1/cells serves cached gzip bytes without recompressing them (F9),
-resolves the requested window against the city's own list (migration 018), and
-serves any two calendar dates (migration 020)."""
+"""/api/v1/cells serves cached gzip bytes without recompressing them (F9), and
+serves the last year and nothing else: no other window, no date range, no
+category, no resolution 10 (migration 024)."""
 
 from __future__ import annotations
 
 import gzip
 import json
-from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 
 from safety.api import main
 
-# last_12m on purpose: the previous release's name, which must keep working as
-# an alias for last_1y.
-URL = "/api/v1/cells?city=phl&res=8&window=last_12m"
-
-
-def _window(name, start, hourly=False, res10=False):
-    return {
-        "id": name, "label": name, "hourly": hourly, "res10": res10, "safety": True,
-        "start": start, "end": "2025-06-30",
-    }
-
+URL = "/api/v1/cells?city=phl&res=8"
 
 WINDOWS = [
-    _window("last_3m", "2025-04-01"),
-    _window("last_1y", "2024-07-01", hourly=True, res10=True),
-    _window("last_2y", "2023-07-01", res10=True),
+    {
+        "id": "last_1y", "label": "Last 12 months", "hourly": True, "safety": True,
+        "start": "2024-07-01", "end": "2025-06-30",
+    }
 ]
-CITY = {
-    "source_id": "phl",
-    "selectable_start": date(2006, 1, 1),
-    "coverage_end": date(2025, 6, 30),
-}
 FIXTURE = {
     "type": "FeatureCollection",
     "features": [
@@ -61,7 +46,6 @@ def calls(monkeypatch):
     monkeypatch.setattr(main, "_refresh_stamp", lambda conn, source_id=None: "s1")
     # Straight past the cache, so the cache assertions below count layers only.
     monkeypatch.setattr(main, "city_windows", lambda conn, source_id: WINDOWS)
-    monkeypatch.setattr(main.repo, "get_city", lambda conn, source_id: dict(CITY))
     return seen
 
 
@@ -115,28 +99,6 @@ def test_city_without_a_stamp_is_never_cached(calls, monkeypatch):
     assert not main._cache
 
 
-def test_non_finite_bbox_is_rejected(calls):
-    r = TestClient(main.app).get(URL + "&bbox=nan,0,1,1")
-    assert r.status_code == 400
-    assert calls == []
-
-
-def test_bbox_requests_are_served_fresh(calls):
-    client = TestClient(main.app)
-    client.get(URL + "&bbox=-75.2,39.9,-75.1,40.0")
-    client.get(URL + "&bbox=-75.2,39.9,-75.1,40.0")
-    assert len(calls) == 2
-    assert not main._cache
-
-
-def test_min_count_requests_are_served_fresh(calls):
-    client = TestClient(main.app)
-    client.get(URL + "&min_count=1")
-    client.get(URL + "&min_count=1")
-    assert len(calls) == 2
-    assert not main._cache
-
-
 def test_plain_layer_is_still_cached(calls):
     client = TestClient(main.app)
     client.get(URL)
@@ -145,142 +107,73 @@ def test_plain_layer_is_still_cached(calls):
     assert main._cache_stats["hits"] == 1
 
 
-# ---------------------------------------------------------------- windows (018)
+# ------------------------------------------------------- one year only (024)
 
 
-def test_legacy_name_is_served_as_the_new_window(calls):
+def test_the_last_year_is_served(calls):
     r = TestClient(main.app).get(URL)
     assert r.status_code == 200
     assert calls[0]["time_window"] == "last_1y"
-    (key,) = [k for k in main._cache if k[0] == "cells"]
-    assert "last_1y" in key and "last_12m" not in key
-
-
-def test_alias_and_new_name_share_one_cache_entry(calls):
-    client = TestClient(main.app)
-    client.get(URL)
-    client.get(URL.replace("last_12m", "last_1y"))
-    assert len(calls) == 1
-
-
-def test_window_the_city_does_not_have_is_rejected(calls):
-    r = TestClient(main.app).get(URL.replace("last_12m", "last_10y"))
-    assert r.status_code == 400
-    assert "last_10y" in r.json()["detail"]
-    assert calls == []
-
-
-def test_malformed_window_is_rejected(calls):
-    r = TestClient(main.app).get(URL.replace("last_12m", "last_7m"))
-    assert r.status_code == 400
-    assert calls == []
-
-
-def test_hour_needs_the_hourly_window(calls):
-    client = TestClient(main.app)
-    assert client.get(URL + "&hour=3").status_code == 200
-    assert client.get(URL.replace("last_12m", "last_2y") + "&hour=3").status_code == 400
-
-
-def test_res10_needs_a_res10_window(calls):
-    client = TestClient(main.app)
-    base = "/api/v1/cells?city=phl&res=10&window="
-    assert client.get(base + "last_2y").status_code == 200
-    assert client.get(base + "last_3m").status_code == 400
-
-
-def test_city_with_no_windows_checks_the_pattern_only(calls, monkeypatch):
-    monkeypatch.setattr(main, "city_windows", lambda conn, source_id: [])
-    r = TestClient(main.app).get("/api/v1/cells?city=nowhere&res=8&window=last_7y")
-    assert r.status_code == 200
-    assert calls[0]["time_window"] == "last_7y"
-
-
-def test_retired_30_day_link_opens_on_3_months(calls):
-    r = TestClient(main.app).get(URL.replace("last_12m", "last_30d"))
-    assert r.status_code == 200
-    assert calls[0]["time_window"] == "last_3m"
-
-
-# ------------------------------------------------------------ date ranges (020)
-
-RANGE = "/api/v1/cells?city=phl&res=8"
-
-
-def test_custom_range_is_ranked_from_the_dates(calls):
-    r = TestClient(main.app).get(RANGE + "&from=2025-01-01&to=2025-03-31")
-    assert r.status_code == 200
-    assert calls[0]["date_range"] == main.repo.DateRange(date(2025, 1, 1), date(2025, 3, 31))
-    (key,) = [k for k in main._cache if k[0] == "cells"]
-    assert ("range", "2025-01-01", "2025-03-31") in key
-
-
-def test_a_single_day_is_a_range(calls):
-    r = TestClient(main.app).get(RANGE + "&from=2025-02-03&to=2025-02-03")
-    assert r.status_code == 200
-    assert calls[0]["date_range"].start == calls[0]["date_range"].end == date(2025, 2, 3)
-
-
-def test_end_past_the_data_is_clamped_to_one_cache_entry(calls):
-    client = TestClient(main.app)
-    today = date.today().isoformat()
-    client.get(RANGE + f"&from=2025-01-01&to={today}")
-    client.get(RANGE + "&from=2025-01-01&to=2025-06-30")
-    assert len(calls) == 1
-    assert calls[0]["date_range"].end == date(2025, 6, 30)
-
-
-def test_range_equal_to_a_window_is_served_as_that_window(calls):
-    client = TestClient(main.app)
-    r = client.get(RANGE + "&from=2024-07-01&to=2025-06-30")
-    assert r.status_code == 200
-    assert calls[0]["date_range"] is None
-    assert calls[0]["time_window"] == "last_1y"
-    # ...including the hourly layer the stored window carries.
-    assert client.get(RANGE + f"&from=2024-07-01&to={date.today()}&hour=3").status_code == 200
-    # And it shares the window's cache entry.
-    client.get(RANGE + "&window=last_1y")
-    assert len(calls) == 2  # the hour request is its own layer
 
 
 @pytest.mark.parametrize(
-    "query",
+    "extra",
     [
-        "&from=2025-03-01&to=2025-01-01",  # reversed
-        "&from=2005-12-31&to=2025-01-01",  # before the city's oldest day
-        f"&from=2025-01-01&to={date.today() + timedelta(days=5)}",  # future
-        "&from=2025-01-01",  # half a range
-        "&to=2025-01-01",
+        "&window=last_2y",
+        "&window=last_3m",
+        "&from=2020-01-01&to=2020-12-31",
+        "&category=violent",
+        "&min_count=5",
+        "&bbox=-75.2,39.9,-75.1,40.0",
+        "&measure=activity",
     ],
 )
-def test_bad_ranges_are_rejected(calls, query):
-    r = TestClient(main.app).get(RANGE + query)
+def test_other_data_cannot_be_asked_for(calls, extra):
+    """Anything that used to choose other data is ignored: the same layer, from
+    the same cache entry, as the plain request."""
+    client = TestClient(main.app)
+    plain = client.get(URL)
+    other = client.get(URL + extra)
+    assert other.status_code == 200
+    assert other.content == plain.content
+    assert len(calls) == 1
+    assert set(calls[0]) == {"source_id", "h3_res", "time_window", "hour", "day"}
+
+
+def test_res10_is_not_served(calls):
+    r = TestClient(main.app).get("/api/v1/cells?city=phl&res=10")
     assert r.status_code == 400
     assert calls == []
 
 
-def test_range_needs_a_daily_resolution(calls):
-    r = TestClient(main.app).get("/api/v1/cells?city=phl&res=10&from=2025-01-01&to=2025-03-31")
-    assert r.status_code == 400
-    assert "res 10" in r.json()["detail"]
-
-
-def test_range_has_no_hourly_layer(calls):
-    r = TestClient(main.app).get(RANGE + "&from=2025-01-01&to=2025-03-31&hour=3")
-    assert r.status_code == 400
-    assert "time-of-day" in r.json()["detail"]
-
-
-def test_city_not_rebuilt_refuses_ranges_but_serves_windows(calls, monkeypatch):
-    monkeypatch.setattr(
-        main.repo, "get_city", lambda conn, source_id: {**CITY, "selectable_start": None}
-    )
+def test_hour_and_day_are_served(calls):
     client = TestClient(main.app)
-    assert client.get(RANGE + "&from=2025-01-01&to=2025-03-31").status_code == 400
-    assert client.get(RANGE + "&window=last_1y").status_code == 200
+    assert client.get(URL + "&hour=3&day=5").status_code == 200
+    assert calls[0]["hour"] == 3 and calls[0]["day"] == 5
 
 
-def test_safety_is_dropped_past_the_configured_limit(calls, monkeypatch):
-    monkeypatch.setattr(main.settings, "safety_max_window_years", 1)
-    TestClient(main.app).get(RANGE + "&from=2020-01-01&to=2025-03-31")
-    assert calls[0]["date_range"].safety is False
+def test_hour_out_of_range_is_rejected(calls):
+    assert TestClient(main.app).get(URL + "&hour=24").status_code == 422
+
+
+def test_city_with_no_window_yet_still_answers(calls, monkeypatch):
+    monkeypatch.setattr(main, "city_windows", lambda conn, source_id: [])
+    r = TestClient(main.app).get("/api/v1/cells?city=nowhere&res=8")
+    assert r.status_code == 200
+    assert calls[0]["time_window"] == "last_1y"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/summary?city=phl",
+        "/api/v1/hours?city=phl",
+        "/api/v1/categories?city=phl",
+        "/api/v1/cells/ring?h3=882a13d0b1fffff",
+        "/api/v1/cells/lookup?lat=39.95&lng=-75.16",
+    ],
+)
+def test_retired_endpoints_are_gone(calls, path):
+    # /cells/ring and /cells/lookup now fall to /cells/{h3_index}, which refuses
+    # "ring" and "lookup" as cell ids.
+    assert TestClient(main.app).get(path).status_code in (400, 404)

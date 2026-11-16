@@ -10,7 +10,7 @@
    how this hour of the day has usually compared with the rest of the day.
 
    A classic script, not a module, for the same reason as html.js and
-   windows.js: the browser loads it with a plain <script> before app.js, and
+   progress.js: the browser loads it with a plain <script> before app.js, and
    Node's vm loads it unchanged in tests/js/hours.test.mjs. */
 (function (root) {
   const HOUR_BLOCKS = 24;

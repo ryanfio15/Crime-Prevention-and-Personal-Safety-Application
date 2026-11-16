@@ -1,14 +1,10 @@
-"""The two all-hours rankings, as SQL shared by the ETL and the serving layer.
+"""The two all-hours rankings, as SQL.
 
-The ETL writes these into gold.cell_activity and gold.cell_safety for every
-precomputed window (safety.etl.gold). The API runs the very same statements for
-a date range nobody precomputed, summing gold.cell_daily instead
-(safety.api.repository, the range path). One copy of the arithmetic, so a range
-that happens to equal a built window ranks every cell exactly as the stored
-window does -- tests/test_gold_invariants.py holds the two to that.
-
-A neutral module for the same reason as safety.h3grid: the serving layer keeps
-no import dependency on the ETL package.
+The ETL writes these into gold.cell_activity and gold.cell_safety for the one
+window it builds (safety.etl.gold). They used to be shared with the API's custom
+date ranges, which migration 024 removed; the module stays neutral (no ETL
+imports) like safety.h3grid, and scheme_params() is still the one place the
+scheme's parameters are turned into SQL parameters.
 
 Each statement is a plain SELECT whose columns are named and typed like the gold
 table it feeds, with one placeholder for the per-cell sums it ranks:

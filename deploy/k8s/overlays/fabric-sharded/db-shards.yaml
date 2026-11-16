@@ -1,0 +1,202 @@
+# Three databases, one per db node, each holding two cities
+# (DB_SHARDS in kustomization.yaml; safety/shards.py). Sized for a 2-core,
+# 10 GB VM with a 10 GB disk, of which the OS, k3s and this image leave about
+# 5 GB: a shard's two cities are ~2-2.3 GB of live data, and the settings
+# below keep WAL and temporary files from taking the rest (docs/KUBERNETES.md,
+# "City-sharded databases").
+#
+# One instance each, no standby: a standby needs a second node with the same
+# disk to spare. If a db node fails, its two cities go dark and the other
+# four keep serving (/api/v1/health reports "degraded").
+#
+# All three share the owner role's credentials, from the `safety-db-app`
+# Secret deploy.sh creates before the first apply (the label below asks it
+# to), so every pod connects to any database with the same env.
+# lax, dc
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: safety-db1
+  namespace: safety
+  labels:
+    app.kubernetes.io/part-of: safety
+    safety.io/shared-credentials: "true"
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgis:17-3.5
+  primaryUpdateStrategy: unsupervised
+
+  bootstrap:
+    initdb:
+      database: safety
+      owner: safety_app
+      secret:
+        name: safety-db-app
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS postgis
+
+  postgresql:
+    parameters:
+      shared_buffers: 1536MB
+      effective_cache_size: 4GB
+      work_mem: 16MB
+      maintenance_work_mem: 512MB
+      max_connections: "100"
+      max_parallel_workers_per_gather: "1"
+      # The disk is the constraint: WAL recycled at 512 MB, little kept
+      # (there is no standby to keep it for), compressed, and a runaway sort
+      # fails its query rather than filling the volume under the server.
+      max_wal_size: 512MB
+      min_wal_size: 80MB
+      wal_keep_size: 64MB
+      wal_compression: "on"
+      temp_file_limit: 1536MB
+      timezone: UTC
+      log_min_duration_statement: "5000"
+
+  storage:
+    size: 7Gi
+
+  resources:
+    requests:
+      cpu: "1"
+      memory: 6Gi
+    limits:
+      memory: 6Gi
+
+  affinity:
+    enablePodAntiAffinity: false
+    # db1, labelled by deploy/fabric/create_slice.py.
+    nodeSelector:
+      safety.io/db-shard: "1"
+    tolerations:
+      - key: dedicated
+        operator: Equal
+        value: db
+        effect: NoSchedule
+---
+# aus, phl
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: safety-db2
+  namespace: safety
+  labels:
+    app.kubernetes.io/part-of: safety
+    safety.io/shared-credentials: "true"
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgis:17-3.5
+  primaryUpdateStrategy: unsupervised
+
+  bootstrap:
+    initdb:
+      database: safety
+      owner: safety_app
+      secret:
+        name: safety-db-app
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS postgis
+
+  postgresql:
+    parameters:
+      shared_buffers: 1536MB
+      effective_cache_size: 4GB
+      work_mem: 16MB
+      maintenance_work_mem: 512MB
+      max_connections: "100"
+      max_parallel_workers_per_gather: "1"
+      # The disk is the constraint: WAL recycled at 512 MB, little kept
+      # (there is no standby to keep it for), compressed, and a runaway sort
+      # fails its query rather than filling the volume under the server.
+      max_wal_size: 512MB
+      min_wal_size: 80MB
+      wal_keep_size: 64MB
+      wal_compression: "on"
+      temp_file_limit: 1536MB
+      timezone: UTC
+      log_min_duration_statement: "5000"
+
+  storage:
+    size: 7Gi
+
+  resources:
+    requests:
+      cpu: "1"
+      memory: 6Gi
+    limits:
+      memory: 6Gi
+
+  affinity:
+    enablePodAntiAffinity: false
+    # db2, labelled by deploy/fabric/create_slice.py.
+    nodeSelector:
+      safety.io/db-shard: "2"
+    tolerations:
+      - key: dedicated
+        operator: Equal
+        value: db
+        effect: NoSchedule
+---
+# chi, sea
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: safety-db3
+  namespace: safety
+  labels:
+    app.kubernetes.io/part-of: safety
+    safety.io/shared-credentials: "true"
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgis:17-3.5
+  primaryUpdateStrategy: unsupervised
+
+  bootstrap:
+    initdb:
+      database: safety
+      owner: safety_app
+      secret:
+        name: safety-db-app
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS postgis
+
+  postgresql:
+    parameters:
+      shared_buffers: 1536MB
+      effective_cache_size: 4GB
+      work_mem: 16MB
+      maintenance_work_mem: 512MB
+      max_connections: "100"
+      max_parallel_workers_per_gather: "1"
+      # The disk is the constraint: WAL recycled at 512 MB, little kept
+      # (there is no standby to keep it for), compressed, and a runaway sort
+      # fails its query rather than filling the volume under the server.
+      max_wal_size: 512MB
+      min_wal_size: 80MB
+      wal_keep_size: 64MB
+      wal_compression: "on"
+      temp_file_limit: 1536MB
+      timezone: UTC
+      log_min_duration_statement: "5000"
+
+  storage:
+    size: 7Gi
+
+  resources:
+    requests:
+      cpu: "1"
+      memory: 6Gi
+    limits:
+      memory: 6Gi
+
+  affinity:
+    enablePodAntiAffinity: false
+    # db3, labelled by deploy/fabric/create_slice.py.
+    nodeSelector:
+      safety.io/db-shard: "3"
+    tolerations:
+      - key: dedicated
+        operator: Equal
+        value: db
+        effect: NoSchedule
