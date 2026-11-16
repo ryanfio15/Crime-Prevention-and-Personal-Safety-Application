@@ -1,0 +1,19 @@
+# helm install traefik traefik/traefik -n traefik --create-namespace -f traefik-values.yaml
+# An internet-facing NLB with IP targets, so Traefik sees the visitor's own
+# address (the rate limits key on it).
+deployment:
+  replicas: 2
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+ingressClass:
+  enabled: true
+  isDefaultClass: true
+  name: traefik
+service:
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+  spec:
+    externalTrafficPolicy: Local

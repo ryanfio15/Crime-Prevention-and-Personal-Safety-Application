@@ -1,0 +1,65 @@
+# FABRIC with the `ram-capped` slice profile (deploy/fabric/create_slice.py
+# --profile ram-capped): for a project with VM.NoLimitCPU and VM.NoLimitDisk
+# but not VM.NoLimitRAM, so cores and disk are free and every VM stops at
+# 10 GB of RAM. Six VMs:
+#
+#   cp1      4 cores /  8 GB   control plane, Traefik (and the egress proxy
+#                              on an IPv6-only site)
+#   db1/db2  8 cores / 10 GB   database primary and standby; tier=db,
+#                              taint dedicated=db -- nothing else runs there
+#   etl1     4 cores / 10 GB   ETL CronJobs, bootstrap, bronze, backups;
+#                              tier=data, taint dedicated=data
+#   app1/2   8 cores / 10 GB   API pods and Valhalla; tier=app
+#
+# The `fabric` overlay's shape -- one database of all six cities, a streaming
+# standby on the other node, automatic failover, nightly backups -- with the
+# database sized for a 10 GB node, and the ETL moved off the database nodes:
+# a 7 GiB database and a census load of up to 6 GiB (California's blocks)
+# cannot share 10 GB.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../fabric
+patches:
+  - target: {group: postgresql.cnpg.io, kind: Cluster, name: safety-db}
+    patch: |-
+      - op: replace
+        path: /spec/affinity/nodeSelector
+        value:
+          safety.io/tier: db
+      - op: replace
+        path: /spec/affinity/tolerations
+        value:
+          - key: dedicated
+            operator: Equal
+            value: db
+            effect: NoSchedule
+      - op: replace
+        path: /spec/resources
+        value:
+          requests: {cpu: "4", memory: 7Gi}
+          limits: {memory: 7Gi}
+      - op: replace
+        path: /spec/postgresql/parameters/shared_buffers
+        value: 2GB
+      - op: replace
+        path: /spec/postgresql/parameters/effective_cache_size
+        value: 5GB
+      - op: replace
+        path: /spec/postgresql/parameters/maintenance_work_mem
+        value: 512MB
+      - op: replace
+        path: /spec/storage/size
+        value: 80Gi
+  # Two 8-core, 10 GB app nodes: up to 10 API pods (768 Mi requested each)
+  # beside two to four routing pods.
+  - target: {kind: HorizontalPodAutoscaler, name: safety-api}
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicas
+        value: 10
+  - target: {kind: HorizontalPodAutoscaler, name: valhalla}
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicas
+        value: 4

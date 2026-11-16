@@ -1,0 +1,16 @@
+# The one-off Jobs, rendered and applied by deploy.sh (never by
+# `kubectl apply -k` on the overlays: Jobs are immutable once created).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: safety
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: safety
+    includeSelectors: false
+resources:
+  - migrate.yaml
+  - bootstrap.yaml
+images:
+  - name: safety-app
+    newName: ghcr.io/ryanfio15/crime-prevention-and-personal-safety-application
+    newTag: horizontal-scaling

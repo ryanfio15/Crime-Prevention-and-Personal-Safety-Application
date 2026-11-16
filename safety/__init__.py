@@ -28,4 +28,7 @@ Layout mirrors the layered architecture in the design doc (S5):
 # far back the pulls reached rather than the oldest (possibly cold-case) date.
 # phase2.3.0: gold.cell_daily, the daily rollup the map's custom date ranges
 # are ranked from. The bump is what gets every city rebuilt with it.
-PIPELINE_VERSION = "phase2.3.0"
+# phase3.0.0: one rolling year per city (safety/etl/retention.py). Gold is one
+# window at resolutions 8 and 9, the daily rollup, monthly trend and offense mix
+# are gone (migration 024). The bump is what rebuilds every city's gold.
+PIPELINE_VERSION = "phase3.0.0"

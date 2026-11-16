@@ -1,0 +1,400 @@
+#!/usr/bin/env bash
+# Deploy the whole site to Railway with one command, or update a deployment.
+#
+#   railway login                         # once per machine
+#   deploy/railway/up.sh                  # create (first run) or update
+#   deploy/railway/up.sh --name my-site --workspace "My Team"
+#   deploy/railway/up.sh --no-routing     # no Valhalla (drive/walk/bike off)
+#   deploy/railway/up.sh --config-only    # settings and variables, no deploys
+#   deploy/railway/up.sh --github railway-deployment   # build from GitHub instead
+#
+# What it builds (docs/RAILWAY.md):
+#
+#   db        PostGIS 17-3.5 (deploy/railway/db.Dockerfile), volume, private
+#   api       the site and API, ONE replica, public https://*.up.railway.app
+#   valhalla  street routing, tiles baked in (deploy/railway/valhalla.Dockerfile)
+#   etl       always-on worker, a tick hourly (deploy/railway/etl_tick.py),
+#             volume for bronze
+#
+# The first run creates the project and remembers its id in
+# deploy/railway/.project-id (git-ignored). Every later run updates that same
+# project in place: settings and variables re-applied, every service rebuilt
+# from the working tree, generated passwords kept. Data is never touched.
+#
+# --github BRANCH builds every service from this repository on GitHub instead
+# of uploading the working tree, and keeps its project id in
+# deploy/railway/.template-project-id. That is the project the one-click
+# template is generated from (deploy/railway/make-template.sh): a template can
+# only point at a GitHub repo or an image, never at an upload. Everything the
+# services need is therefore in what a template carries -- variables (the
+# Dockerfile path too, as RAILWAY_DOCKERFILE_PATH), start command, health
+# check, volume, domain -- and nothing in settings it drops, such as a cron
+# schedule.
+#
+# Everything goes through the Railway CLI and its login, so there is no token
+# to create or paste. The CLI's own commands create the project and upload the
+# code (`railway up`). What it has no command for -- start command, health
+# check, restart policy, Dockerfile path, volumes, GitHub source, the domain --
+# goes through Railway's public GraphQL API by way of `railway api`, which is
+# also what keeps reruns idempotent. Railway's config-as-code files
+# (railway.toml) are deprecated as of 2026-12-01, so they are not used.
+#
+# In CI or anywhere without a browser login, export RAILWAY_API_TOKEN (an
+# account token from railway.com/account/tokens) instead; the CLI uses it.
+#
+# Requires: railway (CLI), curl, jq, openssl.
+
+# shellcheck disable=SC2016  # GraphQL queries: the $vars are GraphQL's, not the shell's.
+set -euo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repo=$(cd "$here/../.." && pwd)
+cd "$repo"
+
+state_file=$here/.project-id
+github_branch=
+github_repo=${RAILWAY_GITHUB_REPO:-ryanfio15/Crime-Prevention-and-Personal-Safety-Application}
+
+name=safety-map
+workspace=
+routing=1
+deploy=1
+cities=${BOOTSTRAP_CITIES:-phl,chi,sea,lax,dc,aus}
+
+usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --name) name=$2; shift 2 ;;
+        --workspace) workspace=$2; shift 2 ;;
+        --no-routing) routing=0; shift ;;
+        --config-only) deploy=0; shift ;;
+        --cities) cities=$2; shift 2 ;;
+        --github) github_branch=$2; shift 2 ;;
+        -h|--help) usage 0 ;;
+        *) echo "unknown option: $1" >&2; usage 2 ;;
+    esac
+done
+
+[[ -n $github_branch ]] && state_file=$here/.template-project-id
+
+log() { printf '\n==> %s\n' "$*"; }
+die() { printf 'up.sh: %s\n' "$*" >&2; exit 1; }
+
+# --- preflight ---------------------------------------------------------------
+
+for cmd in railway curl jq openssl; do
+    command -v "$cmd" > /dev/null || die "$cmd is not installed$( [[ $cmd == railway ]] && printf '%s' \
+        ' (npm i -g @railway/cli, or see https://docs.railway.com/cli)')"
+done
+# A project token (RAILWAY_TOKEN) cannot create projects or services.
+[[ -z ${RAILWAY_TOKEN:-} ]] || die "unset RAILWAY_TOKEN: a project token cannot create projects; use \`railway login\` (or RAILWAY_API_TOKEN)"
+who=$(railway whoami 2>&1) || die "not logged in to Railway: run \`railway login\` (or export RAILWAY_API_TOKEN), then try again"
+echo "$who"
+
+tmp_err=$(mktemp)
+trap 'rm -f "$tmp_err"' EXIT
+
+# --- GraphQL -----------------------------------------------------------------
+
+# gql QUERY [VARIABLES_JSON] -> prints .data; dies on any error.
+gql() {
+    local out
+    out=$(gql_try "$@") || die "Railway API: $out"
+    printf '%s\n' "$out"
+}
+
+# gql_try QUERY [VARIABLES_JSON] -> prints .data, or the error text and fails.
+# `railway api` prints the whole response ({"data", "errors"}) on stdout, a
+# one-line summary on stderr, and exits non-zero on any error -- validation,
+# resolver or authorization alike.
+gql_try() {
+    local resp
+    if resp=$(railway api "$1" --variables "${2:-"{}"}" --compact 2> "$tmp_err"); then
+        jq -c '.data' <<< "$resp"
+        return 0
+    fi
+    if jq -e '(.errors // []) | length > 0' > /dev/null 2>&1 <<< "$resp"; then
+        jq -r '[.errors[].message] | join("; ")' <<< "$resp"
+    else
+        printf '%s\n' "$(cat "$tmp_err")${resp:+ $resp}"
+    fi
+    return 1
+}
+
+project_query='query($id: String!) {
+  project(id: $id) {
+    id name
+    environments { edges { node { id name } } }
+    services { edges { node { id name } } }
+  }
+}'
+
+# --- project -----------------------------------------------------------------
+
+if [[ -s $state_file ]]; then
+    project_id=$(< "$state_file")
+    log "updating Railway project $project_id"
+    project=$(gql "$project_query" "$(jq -nc --arg id "$project_id" '{id: $id}')")
+else
+    log "creating Railway project '$name'"
+    init_args=(init --name "$name" --json)
+    [[ -n $workspace ]] && init_args+=(--workspace "$workspace")
+    init_out=$(railway "${init_args[@]}") || die "railway init failed: $init_out"
+    project_id=$(jq -r '.id // .projectId // .project.id // empty' <<< "$init_out" 2> /dev/null || true)
+    if [[ -z $project_id ]]; then
+        project_id=$(railway status --json | jq -r '.id // .project.id // empty')
+    fi
+    [[ -n $project_id ]] || die "could not read the new project's id from: $init_out"
+    printf '%s\n' "$project_id" > "$state_file"
+    project=$(gql "$project_query" "$(jq -nc --arg id "$project_id" '{id: $id}')")
+fi
+
+env_id=$(jq -r '[.project.environments.edges[].node] | (map(select(.name == "production")) + .)[0].id' <<< "$project")
+[[ -n $env_id && $env_id != null ]] || die "project $project_id has no environment"
+railway link --project "$project_id" --environment "$env_id" > /dev/null
+
+# --- services ----------------------------------------------------------------
+
+service_id() {
+    jq -r --arg n "$1" '.project.services.edges[].node | select(.name == $n) | .id' <<< "$project"
+}
+
+ensure_service() {
+    local svc=$1 id
+    id=$(service_id "$svc")
+    if [[ -z $id ]]; then
+        id=$(gql 'mutation($input: ServiceCreateInput!) { serviceCreate(input: $input) { id name } }' \
+            "$(jq -nc --arg p "$project_id" --arg n "$svc" '{input: {projectId: $p, name: $n}}')" \
+            | jq -r '.serviceCreate.id')
+        echo "    created service $svc ($id)" >&2
+    fi
+    printf '%s\n' "$id"
+}
+
+# Attach a volume unless the service already has one. A volume belongs to
+# exactly one service; deleting it deletes the data, so this never does.
+ensure_volume() {
+    local svc=$1 sid=$2 mount=$3 existing
+    if existing=$(gql_try 'query($id: String!) { project(id: $id) { volumes { edges { node {
+              name volumeInstances { edges { node { serviceId mountPath } } } } } } } }' \
+            "$(jq -nc --arg id "$project_id" '{id: $id}')"); then
+        if jq -e --arg s "$sid" '[.project.volumes.edges[].node.volumeInstances.edges[].node
+                | select(.serviceId == $s)] | length > 0' > /dev/null <<< "$existing"; then
+            return 0
+        fi
+    else
+        echo "    (could not list volumes: $existing; creating one for $svc)" >&2
+    fi
+    gql 'mutation($input: VolumeCreateInput!) { volumeCreate(input: $input) { id name } }' \
+        "$(jq -nc --arg p "$project_id" --arg e "$env_id" --arg s "$sid" --arg m "$mount" \
+            '{input: {projectId: $p, environmentId: $e, serviceId: $s, mountPath: $m}}')" > /dev/null
+    echo "    attached a volume to $svc at $mount" >&2
+}
+
+# set_vars SERVICE_ID JSON_OBJECT: merge, never replace, and do not deploy yet.
+set_vars() {
+    gql 'mutation($input: VariableCollectionUpsertInput!) { variableCollectionUpsert(input: $input) }' \
+        "$(jq -nc --arg p "$project_id" --arg e "$env_id" --arg s "$1" --argjson v "$2" \
+            '{input: {projectId: $p, environmentId: $e, serviceId: $s, variables: $v, skipDeploys: true}}')" \
+        > /dev/null
+}
+
+get_vars() {
+    gql 'query($p: String!, $e: String!, $s: String!) {
+           variables(projectId: $p, environmentId: $e, serviceId: $s) }' \
+        "$(jq -nc --arg p "$project_id" --arg e "$env_id" --arg s "$1" '{p: $p, e: $e, s: $s}')" \
+        | jq -c '.variables // {}'
+}
+
+# configure SERVICE_ID JSON_OBJECT: the service's deploy and build settings.
+configure() {
+    gql 'mutation($s: String!, $e: String!, $input: ServiceInstanceUpdateInput!) {
+           serviceInstanceUpdate(serviceId: $s, environmentId: $e, input: $input) }' \
+        "$(jq -nc --arg s "$1" --arg e "$env_id" --argjson i "$2" '{s: $s, e: $e, input: $i}')" > /dev/null
+}
+
+log "services"
+db_id=$(ensure_service db)
+api_id=$(ensure_service api)
+etl_id=$(ensure_service etl)
+valhalla_id=
+[[ $routing == 1 ]] && valhalla_id=$(ensure_service valhalla)
+
+ensure_volume db "$db_id" /var/lib/postgresql/data
+ensure_volume etl "$etl_id" /data
+
+# --- variables ---------------------------------------------------------------
+
+log "variables"
+
+# Passwords are generated once and then kept: the database volume remembers
+# the first ones, so a new value on a rerun would lock the app out. Hex only,
+# because the password ends up inside a connection URL (safety/config.py).
+db_vars=$(get_vars "$db_id")
+superuser_pw=$(jq -r '.POSTGRES_PASSWORD // empty' <<< "$db_vars")
+app_pw=$(jq -r '.SAFETY_APP_PASSWORD // empty' <<< "$db_vars")
+[[ -n $superuser_pw ]] || superuser_pw=$(openssl rand -hex 24)
+[[ -n $app_pw ]] || app_pw=$(openssl rand -hex 24)
+
+# RAILWAY_DOCKERFILE_PATH as well as the dockerfilePath setting below: a
+# template carries a service's variables but not its build settings.
+set_vars "$db_id" "$(jq -nc --arg su "$superuser_pw" --arg app "$app_pw" '{
+    POSTGRES_USER: "postgres", POSTGRES_PASSWORD: $su, POSTGRES_DB: "safety",
+    SAFETY_APP_PASSWORD: $app, RAILWAY_DOCKERFILE_PATH: "deploy/railway/db.Dockerfile" }')"
+
+# Settings both app services read (safety/config.py), as in the Kubernetes
+# ConfigMap (deploy/k8s/base/config.yaml) with the cluster-only ones dropped.
+# ${{...}} are Railway references, resolved by Railway at deploy time.
+common=$(jq -nc --arg cities "$cities" --arg socrata "${SOCRATA_APP_TOKEN:-}" --arg routing "$routing" '{
+    POSTGRES_HOST: "${{db.RAILWAY_PRIVATE_DOMAIN}}",
+    POSTGRES_PORT: "5432",
+    POSTGRES_DB: "safety",
+    POSTGRES_USER: "safety_app",
+    POSTGRES_PASSWORD: "${{db.SAFETY_APP_PASSWORD}}",
+    RETENTION_DAYS: "365",
+    BACKFILL_MONTHS: "12",
+    BOOTSTRAP_CITIES: $cities,
+    DIRECTIONS_ENABLED: "true",
+    ROUTING_BUDGET_BACKEND: "db",
+    TRANSIT_DAILY_BUDGET: "100",
+    GEOCODE_DAILY_BUDGET: "2000",
+    ROUTING_TIMEOUT_SECONDS: "8"
+  }
+  + (if $routing == "1" then {VALHALLA_URL: "http://${{valhalla.RAILWAY_PRIVATE_DOMAIN}}:8002"} else {} end)
+  + (if $socrata != "" then {SOCRATA_APP_TOKEN: $socrata} else {} end)')
+
+set_vars "$api_id" "$(jq -c '. + {
+    RAILWAY_DOCKERFILE_PATH: "Dockerfile",
+    PORT: "8080",
+    ENABLE_DOCS: "true",
+    ENABLE_RATE_LIMIT: "true",
+    CACHE_MAX_ENTRIES: "192",
+    CACHE_MAX_BYTES: "268435456",
+    CACHE_STAMP_TTL_SECONDS: "5",
+    CACHE_WARM_ON_START: "true",
+    API_POOL_MAX_SIZE: "8",
+    API_STATEMENT_TIMEOUT_MS: "15000",
+    API_POOL_TIMEOUT_SECONDS: "10",
+    HSTS_MAX_AGE_SECONDS: "86400"
+  }' <<< "$common")"
+
+set_vars "$etl_id" "$(jq -c '. + {
+    RAILWAY_DOCKERFILE_PATH: "Dockerfile",
+    BRONZE_ROOT: "/data/bronze",
+    WITHDRAWN_RECONCILE: "report",
+    OPS_RETRY_COOLDOWN_HOURS: "6",
+    JOBLOCK_WAIT_SECONDS: "600"
+  }' <<< "$common")"
+
+if [[ $routing == 1 ]]; then
+    # The newest tiles release, so a rerun after the monthly tiles build picks
+    # it up (and busts the image's build cache). `latest` if GitHub is unreachable.
+    tiles_repo=${VALHALLA_TILES_REPO:-ryanfio15/Crime-Prevention-and-Personal-Safety-Application}
+    tiles_tag=$(curl -fsS "https://api.github.com/repos/$tiles_repo/releases?per_page=30" 2> /dev/null | jq -r '
+        [.[] | select((.tag_name | startswith("valhalla-tiles-")) and (.draft | not)
+                      and (.prerelease | not) and .author.login == "github-actions[bot]")]
+        | sort_by(.published_at) | last | .tag_name // empty' 2> /dev/null || true)
+    tiles_tag=${tiles_tag:-latest}
+    echo "    routing tiles: $tiles_tag"
+    set_vars "$valhalla_id" "$(jq -nc --arg t "$tiles_tag" '{
+        VALHALLA_TILES_TAG: $t, RAILWAY_DOCKERFILE_PATH: "deploy/railway/valhalla.Dockerfile" }')"
+fi
+
+# --- service settings --------------------------------------------------------
+
+log "service settings"
+
+configure "$db_id" '{
+  "dockerfilePath": "deploy/railway/db.Dockerfile",
+  "restartPolicyType": "ALWAYS",
+  "numReplicas": 1
+}'
+
+# One replica, by design. The health check runs a query through the pool; its
+# long timeout covers a first deploy waiting out the database's initdb.
+configure "$api_id" '{
+  "dockerfilePath": "Dockerfile",
+  "startCommand": "/usr/local/bin/docker-entrypoint.sh sh deploy/railway/start-api.sh",
+  "healthcheckPath": "/api/v1/health",
+  "healthcheckTimeout": 1500,
+  "restartPolicyType": "ALWAYS",
+  "numReplicas": 1
+}'
+
+# An always-on worker that schedules its own hourly ticks (etl_tick.py --loop),
+# not a Railway cron job: a template does not carry a cron schedule. A null
+# cronSchedule clears one a deployment from before this change still has.
+configure "$etl_id" '{
+  "dockerfilePath": "Dockerfile",
+  "startCommand": "/usr/local/bin/docker-entrypoint.sh python deploy/railway/etl_tick.py --loop",
+  "cronSchedule": null,
+  "restartPolicyType": "ALWAYS",
+  "numReplicas": 1
+}'
+
+if [[ $routing == 1 ]]; then
+    configure "$valhalla_id" '{
+      "dockerfilePath": "deploy/railway/valhalla.Dockerfile",
+      "restartPolicyType": "ALWAYS",
+      "numReplicas": 1
+    }'
+fi
+
+# --- deploy ------------------------------------------------------------------
+
+# deploy SERVICE ID WHAT: upload the working tree, or (--github) connect the
+# service to the repository branch, which starts a build from GitHub.
+deploy_service() {
+    log "building and deploying $1 ($3)"
+    if [[ -n $github_branch ]]; then
+        gql 'mutation($id: String!, $input: ServiceConnectInput!) { serviceConnect(id: $id, input: $input) { id } }' \
+            "$(jq -nc --arg id "$2" --arg r "$github_repo" --arg b "$github_branch" \
+                '{id: $id, input: {repo: $r, branch: $b}}')" > /dev/null
+        echo "    building from github.com/$github_repo, branch $github_branch"
+    else
+        railway up --service "$1" --ci
+    fi
+}
+
+if [[ $deploy == 1 ]]; then
+    # The database first: the API waits for it, but a database still building
+    # when the API starts only makes the first deploy's logs harder to read.
+    deploy_service db "$db_id" "the first start runs initdb: several minutes"
+    if [[ $routing == 1 ]]; then
+        deploy_service valhalla "$valhalla_id" "downloads ~1.2 GB of tiles into the image"
+    fi
+    deploy_service api "$api_id" "one replica"
+    # Its first tick starts as soon as it is up: on a new project that enables
+    # the cities and begins the one-year load.
+    deploy_service etl "$etl_id" "worker, a tick now and then hourly at :20"
+fi
+
+# --- public URL --------------------------------------------------------------
+
+log "public URL"
+domain=$(gql_try 'query($p: String!, $e: String!, $s: String!) {
+           domains(projectId: $p, environmentId: $e, serviceId: $s) { serviceDomains { domain } } }' \
+    "$(jq -nc --arg p "$project_id" --arg e "$env_id" --arg s "$api_id" '{p: $p, e: $e, s: $s}')" \
+    | jq -r '.domains.serviceDomains[0].domain // empty' 2> /dev/null || true)
+if [[ -z $domain ]]; then
+    domain=$(gql 'mutation($input: ServiceDomainCreateInput!) { serviceDomainCreate(input: $input) { domain } }' \
+        "$(jq -nc --arg e "$env_id" --arg s "$api_id" '{input: {environmentId: $e, serviceId: $s, targetPort: 8080}}')" \
+        | jq -r '.serviceDomainCreate.domain')
+fi
+
+cat << EOF
+
+Done.
+
+  Site:     https://$domain
+  Project:  https://railway.com/project/$project_id
+
+The first load of a new project takes one to a few hours, mostly waiting on
+the city portals. The site shows a progress bar meanwhile, and each city
+appears on the map as soon as its own load finishes.
+
+  Data job logs:   railway logs --service etl
+  Site logs:       railway logs --service api
+  Run a tick now:  railway restart --service etl --yes
+  Take it down:    deploy/railway/down.sh
+EOF

@@ -19,7 +19,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from safety.db import ensure_partitions
-from safety.etl import pending
+from safety.etl import pending, retention
 from safety.etl.adapters.base import NormalizedIncident
 from safety.h3grid import cells_for_point
 
@@ -269,8 +269,25 @@ def promote_to_silver(
     crosswalk_version: str,
     pipeline_version: str,
 ) -> int:
-    """Apply the crosswalk and upsert staged records into silver."""
+    """Apply the crosswalk and upsert staged records into silver.
+
+    Staged records older than the retention cutoff (safety.etl.retention) are
+    dropped first: silver keeps one rolling year, and a source that filters on
+    report date publishes cold cases with occurrence dates years back.
+    """
+    keep_from = retention.city_cutoff(conn, source_id)
     with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM etl.staging_incident WHERE pull_id = %s AND occurred_local_date < %s",
+            (pull_id, keep_from),
+        )
+        if cur.rowcount:
+            log.info(
+                "pull %s: skipped %s staged records dated before %s (retention)",
+                pull_id,
+                cur.rowcount,
+                keep_from,
+            )
         cur.execute(
             """
             SELECT DISTINCT EXTRACT(YEAR FROM occurred_local_date)::int AS year

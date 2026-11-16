@@ -6,6 +6,3 @@
 *.sh text eol=lf
 Dockerfile text eol=lf
 
-# web-dev/ is frozen byte for byte (tests/test_dev_frontend.py pins its hashes),
-# so no line-ending conversion on checkout.
-web-dev/** -text

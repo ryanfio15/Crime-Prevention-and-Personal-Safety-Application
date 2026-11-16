@@ -1,12 +1,10 @@
-# Hourly convergence run for one instance (safety-ops@.service). Its main job
-# is the history load: each run loads older slices of every city whose
-# registry row has history_enabled, for up to OPS_HISTORY_MINUTES, then exits,
-# so the six-hourly pull and deploys never wait long for the ETL lock. With
-# nothing to do -- no history pending, nothing missing -- a run is a handful of
-# EXISTS queries.
+# Hourly convergence run for one instance (safety-ops@.service): loads a city
+# that has never been loaded, rebuilds gold after a release, and deletes
+# incidents that have aged past the one rolling year a city keeps (the `retain`
+# step). With nothing to do a run is a handful of EXISTS queries.
 #
-# Not enabled by install-deployer.sh. Turn it on per instance once history is
-# wanted there (docs/OPERATIONS.md, "Loading a city's full history"):
+# Not enabled by install-deployer.sh: the six-hourly incremental prunes too.
+# Turn it on per instance where convergence between deploys is wanted:
 #   sudo systemctl enable --now safety-ops@dev.timer
 
 [Unit]

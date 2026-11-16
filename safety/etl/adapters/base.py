@@ -146,6 +146,14 @@ class SourceAdapter(ABC):
         per-year files) -- whatever the upstream API is actually reliable at.
         """
 
+    def expected_chunks(self, since: datetime, until: datetime) -> int | None:
+        """How many chunks fetch_incidents(since, until) will yield, or None.
+
+        Only for the progress bar (safety.etl.progress), so an estimate is
+        fine. None (the default) draws the fetch as indeterminate.
+        """
+        return None
+
     @abstractmethod
     def fetch_boundary(self) -> RawChunk | None:
         """Return the city's coverage polygon as GeoJSON (S3.1), or None."""

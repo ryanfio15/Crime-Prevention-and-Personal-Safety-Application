@@ -16,6 +16,11 @@ __pycache__/
 # doc (S9.2) puts these in object storage, not in an image.
 data/
 
+# Local backups (1.2 GB), excluded from git through .git/info/exclude, which a
+# Docker build context does not read: without this line every local build
+# copies them into the image.
+legacy-backups/
+
 .git/
 .gitignore
 .idea/

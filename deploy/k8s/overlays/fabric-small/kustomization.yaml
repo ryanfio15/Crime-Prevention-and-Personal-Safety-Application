@@ -1,0 +1,40 @@
+# FABRIC with the `small` slice profile (deploy/fabric/create_slice.py
+# --profile small): one data node and one app node. Everything the `fabric`
+# overlay does, with a single database instance (no standby -- nothing to fail
+# over to) and fewer API and routing replicas.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../fabric
+patches:
+  - target: {group: postgresql.cnpg.io, kind: Cluster, name: safety-db}
+    patch: |-
+      - op: replace
+        path: /spec/instances
+        value: 1
+  - target: {kind: HorizontalPodAutoscaler, name: safety-api}
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 2
+      - op: replace
+        path: /spec/maxReplicas
+        value: 6
+  - target: {kind: Deployment, name: safety-api}
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  - target: {kind: HorizontalPodAutoscaler, name: valhalla}
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+      - op: replace
+        path: /spec/maxReplicas
+        value: 2
+  - target: {kind: Deployment, name: valhalla}
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1

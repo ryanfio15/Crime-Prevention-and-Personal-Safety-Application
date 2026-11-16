@@ -1,4 +1,4 @@
-"""Reporting windows (gold.resolve_windows) and fetch windows (etl.windows)."""
+"""The reporting window (gold.resolve_windows) and fetch windows (etl.windows)."""
 
 from __future__ import annotations
 
@@ -16,81 +16,35 @@ def _names(anchor, floor=None):
     return [w.name for w in gold.resolve_windows(anchor, floor)]
 
 
+def test_one_window_the_last_year():
+    (w,) = gold.resolve_windows(date(2025, 6, 30))
+    assert w.name == "last_1y"
+    assert (w.start, w.end) == (date(2024, 7, 1), date(2025, 6, 30))
+    assert not w.partial and w.data_start == w.start
+
+
 def test_leap_day_anchor():
-    anchor = date(2024, 2, 29)
-    w = _by_name(anchor)
+    (w,) = gold.resolve_windows(date(2024, 2, 29))
     # _shift_years maps 29 Feb to 28 Feb, then the window starts the day after.
-    assert w["last_1y"].start == date(2023, 3, 1)
-    assert w["last_2y"].start == date(2022, 3, 1)
-    assert "last_30d" not in w
-    assert w["last_3m"].start == date(2023, 11, 30)
+    assert w.start == date(2023, 3, 1)
 
 
-def test_month_windows_clamp_to_short_months():
-    # 31 May less three months is "31 February", clamped to the 28th, and the
-    # window starts the day after.
-    w = _by_name(date(2025, 5, 31))
-    assert w["last_3m"].start == date(2025, 3, 1)
-    assert w["last_6m"].start == date(2024, 12, 1)
-    assert w["last_9m"].start == date(2024, 9, 1)
+def test_a_floor_inside_the_year_marks_it_partial():
+    # A source that lags by weeks: its year reaches back past the retention cutoff.
+    (w,) = gold.resolve_windows(date(2025, 6, 30), date(2024, 8, 15))
+    assert w.partial and w.data_start == date(2024, 8, 15)
+    assert w.start == date(2024, 7, 1)
 
 
-def test_one_and_two_years_match_the_old_12_and_24_months():
-    anchor = date(2025, 6, 30)
-    w = _by_name(anchor)
-    assert w["last_1y"].start == date(2024, 7, 1)
-    assert w["last_2y"].start == date(2023, 7, 1)
+def test_a_floor_before_the_year_changes_nothing():
+    (w,) = gold.resolve_windows(date(2025, 6, 30), date(2001, 1, 1))
+    assert not w.partial and w.data_start == date(2024, 7, 1)
 
 
-def test_no_floor_gives_the_two_year_list():
-    assert _names(date(2025, 6, 30)) == ["last_3m", "last_6m", "last_9m", "last_1y", "last_2y"]
-
-
-def test_every_window_ends_on_the_anchor_and_they_nest():
-    anchor = date(2025, 6, 30)
-    built = gold.resolve_windows(anchor, date(2001, 1, 1))
-    assert all(w.end == anchor for w in built)
-    starts = [w.start for w in built]
-    assert all(later < earlier for earlier, later in zip(starts, starts[1:]))
-
-
-def test_years_run_back_to_the_floor():
-    anchor = date(2026, 10, 7)
-    names = _names(anchor, date(2001, 1, 1))
-    assert names[:5] == ["last_3m", "last_6m", "last_9m", "last_1y", "last_2y"]
-    assert names[-1] == "last_26y"
-    oldest = gold.resolve_windows(anchor, date(2001, 1, 1))[-1]
-    assert oldest.partial and oldest.data_start == date(2001, 1, 1)
-    assert all(not w.partial for w in gold.resolve_windows(anchor, date(2001, 1, 1))[:-1])
-
-
-def test_a_sliver_past_the_last_full_year_adds_no_window():
-    # A 24-month backfill starts on the first of a month, a week before
-    # "last 2 years" begins; that week is not worth a "last 3 years".
-    assert _names(date(2026, 10, 7), date(2024, 10, 1))[-1] == "last_2y"
-    # Austin's services begin on 2021-09-23: two weeks short of a sixth year.
-    assert _names(date(2026, 10, 7), date(2021, 9, 23))[-1] == "last_5y"
-
-
-def test_a_real_partial_year_is_offered():
-    w = gold.resolve_windows(date(2026, 10, 7), date(2024, 1, 1))
-    assert w[-1].name == "last_3y" and w[-1].partial
-    assert w[-1].data_start == date(2024, 1, 1)
-
-
-def test_short_history_stops_early_and_marks_partial():
-    w = gold.resolve_windows(date(2026, 10, 7), date(2026, 5, 20))
-    assert [x.name for x in w] == ["last_3m", "last_6m"]
-    assert w[1].partial and w[1].data_start == date(2026, 5, 20)
-    # Less than three months of data: the 3-month window alone, partial.
-    w = gold.resolve_windows(date(2026, 10, 7), date(2026, 9, 20))
-    assert [x.name for x in w] == ["last_3m"] and w[0].partial
-
-
-def test_window_names_match_the_pattern():
-    for w in gold.resolve_windows(date(2026, 10, 7), date(1930, 1, 1)):
-        assert gold.WINDOW_PATTERN.match(w.name), w.name
-    assert len(gold.resolve_windows(date(2026, 10, 7), date(1900, 1, 1))) == 3 + gold.MAX_WINDOW_YEARS
+def test_window_name_matches_the_pattern():
+    (w,) = gold.resolve_windows(date(2026, 10, 7), date(1930, 1, 1))
+    assert gold.WINDOW_PATTERN.match(w.name)
+    assert not gold.WINDOW_PATTERN.match("last_2y")
 
 
 def test_months_before():
@@ -136,6 +90,13 @@ def test_backfill_floor_older_than_window_is_ignored(monkeypatch):
     assert since == datetime(2024, 10, 31, tzinfo=timezone.utc)
 
 
+def test_backfill_never_reaches_past_the_retention_cutoff(monkeypatch):
+    monkeypatch.setattr(windows, "datetime", _FrozenDatetime)
+    since, _ = windows.backfill_window(24)
+    # 20 May 2025, less 365 days, less the one-day pad.
+    assert since == datetime(2024, 5, 19, tzinfo=timezone.utc)
+
+
 def _bucket_dates(anchor, floor):
     windows = gold.resolve_windows(anchor, floor)
     rows = gold.period_rows(anchor, min(w.start for w in windows))
@@ -151,7 +112,7 @@ def _check_buckets(anchor, floor):
         assert picked == expected, (anchor, w.name)
 
 
-def test_every_window_is_exactly_its_buckets_on_every_kind_of_anchor():
+def test_the_window_is_exactly_its_buckets_on_every_kind_of_anchor():
     # Month ends, 29 February, the 30th and 31st, and ordinary days: the
     # pre-aggregated gold path sums buckets < limit instead of filtering silver
     # by BETWEEN start AND end, so the two have to select the same dates.
@@ -161,41 +122,14 @@ def test_every_window_is_exactly_its_buckets_on_every_kind_of_anchor():
         date(2026, 1, 1), date(2026, 10, 7), date(2028, 2, 29),
     ]
     for anchor in anchors:
-        _check_buckets(anchor, date(2001, 1, 1))
+        _check_buckets(anchor, None)
 
 
 def test_every_day_of_a_leap_year_as_anchor():
     start = date(2024, 1, 1)
     for i in range(366):
-        _check_buckets(start + timedelta(days=i), start - timedelta(days=365 * 6))
+        _check_buckets(start + timedelta(days=i), None)
 
 
-def test_bucket_limits():
-    assert gold.window_bucket_limit("last_3m") == 3
-    assert gold.window_bucket_limit("last_9m") == 9
+def test_bucket_limit():
     assert gold.window_bucket_limit("last_1y") == 12
-    assert gold.window_bucket_limit("last_2y") == 13
-    assert gold.window_bucket_limit("last_26y") == 37
-
-
-def test_long_windows_are_two_years_and_up():
-    assert [n for n in ("last_3m", "last_9m", "last_1y", "last_2y", "last_20y")
-            if gold.is_long_window(n)] == ["last_2y", "last_20y"]
-
-
-def test_long_windows_due_after_a_week_or_a_new_window():
-    anchor = date(2026, 10, 18)
-    built = gold.resolve_windows(anchor - timedelta(days=3), date(2020, 1, 1))
-    stored = {w.name: w for w in built}
-    current = gold.resolve_windows(anchor, date(2020, 1, 1))
-    # Three days behind: kept.
-    assert not gold.long_windows_due(current, stored, anchor)
-    # A week behind: due.
-    week = gold.resolve_windows(anchor - gold.LONG_WINDOW_MAX_AGE, date(2020, 1, 1))
-    assert gold.long_windows_due(current, {w.name: w for w in week}, anchor)
-    # The list gained a year (more history loaded): due, whatever the dates.
-    assert gold.long_windows_due(
-        gold.resolve_windows(anchor, date(2015, 1, 1)), stored, anchor
-    )
-    # Nothing stored yet (a city's first build): due.
-    assert gold.long_windows_due(current, {}, anchor)

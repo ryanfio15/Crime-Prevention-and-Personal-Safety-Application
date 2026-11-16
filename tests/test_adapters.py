@@ -121,6 +121,58 @@ def test_phl_timestamp_parsing():
     assert parse("") is None
 
 
+def _carto_responses(monkeypatch, *responses):
+    """Feed httpx.get a fixed sequence of Carto answers; record every sleep."""
+    import httpx
+
+    from safety.etl.adapters import philadelphia
+
+    queue = list(responses)
+    sleeps: list[float] = []
+
+    def fake_get(url, params=None, **_):
+        status, body = queue.pop(0)
+        return httpx.Response(status, text=body, request=httpx.Request("GET", url, params=params))
+
+    monkeypatch.setattr(philadelphia.httpx, "get", fake_get)
+    monkeypatch.setattr(philadelphia.time, "sleep", sleeps.append)
+    monkeypatch.setattr(philadelphia.settings, "carto_max_retries", 6)
+    return PhiladelphiaCartoAdapter(_config("phl")), sleeps, queue
+
+
+def test_phl_carto_400_is_retried_with_longer_capped_waits(monkeypatch):
+    flaky = (400, '{"error":["canceling statement due to statement timeout"]}')
+    adapter, sleeps, queue = _carto_responses(
+        monkeypatch, flaky, flaky, flaky, flaky, flaky, (200, "cartodb_id\n1\n")
+    )
+    response = adapter._get({"q": "SELECT 1", "format": "csv"})
+    assert response.status_code == 200
+    assert sleeps == [5.0, 10.0, 20.0, 40.0, 60.0]
+    assert queue == []
+
+
+def test_phl_carto_gives_up_with_carto_error_text_and_no_final_sleep(monkeypatch, caplog):
+    bad = (400, '{"error":["column \\"nope\\" does not exist"]}')
+    adapter, sleeps, _ = _carto_responses(monkeypatch, *[bad] * 6)
+    with pytest.raises(RuntimeError) as raised:
+        adapter._get({"q": "SELECT nope", "format": "csv"})
+    message = str(raised.value)
+    assert "after 6 attempts" in message
+    assert 'HTTP 400: column "nope" does not exist' in message
+    assert "phl.carto" not in message and "example.invalid" not in message  # no URL dump
+    assert len(sleeps) == 5  # no wait after the last attempt
+    assert 'column "nope" does not exist' in caplog.text
+
+
+def test_phl_carto_non_json_error_body_is_trimmed(monkeypatch):
+    adapter, _, _ = _carto_responses(monkeypatch, *[(502, "<html>\n  Bad   gateway " + "x" * 1000)] * 6)
+    with pytest.raises(RuntimeError) as raised:
+        adapter._get({"q": "SELECT 1"})
+    detail = str(raised.value).split("HTTP 502: ", 1)[1]
+    assert detail.startswith("<html> Bad gateway x")
+    assert len(detail) == 300
+
+
 # ------------------------------------------------------------------ Chicago
 
 

@@ -1,8 +1,8 @@
 """FastAPI serving layer (design doc S9.4).
 
-Exposes exactly the operations the client needs -- cell activity by location,
-neighbouring cells in a ring, city metadata and boundaries, offense-category
-filters -- over the precomputed gold tables. Nothing here aggregates; if an
+Exposes exactly the operations the map needs -- every city's cell layer over
+the last year, one cell's detail, city metadata, and the first load's progress
+-- over the precomputed gold tables. There is no other data to ask for. Nothing here aggregates; if an
 endpoint would need to scan silver, that is a signal the ETL is missing a
 rollup, not a reason to compute it per request.
 
@@ -11,47 +11,55 @@ Run:  python -m uvicorn safety.api.main:app --reload
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import gzip
 import json
 import logging
-import math
+import os
 import threading
+import time
 from collections import OrderedDict
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import datetime
 from typing import Annotated, Any
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.errors import QueryCanceled
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
 
-from safety import PIPELINE_VERSION
+from safety import PIPELINE_VERSION, shards
 from safety.api import directions
 from safety.api import repository as repo
 from safety.api.ratelimit import RateLimitMiddleware
 from safety.api.security import SecurityHeadersMiddleware
-from safety.config import EXTRA_WEB_DIRS, REPO_ROOT, WEB_DIR, settings
-from safety.h3grid import RESOLUTIONS, cell_resolution, cells_for_point, grid_disk, is_valid_cell
+from safety.etl import progress
+from safety.config import REPO_ROOT, WEB_DIR, settings
+from safety.h3grid import cell_resolution, cells_for_point, is_valid_cell
 from safety.routing.errors import RoutingError
 from safety.routing.service import Routing, new_http_client
 
 log = logging.getLogger(__name__)
 
 pool: ConnectionPool | None = None
+# With cities split across databases (settings.db_shards, safety/shards.py):
+# one pool per database, by host, and which host holds each city. Empty
+# otherwise, and then every request uses `pool`. With shards, `pool` is the
+# first database's -- where the provider budgets are counted.
+pools: dict[str, ConnectionPool] = {}
+_city_hosts: dict[str, str] = {}
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global pool
-    pool = ConnectionPool(
-        settings.dsn,
+def _open_pool(dsn: str) -> ConnectionPool:
+    return ConnectionPool(
+        dsn,
         min_size=1,
-        max_size=8,
+        max_size=settings.api_pool_max_size,
         # statement_timeout lives here, on the API's own connections, and never
         # on the role or the database (ALTER ROLE/DATABASE ... SET): the ETL and
         # migrate share both and legitimately run for minutes. A migration that
@@ -71,27 +79,97 @@ async def lifespan(app: FastAPI):
         check=ConnectionPool.check_connection,
         open=True,
     )
-    pool.wait(timeout=30)
-    log.info("connection pool ready")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global pool
+    shard_list = shards.configured()
+    if shard_list:
+        for shard in shard_list:
+            pools[shard.host] = _open_pool(settings.dsn_for(shard.host))
+            _city_hosts.update({city: shard.host for city in shard.cities})
+        pool = pools[shard_list[0].host]
+    else:
+        pool = _open_pool(settings.dsn)
+    for each in all_pools():
+        each.wait(timeout=30)
+    log.info("connection pools ready: %d database(s)", len(all_pools()))
     # One outbound HTTP client for every routing provider, so connections to
     # Photon and Transitous are pooled and kept alive across requests rather
     # than re-handshaking TLS per geocode keystroke (safety/routing/).
     http = new_http_client()
     app.state.http = http
-    app.state.routing = Routing.build(http)
+    # The pool goes along so the provider budgets can be counted in the
+    # database when settings.routing_budget_backend is `db` (many replicas).
+    app.state.routing = Routing.build(http, pool=pool)
+    warm = None
+    if settings.cache_warm_on_start:
+        warm = asyncio.create_task(_warm_cache())
     try:
         yield
     finally:
+        if warm is not None and not warm.done():
+            warm.cancel()
         await http.aclose()
-        pool.close()
+        for each in all_pools():
+            each.close()
+        pools.clear()
+        _city_hosts.clear()
+
+
+def _city_now(timezone: str | None) -> datetime:
+    """Now on a city's own clock (UTC for an unknown zone)."""
+    try:
+        return datetime.now(ZoneInfo(timezone or "UTC"))
+    except Exception:
+        return datetime.now(ZoneInfo("UTC"))
+
+
+async def _warm_cache() -> None:
+    """Fill the response cache with what a first visitor asks for.
+
+    Over loopback HTTP rather than by calling the endpoint functions, so the
+    warm requests take exactly the path a real one does -- parameter defaults,
+    window resolution, cache keys -- and cannot drift from it. Best effort: a
+    failure is logged and the process serves normally, just cold.
+    """
+    import httpx
+
+    port = os.environ.get("PORT", "8000")
+    base = f"http://127.0.0.1:{port}{API}"
+    # Give uvicorn a moment to bind after lifespan startup returns.
+    await asyncio.sleep(2)
+    try:
+        async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
+            response = await client.get(f"{base}/cities")
+            response.raise_for_status()
+            records = response.json().get("cities", [])
+            cities = [c["source_id"] for c in records]
+            for record in records:
+                # What the page asks for: the city at the hour and weekday it is
+                # now there (web/app.js loadCityLayer), at the zoomed-out size.
+                now = _city_now(record.get("timezone"))
+                await client.get(
+                    f"{base}/cells",
+                    params={"city": record["source_id"], "res": 8, "hour": now.hour,
+                            "day": now.weekday()},
+                )
+                # Under the /cells rate-limit zone (2 r/s) for 127.0.0.1.
+                await asyncio.sleep(0.6)
+        log.info("cache warmed for %d cities", len(cities))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # pragma: no cover - best effort
+        log.warning("cache warm-up failed: %s: %s", type(exc).__name__, exc)
 
 
 app = FastAPI(
     title="Crime Prevention & Personal Safety API",
     version=PIPELINE_VERSION,
     description=(
-        "Serving layer over precomputed H3 cell rollups, one city at a time. "
-        "Values are reported-incident density relative to other cells in the same "
+        "Serving layer over precomputed H3 cell rollups of the last year, one city "
+        "at a time. Values are reported-incident density relative to other cells in the same "
         "city -- not a risk score, not a prediction, and never comparable between "
         "cities: every percentile is computed against that city's own distribution."
     ),
@@ -146,9 +224,87 @@ async def _busy(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(_BUSY, status_code=503, headers={"Retry-After": "5"})
 
 
-def get_conn():
-    assert pool is not None, "connection pool not initialised"
-    with pool.connection() as conn:
+def all_pools() -> list[ConnectionPool]:
+    """Every database's pool: one, unless the cities are split (pools)."""
+    if pools:
+        return list(pools.values())
+    return [pool] if pool is not None else []
+
+
+def pool_for(city: str | None) -> ConnectionPool:
+    """The pool of the database holding `city`; the only pool without shards.
+
+    An unknown city goes to the first database, which answers it as one
+    database always has: no such city."""
+    chosen = pools.get(_city_hosts.get(city or "", ""), pool) if pools else pool
+    assert chosen is not None, "connection pool not initialised"
+    return chosen
+
+
+# The endpoints' own default when a request names no city.
+DEFAULT_CITY = "phl"
+
+# Which city each looked-up cell belongs to, so a cell's database is found
+# once (cell detail is a click, not the hot path). Bounded; cleared when full.
+_cell_city: dict[str, str] = {}
+_CELL_CITY_MAX = 50_000
+
+
+def _city_of_cell(cell: str) -> str | None:
+    """Ask each database whose cell this is (gold.cell_geometry is per city)."""
+    if not is_valid_cell(cell):
+        return None
+    known = _cell_city.get(cell)
+    if known is not None:
+        return known
+    for each in all_pools():
+        with each.connection() as conn:
+            city = repo.cell_source(conn, cell)
+        if city is not None:
+            if len(_cell_city) >= _CELL_CITY_MAX:
+                _cell_city.clear()
+            _cell_city[cell] = city
+            return city
+    return None
+
+
+def request_city(request: Request) -> str | None:
+    """The city a request is about, as its endpoint will read it."""
+    params, query = request.path_params, request.query_params
+    city = params.get("source_id") or query.get("city")
+    if city:
+        return city
+    cell = params.get("h3_index") or query.get("h3")
+    if cell is None and "lat" in query and "lng" in query:
+        try:
+            cell = cells_for_point(float(query["lat"]), float(query["lng"]))[8]
+        except (ValueError, KeyError):
+            cell = None
+    if cell:
+        return _city_of_cell(cell)
+    return DEFAULT_CITY
+
+
+def _spans_databases(request: Request) -> bool:
+    """An endpoint that, with shards, reads every database itself: it gets no
+    connection up front, so one database being down cannot fail it."""
+    path = request.url.path
+    if path in (f"{API}/health", f"{API}/cities"):
+        return True
+    return path == f"{API}/version" and not request.query_params.get("city")
+
+
+def get_conn(request: Request):
+    # Without shards there is one pool and nothing to work out.
+    if not pools:
+        assert pool is not None, "connection pool not initialised"
+        with pool.connection() as conn:
+            yield conn
+        return
+    if _spans_databases(request):
+        yield None
+        return
+    with pool_for(request_city(request)).connection() as conn:
         yield conn
 
 
@@ -195,6 +351,31 @@ def _refresh_stamp(conn, source_id: str | None = None) -> str | None:
     version = repo.serving_version(conn, source_id)
     refreshed = version.get("last_refreshed_at")
     return None if refreshed is None else str(refreshed)
+
+
+# Stamp memo (settings.cache_stamp_ttl_seconds). With a TTL of 0 every cached
+# lookup asks the database for the city's stamp, which keeps a single process
+# exactly current. Many replicas serving thousands of visitors turn that one
+# query per hit into the bulk of the database's load, so a deployment can trust
+# a stamp for a few seconds: a new snapshot reaches the map that much later, and
+# a hit costs no query at all. Keyed by source_id (None = the aggregate).
+_stamp_memo: dict[str | None, tuple[float, str | None]] = {}
+_stamp_lock = threading.Lock()
+
+
+def _current_stamp(conn, source_id: str | None) -> str | None:
+    ttl = settings.cache_stamp_ttl_seconds
+    if ttl <= 0:
+        return _refresh_stamp(conn, source_id)
+    now = time.monotonic()
+    with _stamp_lock:
+        memo = _stamp_memo.get(source_id)
+    if memo is not None and memo[0] > now:
+        return memo[1]
+    stamp = _refresh_stamp(conn, source_id)
+    with _stamp_lock:
+        _stamp_memo[source_id] = (now + ttl, stamp)
+    return stamp
 
 
 # Thread safety. The endpoints are plain `def`s, so Starlette runs them on its
@@ -258,7 +439,7 @@ def cached(
     """
     if not store:
         return producer()
-    stamp = _refresh_stamp(conn, source_id)
+    stamp = _current_stamp(conn, source_id)
     if stamp is None:
         return producer()
     flight_key = (key, stamp)
@@ -336,11 +517,57 @@ def _cache_stats_snapshot() -> dict[str, int]:
         return dict(_cache_stats)
 
 
+def _merge_versions(versions: list[dict[str, Any]]) -> dict[str, Any]:
+    """serving_version() across databases: latest stamps, summed counts."""
+
+    def latest(key: str):
+        values = [v.get(key) for v in versions if v.get(key) is not None]
+        return max(values) if values else None
+
+    def total(key: str):
+        values = [v.get(key) for v in versions if v.get(key) is not None]
+        return sum(values) if values else None
+
+    return {
+        "last_refreshed_at": latest("last_refreshed_at"),
+        "data_as_of": latest("data_as_of"),
+        "incident_count": total("incident_count"),
+        "cities": total("cities") or 0,
+    }
+
+
+def _version_everywhere() -> tuple[dict[str, Any], dict[str, str]]:
+    """The aggregate serving_version over every database, and each one's state.
+
+    Raises only if no database answers: a site with one database down still
+    serves the other cities, so its pods should stay in the load balancer."""
+    versions, states = [], {}
+    last_error: Exception | None = None
+    for host, each in pools.items():
+        try:
+            with each.connection() as conn:
+                versions.append(repo.serving_version(conn))
+            states[host] = "ok"
+        except Exception as exc:  # noqa: BLE001 - reported per database
+            log.warning("database %s: %s: %s", host, type(exc).__name__, exc)
+            states[host] = "unavailable"
+            last_error = exc
+    if not versions and last_error is not None:
+        raise last_error
+    return _merge_versions(versions), states
+
+
 @app.get(f"{API}/health", tags=["meta"])
 def health(conn: Conn) -> dict[str, Any]:
-    version = repo.serving_version(conn)
+    databases: dict[str, str] | None = None
+    if pools:
+        version, databases = _version_everywhere()
+    else:
+        version = repo.serving_version(conn)
+    degraded = databases is not None and any(v != "ok" for v in databases.values())
     return {
-        "status": "ok",
+        "status": "degraded" if degraded else "ok",
+        **({"databases": databases} if databases is not None else {}),
         "commit": DEPLOYED_COMMIT,
         "pipeline_version": PIPELINE_VERSION,
         "data_as_of": version.get("data_as_of"),
@@ -358,6 +585,8 @@ def version(conn: Conn, city: str | None = None) -> dict[str, Any]:
     at a time: without it, a bi-weekly Los Angeles refresh would make every
     Philadelphia viewer reload a layer that had not changed.
     """
+    if pools and city is None:
+        return _version_everywhere()[0]
     return repo.serving_version(conn, city)
 
 
@@ -375,13 +604,6 @@ def _with_windows(conn, record: dict[str, Any]) -> dict[str, Any]:
         **record,
         "windows": windows,
         "default_window": (default or (windows[-1] if windows else {"id": None}))["id"],
-        # For a custom range: the calendar runs from selectable_start (on the
-        # record; NULL until the city is rebuilt with gold.cell_daily) and the
-        # data stops at coverage_end. The caveats are matched to whatever range
-        # the client picks.
-        "custom_range_resolutions": (
-            list(repo.DAILY_RESOLUTIONS) if record.get("selectable_start") else []
-        ),
         "series_caveats": cached_json(
             conn,
             ("caveats", record["source_id"]),
@@ -391,9 +613,46 @@ def _with_windows(conn, record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _from_every_database(read) -> list[dict[str, Any]]:
+    """`read(conn)`'s rows from each database, sorted by city_name.
+
+    A database that cannot answer drops out -- its cities go missing from the
+    list, the rest are served -- unless none answers, which raises (503)."""
+    rows: list[dict[str, Any]] = []
+    last_error: Exception | None = None
+    answered = False
+    for host, each in pools.items():
+        try:
+            with each.connection() as conn:
+                rows.extend(read(conn))
+            answered = True
+        except Exception as exc:  # noqa: BLE001 - one database down is not an outage
+            log.warning("cities from %s skipped: %s: %s", host, type(exc).__name__, exc)
+            last_error = exc
+    if not answered and last_error is not None:
+        raise last_error
+    rows.sort(key=lambda r: r["city_name"])
+    return rows
+
+
+def list_cities_all() -> list[dict[str, Any]]:
+    """repo.list_cities over every database (the one, without shards)."""
+    if not pools:
+        with pool_for(None).connection() as conn:
+            return repo.list_cities(conn)
+    return _from_every_database(repo.list_cities)
+
+
 @app.get(f"{API}/cities", tags=["cities"])
 def cities(conn: Conn) -> dict[str, Any]:
-    return {"cities": [_with_windows(conn, r) for r in repo.list_cities(conn)]}
+    if not pools:
+        return {"cities": [_with_windows(conn, r) for r in repo.list_cities(conn)]}
+    # Each city's windows and caveats come from its own database.
+    return {
+        "cities": _from_every_database(
+            lambda shard_conn: [_with_windows(shard_conn, r) for r in repo.list_cities(shard_conn)]
+        )
+    }
 
 
 @app.get(f"{API}/cities/{{source_id}}", tags=["cities"])
@@ -402,18 +661,6 @@ def city(source_id: str, conn: Conn) -> dict[str, Any]:
     if record is None:
         raise HTTPException(404, f"no serving data for city '{source_id}'")
     return _with_windows(conn, record)
-
-
-@app.get(f"{API}/categories", tags=["cities"])
-def categories(conn: Conn, city: str = "phl") -> dict[str, Any]:
-    return {
-        "city": city,
-        "labels": repo.CATEGORY_LABELS,
-        "tiers": repo.TIER_LABELS,
-        "windows": repo.WINDOW_LABELS,
-        "resolutions": list(RESOLUTIONS),
-        "categories": repo.categories(conn, city),
-    }
 
 
 @app.get(f"{API}/quality", tags=["meta"])
@@ -435,186 +682,22 @@ def quality(conn: Conn, city: str = "phl") -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_window(conn, city: str | None, window: str) -> dict[str, Any]:
-    """The served window a request names, for this city.
+def _resolve_window(conn, city: str | None) -> dict[str, Any]:
+    """The one window the map serves (repo.DEFAULT_WINDOW), as this city has it.
 
-    Windows are per city (gold.city_window): a city with two years of history
-    has no last_10y. Legacy names are accepted as aliases. A city with no
-    windows at all -- unknown, or not built yet -- gets the name checked
-    against the pattern only, so it answers with an empty layer as before
-    rather than a 400 that blames the window.
+    A city with no window built yet -- unknown, or still loading -- gets a
+    stand-in, so it answers with an empty layer rather than a 400.
     """
-    if repo.canonical_window(window) is None:
-        raise HTTPException(
-            400,
-            "window must be last_3m, last_6m, last_9m or last_<N>y "
-            "(see /api/v1/cities for each city's list)",
-        )
     windows = city_windows(conn, city) if city else []
-    if not windows:
-        return {"id": repo.canonical_window(window), "hourly": True, "res10": True, "safety": True}
-    match = repo.match_window(window, windows)
+    match = repo.match_window(repo.DEFAULT_WINDOW, windows)
     if match is None:
-        raise HTTPException(
-            400,
-            f"'{window}' is not built for city '{city}', which has "
-            f"{', '.join(w['id'] for w in windows)}",
-        )
+        return {"id": repo.DEFAULT_WINDOW, "hourly": True, "safety": True}
     return match
 
 
-def _resolve_range(
-    conn, city: str | None, start: date | None, end: date | None
-) -> tuple[dict[str, Any], repo.DateRange | None]:
-    """The served window, or the custom range, two calendar dates name.
-
-    A range that equals one of the city's stored windows is served as that
-    window -- the presets on the map always are -- so it keeps everything the
-    stored build carries, the time-of-day layer included. Anything else is
-    ranked on request from gold.cell_daily (repo.DateRange).
-
-    `end` may run past the newest reported date (the map defaults to today);
-    it is clamped there, so "today" and "the day the data stops" are one cache
-    entry. `start` may not run before the oldest date the city holds.
-    """
-    if start is None or end is None:
-        raise HTTPException(400, "from and to go together: both dates, YYYY-MM-DD")
-    if start > end:
-        raise HTTPException(400, "from must be on or before to")
-    # A day of slack: the browser picks "today" in its own time zone.
-    if end > date.today() + timedelta(days=1):
-        raise HTTPException(400, "to cannot be in the future")
-    record = repo.get_city(conn, city) if city else None
-    if record is None:
-        raise HTTPException(400, f"no serving data for city '{city}'")
-    first = record.get("selectable_start")
-    if first is None:
-        raise HTTPException(
-            400,
-            f"custom date ranges are not built for '{city}' yet; use one of its "
-            "windows (see /api/v1/cities)",
-        )
-    if start < first:
-        raise HTTPException(
-            400, f"from must be on or after {first.isoformat()}, the oldest date '{city}' holds"
-        )
-    last = record["coverage_end"]
-    clamped = max(start, min(end, last))
-
-    for window in city_windows(conn, city):
-        if window.get("start") == start.isoformat() and window.get("end") == clamped.isoformat():
-            return window, None
-
-    span_days = (clamped - start).days + 1
-    limit = settings.safety_max_window_years
-    safety = limit is None or span_days <= limit * 366
-    served = {
-        "id": None,
-        "label": repo.range_label(start, clamped),
-        "start": start.isoformat(),
-        "end": clamped.isoformat(),
-        "span_days": span_days,
-        "hourly": False,
-        "res10": False,
-        "safety": safety,
-    }
-    return served, repo.DateRange(start, clamped, safety)
-
-
-def _resolve_period(
-    conn, city: str | None, window: str, start: date | None, end: date | None
-) -> tuple[dict[str, Any], repo.DateRange | None]:
-    """`from`/`to` when either is given, otherwise the named window."""
-    if start is not None or end is not None:
-        return _resolve_range(conn, city, start, end)
-    return _resolve_window(conn, city, window), None
-
-
-def _validate_range(
-    res: int, date_range: repo.DateRange | None, hour: int | None, day: int | None = None
-) -> None:
-    """What a custom range cannot be served with, said before the generic checks
-    (which would blame a window the request never named)."""
-    if date_range is None:
-        return
-    if res not in repo.DAILY_RESOLUTIONS:
-        raise HTTPException(
-            400,
-            f"custom date ranges are served at res {list(repo.DAILY_RESOLUTIONS)}; "
-            f"at res {res} pick one of the city's windows -- a cell that size holds "
-            "too little over most ranges to rank, and it is not rolled up by day",
-        )
-    if hour is not None:
-        raise HTTPException(
-            400,
-            "the time-of-day layer is built for the stored last-12-months window "
-            "only; pick that window rather than a custom range to use an hour",
-        )
-    if day is not None:
-        raise HTTPException(
-            400,
-            "the day-of-week factor is built for the stored last-12-months window "
-            "only; pick that window rather than a custom range to use a day",
-        )
-
-
-def _period_key(served: dict[str, Any], date_range: repo.DateRange | None):
-    """The cache-key part for a window or a range."""
-    if date_range is None:
-        return served["id"]
-    return ("range", date_range.start.isoformat(), date_range.end.isoformat())
-
-
-def _validate_layer(res: int, window: dict[str, Any], category: str) -> None:
+def _validate_res(res: int) -> None:
     if res not in repo.VALID_RESOLUTIONS:
         raise HTTPException(400, f"res must be one of {list(repo.VALID_RESOLUTIONS)}")
-    if category not in repo.VALID_CATEGORIES:
-        raise HTTPException(400, f"category must be one of {list(repo.VALID_CATEGORIES)}")
-
-    # Same principle as _validate_hour: an unbuilt combination would otherwise
-    # come back as a layer of zeroes, which is indistinguishable from a city
-    # where nothing was reported. Told, with the reason.
-    _, categories = repo.activity_scope(res)
-    if res == 10 and not window["res10"]:
-        raise HTTPException(
-            400,
-            f"res {res} is built for windows {list(repo.ACTIVITY_WINDOWS[10])} "
-            "only -- a cell that size holds too little over a shorter window for "
-            "a percentile to separate anything, and the longer windows are not "
-            "worth their size at a cell this small. Use a coarser resolution for "
-            "the other windows.",
-        )
-    if category not in categories:
-        raise HTTPException(
-            400,
-            f"res {res} is built for category {list(categories)} only -- splitting "
-            "a cell that size by offense category leaves almost every cell empty "
-            "in every category, so the ranking would be a field of ties. Use a "
-            "coarser resolution to break the layer down by category.",
-        )
-
-
-def _safety_available(res: int) -> bool:
-    """Whether the per-capita ranking exists at this cell size.
-
-    Not an error on /cells: the activity layer is served at every resolution and
-    the safety fields simply ride along where they exist. It is an error when a
-    caller asks for the ranking specifically, which is what _require_safety_res
-    is for -- an empty measure and an absent one look identical otherwise.
-    """
-    return res in repo.SAFETY_RESOLUTIONS
-
-
-def _require_safety_res(res: int) -> None:
-    if not _safety_available(res):
-        raise HTTPException(
-            400,
-            f"the safety ranking is built for res {list(repo.SAFETY_RESOLUTIONS)} "
-            f"only -- it divides by ambient population apportioned from census "
-            f"blocks, and a res {res} cell is smaller than a census block, so its "
-            "population would be an apportionment assumption rather than a "
-            "measurement. The incident-count layer is served at every resolution.",
-        )
 
 
 def _validate_hour(hour: int | None, res: int, window: dict[str, Any]) -> None:
@@ -629,18 +712,7 @@ def _validate_hour(hour: int | None, res: int, window: dict[str, Any]) -> None:
         raise HTTPException(400, "hour must be an integer from 0 to 23")
     if res not in repo.HOURLY_RESOLUTIONS:
         raise HTTPException(
-            400,
-            f"the time-of-day layer is built for res {list(repo.HOURLY_RESOLUTIONS)} "
-            f"only -- a window split 24 ways at res {res} leaves too few incidents "
-            "per cell to rank",
-        )
-    if not window["hourly"]:
-        raise HTTPException(
-            400,
-            f"the time-of-day layer is built for the last 12 months only "
-            f"({', '.join(repo.HOURLY_WINDOWS)}) -- shorter windows do not carry "
-            "enough incidents once split across 24 hour blocks, and longer ones "
-            "would multiply the largest table in the database",
+            400, f"the time-of-day layer is built for res {list(repo.HOURLY_RESOLUTIONS)} only"
         )
 
 
@@ -655,13 +727,7 @@ def _validate_day(day: int | None, res: int, window: dict[str, Any]) -> None:
         raise HTTPException(
             400,
             f"the day-of-week factor is built for res {list(repo.HOURLY_RESOLUTIONS)} "
-            f"only, as the time-of-day layer is",
-        )
-    if not window["hourly"]:
-        raise HTTPException(
-            400,
-            f"the day-of-week factor is built for the last 12 months only "
-            f"({', '.join(repo.HOURLY_WINDOWS)}), as the time-of-day layer is",
+            "only, as the time-of-day layer is",
         )
 
 
@@ -671,9 +737,6 @@ def cells(
     conn: Conn,
     city: str = "phl",
     res: int = 8,
-    window: str = repo.DEFAULT_WINDOW,
-    category: str = "all",
-    min_count: int = Query(0, ge=0),
     hour: int | None = Query(
         None,
         ge=0,
@@ -693,66 +756,27 @@ def cells(
             "re-ranks the city, into the same time-of-day fields."
         ),
     ),
-    measure: str | None = Query(
-        None,
-        description=(
-            "Assert which measure the caller intends to render. Omit to get "
-            "whatever exists at this resolution; pass 'safety' to be told with a "
-            "400, rather than with nulls, when the ranking is not built here."
-        ),
-    ),
-    bbox: str | None = Query(
-        None, description="Viewport filter as 'west,south,east,north' in WGS84 degrees"
-    ),
-    from_: date | None = Query(
-        None,
-        alias="from",
-        description="Custom range start, YYYY-MM-DD (with `to`; replaces `window`).",
-    ),
-    to: date | None = Query(
-        None, description="Custom range end, YYYY-MM-DD, inclusive (with `from`)."
-    ),
 ) -> Response:
-    """The H3 hexagon layer as GeoJSON, coloured client-side from `count`.
+    """The city's H3 hexagon layer over the last year, as GeoJSON.
 
-    For a stored window (`window`), or for any two dates (`from`, `to`).
+    The only data the map can ask for: one city, one of the two cell sizes, and
+    optionally an hour and a weekday. There is no other window, date range or
+    category. A query parameter this endpoint does not declare is ignored, so an
+    old link still gets the last year.
     """
-    served, date_range = _resolve_period(conn, city, window, from_, to)
-    _validate_range(res, date_range, hour, day)
-    _validate_layer(res, served, category)
+    _validate_res(res)
+    served = _resolve_window(conn, city)
     _validate_hour(hour, res, served)
     _validate_day(day, res, served)
     window = served["id"]
-    if measure is not None:
-        if measure not in ("activity", "safety"):
-            raise HTTPException(400, "measure must be 'activity' or 'safety'")
-        if measure == "safety":
-            _require_safety_res(res)
 
-    parsed_bbox: tuple[float, float, float, float] | None = None
-    if bbox:
-        try:
-            west, south, east, north = (float(part) for part in bbox.split(","))
-        except ValueError:
-            raise HTTPException(400, "bbox must be 'west,south,east,north'") from None
-        parsed_bbox = (west, south, east, north)
-        # float() accepts "nan" and "inf", which would reach SQL as nonsense
-        # and give every variant its own cache key.
-        if not all(math.isfinite(v) for v in parsed_bbox):
-            raise HTTPException(400, "bbox values must be finite numbers")
-
-    key = (
-        "cells", city, res, _period_key(served, date_range), category, min_count, hour,
-        day, parsed_bbox,
-    )
+    key = ("cells", city, res, window, hour, day)
     payload = cached(
         conn,
         key,
-        # Encoded *and compressed* inside the cache, not after it. At resolution
-        # 10 the document is ~14 MB; re-encoding it cost more than the query that
-        # built it, and GZipMiddleware re-compressed it at level 9 on every hit.
-        # Stored as gzip bytes, a hit is a memory copy, and the cache's byte
-        # budget holds about ten times as many layers.
+        # Encoded *and compressed* inside the cache, not after it: a hit is a
+        # memory copy, and the cache's byte budget holds about ten times as
+        # many layers.
         lambda: gzip.compress(
             json.dumps(
                 repo.cells_geojson(
@@ -760,22 +784,14 @@ def cells(
                     source_id=city,
                     h3_res=res,
                     time_window=window,
-                    category=category,
-                    min_count=min_count,
                     hour=hour,
                     day=day,
-                    bbox=parsed_bbox,
-                    date_range=date_range,
                 ),
                 default=str,
             ).encode("utf-8"),
             compresslevel=6,
         ),
         source_id=city,
-        # Only the shapes the shipped map requests are cached (it sends neither
-        # bbox nor min_count, web/app.js loadLayer); free-form filters are
-        # served fresh and cannot evict real layers.
-        store=parsed_bbox is None and min_count == 0,
     )
     headers = {"Cache-Control": "public, max-age=60", "Vary": "Accept-Encoding"}
     # The same naive substring test starlette's GZipMiddleware uses: a client
@@ -792,200 +808,50 @@ def cells(
     return Response(gzip.decompress(payload), media_type="application/geo+json", headers=headers)
 
 
-@app.get(f"{API}/cells/ring", tags=["cells"])
-def cells_ring(
-    conn: Conn,
-    h3: str,
-    k: int = Query(1, ge=0, le=6),
-    window: str = repo.DEFAULT_WINDOW,
-    category: str = "all",
-    from_: date | None = Query(
-        None,
-        alias="from",
-        description="Custom range start, YYYY-MM-DD (with `to`; replaces `window`).",
-    ),
-    to: date | None = Query(
-        None, description="Custom range end, YYYY-MM-DD, inclusive (with `from`)."
-    ),
-) -> dict[str, Any]:
-    """S10: activity for a cell plus its k-ring of neighbours.
-
-    The ring itself is an O(1) H3 operation, and the lookup is by primary key
-    -- no bounding-box or spatial query is involved at any point.
-    """
-    if not is_valid_cell(h3):
-        raise HTTPException(400, f"'{h3}' is not a valid H3 index")
-    source = repo.cell_source(conn, h3)
-    res = cell_resolution(h3)
-    served, date_range = _resolve_period(conn, source, window, from_, to)
-    _validate_range(res, date_range, None)
-    _validate_layer(res, served, category)
-    window = served["id"]
-
-    indexes = grid_disk(h3, k)
-    rows = repo.cell_ring(
-        conn,
-        h3_indexes=indexes,
-        time_window=window,
-        category=category,
-        date_range=date_range,
-        source_id=source,
-        h3_res=res,
-    )
-    return {
-        "origin": h3,
-        "k": k,
-        "requested": len(indexes),
-        "resolved": len(rows),
-        "window": window if date_range is None else repo.RANGE_WINDOW,
-        "range": served if date_range else None,
-        "category": category,
-        "cells": rows,
-    }
-
-
-@app.get(f"{API}/cells/lookup", tags=["cells"])
-def cells_lookup(
-    conn: Conn,
-    lat: float = Query(..., ge=-90, le=90),
-    lng: float = Query(..., ge=-180, le=180),
-    res: int = 8,
-    window: str = repo.DEFAULT_WINDOW,
-    from_: date | None = Query(
-        None,
-        alias="from",
-        description="Custom range start, YYYY-MM-DD (with `to`; replaces `window`).",
-    ),
-    to: date | None = Query(
-        None, description="Custom range end, YYYY-MM-DD, inclusive (with `from`)."
-    ),
-) -> dict[str, Any]:
-    """Resolve a coordinate to its cell and return that cell's rollup.
-
-    S10 notes the client can do the H3 step itself, offline, with no server
-    round trip; this endpoint exists for the geocoded-address path, where the
-    lookup is already happening server-side.
-    """
-    if res not in repo.VALID_RESOLUTIONS:
-        raise HTTPException(400, f"res must be one of {list(repo.VALID_RESOLUTIONS)}")
-    cell = cells_for_point(lat, lng)[res]
-    source = repo.cell_source(conn, cell)
-    if source is None:
-        return {
-            "h3": cell,
-            "in_coverage": False,
-            "message": "That location falls outside the covered city boundary.",
-        }
-    served, date_range = _resolve_period(conn, source, window, from_, to)
-    _validate_range(res, date_range, None)
-    _validate_layer(res, served, "all")
-    detail = repo.cell_detail(
-        conn, h3_index=cell, time_window=served["id"], date_range=date_range
-    )
-    if detail is None:
-        return {
-            "h3": cell,
-            "in_coverage": False,
-            "message": "That location falls outside the covered city boundary.",
-        }
-    return {"h3": cell, "in_coverage": True, **detail}
-
-
 @app.get(f"{API}/cells/{{h3_index}}", tags=["cells"])
 def cell(
     conn: Conn,
     h3_index: str,
-    window: str = repo.DEFAULT_WINDOW,
     hour: int | None = Query(None, ge=0, le=23),
-    from_: date | None = Query(
-        None,
-        alias="from",
-        description="Custom range start, YYYY-MM-DD (with `to`; replaces `window`).",
-    ),
-    to: date | None = Query(
-        None, description="Custom range end, YYYY-MM-DD, inclusive (with `from`)."
-    ),
 ) -> dict[str, Any]:
+    """One cell over the last year: its ratings and its hour and weekday profiles."""
     if not is_valid_cell(h3_index):
         raise HTTPException(400, f"'{h3_index}' is not a valid H3 index")
+    _validate_res(cell_resolution(h3_index))
     source = repo.cell_source(conn, h3_index)
-    if source is None and (from_ is not None or to is not None):
-        raise HTTPException(404, f"cell '{h3_index}' is not in the covered area")
-    served, date_range = _resolve_period(conn, source, window, from_, to)
-    _validate_range(cell_resolution(h3_index), date_range, hour)
+    served = _resolve_window(conn, source)
     _validate_hour(hour, cell_resolution(h3_index), served)
 
-    detail = repo.cell_detail(
-        conn, h3_index=h3_index, time_window=served["id"], hour=hour, date_range=date_range
-    )
+    detail = repo.cell_detail(conn, h3_index=h3_index, time_window=served["id"], hour=hour)
     if detail is None:
         raise HTTPException(404, f"cell '{h3_index}' is not in the covered area")
     return detail
 
 
-@app.get(f"{API}/hours", tags=["cells"])
-def hours(
-    conn: Conn,
-    city: str = "phl",
-    window: str = repo.DEFAULT_WINDOW,
-    res: int = 8,
-    category: str = "all",
-) -> dict[str, Any]:
-    """The city's 24-block profile: historical incidents per local hour.
+# ---------------------------------------------------------------------------
+# Load progress (safety/etl/progress.py): the bar on the live site
+# ---------------------------------------------------------------------------
 
-    Backs the map's "now" view and its next-few-hours trend. Built only where
-    the hourly layer is (_validate_hour), so a missing profile is a 400 with the
-    reason rather than a day of zeroes that reads as a quiet city.
+
+@app.get(f"{API}/progress", tags=["meta"])
+def load_progress() -> Response:
+    """How far the cities' first load has got, across every database.
+
+    Never cached: the page polls it every few seconds while a load runs, and
+    each poll is one small query per database. A database that cannot answer
+    drops its cities out of the figure rather than failing the request.
     """
-    served = _resolve_window(conn, city, window)
-    _validate_layer(res, served, category)
-    _validate_hour(0, res, served)
-    counts = cached_json(
-        conn,
-        ("hours", city, res, served["id"], category),
-        lambda: repo.city_hour_profile(
-            conn, source_id=city, time_window=served["id"], h3_res=res, category=category
-        ),
-        city,
-    )
-    return {
-        "city": city,
-        "window": served["id"],
-        "res": res,
-        "category": category,
-        "counts": counts,
-        "total": sum(counts),
-    }
-
-
-@app.get(f"{API}/summary", tags=["cells"])
-def summary(
-    conn: Conn,
-    city: str = "phl",
-    window: str = repo.DEFAULT_WINDOW,
-    res: int = 8,
-    from_: date | None = Query(
-        None,
-        alias="from",
-        description="Custom range start, YYYY-MM-DD (with `to`; replaces `window`).",
-    ),
-    to: date | None = Query(
-        None, description="Custom range end, YYYY-MM-DD, inclusive (with `from`)."
-    ),
-) -> dict[str, Any]:
-    served, date_range = _resolve_period(conn, city, window, from_, to)
-    _validate_range(res, date_range, None)
-    _validate_layer(res, served, "all")
-    window = served["id"]
-    return {
-        "city": city,
-        "window": window if date_range is None else repo.RANGE_WINDOW,
-        "window_label": served["label"] if date_range else repo.window_label(window),
-        "range": served if date_range else None,
-        "totals": repo.city_totals(
-            conn, source_id=city, time_window=window, h3_res=res, date_range=date_range
-        ),
-    }
+    rows: list[dict[str, Any]] = []
+    for each in all_pools():
+        try:
+            with each.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(progress.STATE_SQL)
+                    rows.extend(cur.fetchall())
+        except Exception as exc:  # noqa: BLE001 - a database down is not an outage
+            log.warning("progress from a database skipped: %s: %s", type(exc).__name__, exc)
+    body = progress.summarize(rows)
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------------------
@@ -1332,7 +1198,7 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
             "Counts of crime incidents reported to and recorded by police, aggregated "
             "into roughly 500-metre hexagonal cells (Uber H3 resolution 8, average area "
             "0.74 km²), and ranked relative to other cells in the same city over the "
-            "same time window."
+            "same year."
         ),
         "what_this_is_not": [
             "Not a prediction. Nothing here forecasts future events.",
@@ -1376,26 +1242,15 @@ def methodology(conn: Conn, city: str = "phl") -> dict[str, Any]:
             "primary_resolution_note": "~461 m edge, ~0.74 km² average area",
             "detail_resolution": 9,
             "detail_resolution_note": "~174 m edge, ~0.105 km² average area",
-            "fine_resolution": 10,
-            "fine_resolution_note": (
-                "~76 m across, ~0.015 km² average area. This is the finest cell "
-                "offered, and deliberately so: the source publishes coordinates "
-                "rounded to the block, so a smaller cell would show that rounding "
-                "rather than where crime happened. Incident counts are shown at "
-                "this size; the safety ranking is not, because a cell this small "
-                "has no population figure behind it that is not guesswork. Counts "
-                "here cover the last 12 and 24 months, and all offense types "
-                "together: a cell this small is empty in most single categories "
-                "over most shorter windows, so those breakdowns would rank a set "
-                "of cells that all hold zero against each other."
-            ),
             "safety_resolutions": list(repo.SAFETY_RESOLUTIONS),
-            "fine_resolution_windows": list(repo.ACTIVITY_WINDOWS[10]),
-            "fine_resolution_categories": list(repo.ACTIVITY_CATEGORIES[10]),
+            "window": (
+                "The last year only: incidents more than 365 days old are deleted, "
+                "and every ranking covers the year ending on the newest reported date."
+            ),
             "relative_measure": (
                 "Each cell's percentile is the fraction of cells in the same city with "
-                "strictly lower reported-incident density for the same window and "
-                "category. Tier 0 means nothing was reported in the cell, which is a "
+                "strictly lower reported-incident density over the last year. "
+                "Tier 0 means nothing was reported in the cell, which is a "
                 "different statement from being in the quietest fifth."
             ),
         },
@@ -1441,22 +1296,6 @@ class RevalidatedStaticFiles(StaticFiles):
         response.headers["Cache-Control"] = "no-cache"
         return response
 
-
-# The dev-only front ends, ahead of "/" so their paths are not swallowed by it.
-if settings.extra_frontends:
-    for name, directory in EXTRA_WEB_DIRS.items():
-        # A mount only matches "/<name>/..."; the bare path would otherwise
-        # fall through to "/" and 404.
-        app.add_api_route(
-            f"/{name}",
-            lambda name=name: RedirectResponse(f"/{name}/", status_code=308),
-            include_in_schema=False,
-        )
-        app.mount(
-            f"/{name}",
-            RevalidatedStaticFiles(directory=str(directory), html=True),
-            name=f"web-{name}",
-        )
 
 # The temporary front end. Mounted last so it never shadows an API route.
 app.mount("/", RevalidatedStaticFiles(directory=str(WEB_DIR), html=True), name="web")

@@ -1,0 +1,69 @@
+# PostgreSQL 17 + PostGIS 3.5, run by the CloudNativePG operator.
+#
+# Two instances: a primary and a streaming standby on another node. If the
+# primary's node fails the operator promotes the standby and repoints the
+# `safety-db-rw` Service; the API's pool validates connections on checkout
+# (safety/api/main.py), so it reconnects without a restart.
+#
+# The owner role `safety_app` is a non-superuser, as on the home server
+# (docs/DEPLOYMENT.md, "Database roles"); its password is generated into the
+# `safety-db-app` Secret. PostGIS is created here, by the superuser, because a
+# non-superuser cannot create it -- migration 001's CREATE EXTENSION IF NOT
+# EXISTS then finds it and does nothing.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: safety-db
+spec:
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgis:17-3.5
+  primaryUpdateStrategy: unsupervised
+
+  bootstrap:
+    initdb:
+      database: safety
+      owner: safety_app
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS postgis
+
+  postgresql:
+    parameters:
+      # Sized for a 12 GiB instance on a 32 GiB data node (docs/KUBERNETES.md).
+      shared_buffers: 3GB
+      effective_cache_size: 9GB
+      work_mem: 32MB
+      maintenance_work_mem: 1GB
+      max_connections: "200"
+      max_parallel_workers_per_gather: "2"
+      max_wal_size: 4GB
+      # Timestamps are timestamptz; local-time work is explicit (AT TIME ZONE).
+      timezone: UTC
+      log_min_duration_statement: "5000"
+
+  storage:
+    size: 60Gi
+
+  resources:
+    requests:
+      cpu: "2"
+      memory: 12Gi
+    limits:
+      memory: 12Gi
+
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: preferred
+    tolerations:
+      - key: dedicated
+        operator: Equal
+        value: data
+        effect: NoSchedule
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: safety.io/tier
+                operator: In
+                values: ["data"]

@@ -1,0 +1,119 @@
+# FABRIC with the `sharded` slice profile (deploy/fabric/create_slice.py
+# --profile sharded): every VM inside the default caps of a project without
+# the VM.NoLimit tag (2 cores, 10 GB RAM, 10 GB disk), and still all six
+# cities with a year of data, plus routing.
+#
+# No 10 GB disk holds a year of all six cities (~6 GB live, more with WAL and
+# the OS), so the cities are split across three databases, two each
+# (safety/shards.py; docs/KUBERNETES.md, "City-sharded databases"):
+#
+#   cp1      control plane, Traefik
+#   db1      safety-db1: Los Angeles, Washington DC      tier=db, db-shard=1
+#   db2      safety-db2: Austin, Philadelphia            tier=db, db-shard=2
+#   db3      safety-db3: Chicago, Seattle                tier=db, db-shard=3
+#   etl1     the ETL CronJobs, the bootstrap, bronze     tier=data
+#   app1/2   one API pod each                            tier=app
+#   route1   Valhalla                                    tier=route
+#
+# db nodes are tainted dedicated=db, so only their database runs there; etl1
+# dedicated=data, route1 dedicated=route.
+#
+# Everything the `fabric` overlay does, with the base's one database swapped
+# for the three above.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../fabric
+  - db-shards.yaml
+patches:
+  # The base's single database is replaced by db-shards.yaml.
+  - target: {group: postgresql.cnpg.io, kind: Cluster, name: safety-db}
+    patch: |-
+      $patch: delete
+      apiVersion: postgresql.cnpg.io/v1
+      kind: Cluster
+      metadata:
+        name: safety-db
+  - target: {kind: ConfigMap, name: safety-config}
+    patch: |-
+      - op: replace
+        path: /data/POSTGRES_HOST
+        value: safety-db1-rw
+      - op: add
+        path: /data/DB_SHARDS
+        value: "safety-db1-rw=lax,dc;safety-db2-rw=aus,phl;safety-db3-rw=chi,sea"
+      # One ETL at a time across all three: they share etl1's memory.
+      - op: add
+        path: /data/JOBLOCK_HOST
+        value: safety-db1-rw
+      # Per database now: 4 pods x 3 pools x 4 = 48 connections at most,
+      # 16 per database.
+      - op: replace
+        path: /data/API_POOL_MAX_SIZE
+        value: "4"
+  - target: {kind: Deployment, name: safety-api}
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests
+        value: {cpu: 250m, memory: 512Mi}
+  - target: {kind: HorizontalPodAutoscaler, name: safety-api}
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 2
+      - op: replace
+        path: /spec/maxReplicas
+        value: 4
+  # Valhalla on route1 alone: the fabric overlay requires tier=app; here it is
+  # tier=route, with the taint tolerated. One replica (one route node).
+  - target: {kind: Deployment, name: valhalla}
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/template/spec/affinity/nodeAffinity/requiredDuringSchedulingIgnoredDuringExecution/nodeSelectorTerms/0/matchExpressions/0/values
+        value: ["route"]
+      - op: add
+        path: /spec/template/spec/tolerations
+        value:
+          - key: dedicated
+            operator: Equal
+            value: route
+            effect: NoSchedule
+  - target: {kind: HorizontalPodAutoscaler, name: valhalla}
+    patch: |-
+      $patch: delete
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: valhalla
+  - target: {kind: PersistentVolumeClaim, name: bronze}
+    patch: |-
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 3Gi
+  - target: {kind: PersistentVolumeClaim, name: db-backups}
+    patch: |-
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 4Gi
+  # Nightly dumps of all three would not fit beside the ETL on etl1's 10 GB
+  # disk, so the CronJob is suspended; it dumps every database, keeping one
+  # each, when run by hand:
+  #   kubectl -n safety create job --from=cronjob/db-backup db-backup-now
+  # The data itself is reproducible: the bootstrap reloads it from the portals.
+  - target: {kind: CronJob, name: db-backup}
+    patch: |-
+      - op: add
+        path: /spec/suspend
+        value: true
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/env/0/value
+        value: "safety-db1-rw safety-db2-rw safety-db3-rw"
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/env/1/value
+        value: "1"
