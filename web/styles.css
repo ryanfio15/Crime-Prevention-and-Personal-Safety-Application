@@ -365,11 +365,12 @@ svg { width: 22px; height: 22px; flex: none; }
 .face::before {
   content: "";
   position: absolute;
-  left: 30%; top: 34%;
-  width: 40%; height: 13%;
-  background:
-    radial-gradient(circle at 12% 50%, var(--ink) 0 38%, transparent 42%),
-    radial-gradient(circle at 88% 50%, var(--ink) 0 38%, transparent 42%);
+  left: 30%; top: 33%;
+  width: 13%; height: 13%;
+  border-radius: 50%;
+  background: var(--ink);
+  /* The second eye, the same distance to the right. */
+  box-shadow: 13px 0 0 var(--ink);
 }
 .face::after {
   content: "";
@@ -380,7 +381,7 @@ svg { width: 22px; height: 22px; flex: none; }
   border-top: 0;
   border-radius: 0 0 40px 40px;
 }
-.face[data-band="busier"]::after, .face[data-band="none"]::after { top: 62%; height: 0; border-width: 3px 0 0; border-radius: 3px; }
+.face[data-band="busier"]::after, .face[data-band="none"]::after { top: 62%; height: 0; border: 0; border-top: 3px solid var(--ink); border-radius: 3px; }
 .face[data-band="busy"]::after, .face[data-band="very"]::after { top: 60%; border: 3px solid var(--ink); border-bottom: 0; border-radius: 40px 40px 0 0; }
 
 /* Card surface. */
@@ -466,6 +467,9 @@ svg { width: 22px; height: 22px; flex: none; }
 /* MapLibre's own controls (scale, attribution) in the page's type. */
 .maplibregl-ctrl, .maplibregl-ctrl-attrib { font-family: inherit; }
 .maplibregl-ctrl-attrib.maplibregl-compact { background: var(--panel); color: var(--text); }
+/* MapLibre's attribution button, at the page's 44 px minimum. */
+.maplibregl-ctrl-attrib.maplibregl-compact { min-height: var(--tap); }
+.maplibregl-ctrl-attrib-button { width: var(--tap) !important; height: var(--tap) !important; background-position: center !important; }
 .maplibregl-ctrl-attrib a { color: var(--text); }
 .maplibregl-ctrl-scale { background: color-mix(in srgb, var(--panel) 80%, transparent); border-color: var(--muted); color: var(--text); }
 
@@ -1002,7 +1006,7 @@ svg { width: 22px; height: 22px; flex: none; }
 .near-lede { color: var(--muted); font-size: 15px; }
 .near-dial { display: grid; place-items: center; padding: 6px 0; }
 .rose { overflow: visible; }
-.rose-big { width: min(250px, 70vw); height: auto; aspect-ratio: 1; transition: transform 160ms linear; }
+.rose-big { width: min(250px, 70vw, 32dvh); height: auto; aspect-ratio: 1; transition: transform 160ms linear; }
 .rose-mini { transition: transform 160ms linear; }
 .rose .wedge { stroke: var(--panel); stroke-width: 2.4; }
 .rose .wedge.is-best { stroke: var(--text); stroke-width: 2.6; }
@@ -1108,7 +1112,7 @@ svg { width: 22px; height: 22px; flex: none; }
 .status-pill {
   pointer-events: auto;
   appearance: none;
-  min-height: 40px;
+  min-height: var(--tap);
   padding: 9px 18px;
   border: 0;
   border-radius: var(--pill);
@@ -1275,7 +1279,7 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
   .search-card { flex: 1 1 100%; max-width: none; }
   .search-box { min-height: 54px; border-radius: var(--pill); padding: 0 6px 0 18px; }
   #search-input { font-size: 16px; }
-  .city-chip { min-height: 42px; padding: 0 14px; }
+  .city-chip { min-height: var(--tap); padding: 0 14px; }
 
   .track-float {
     display: block;
@@ -1328,7 +1332,16 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
   }
   .cell-card:not(.is-expanded) .cell-more,
   .cell-card:not(.is-expanded) .cell-today .cell-foot { display: none; }
-  .cell-expand { display: inline-flex; min-height: 36px; }
+  .cell-expand { display: inline-flex; min-height: var(--tap); }
+  /* The mockup's order: name, rating, the day's shape and its sentence,
+     then the buttons. The summary's own pieces join the sheet's column. */
+  .cell-body { display: flex; flex-direction: column; }
+  .cell-body > .cell-summary { display: contents; }
+  .cell-summary > * { order: 1; }
+  .cell-body .cell-today { order: 2; }
+  .cell-summary .cell-actions { order: 3; }
+  .cell-summary .cell-expand { order: 4; }
+  .cell-body .cell-week { order: 5; }
   /* Collapsed, the sheet is the mockup's short version: name, rating, the
      day's shape and the quieter-ahead line, the two buttons. */
   .cell-card:not(.is-expanded) .cell-meta,
@@ -1368,22 +1381,32 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
     background: var(--panel);
     box-shadow: var(--shadow);
   }
-  .dir-top .panel-head h2 { font-size: 18px; }
-  .dir-top .panel-head { padding-left: 8px; }
+  /* No heading on a phone, as in the mockup: the close button sits top
+     right and the swap button under it. */
+  .dir-top .panel-head h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .dir-top .panel-head { position: absolute; top: 10px; right: 10px; }
+  .dir-top .panel-head .icon-btn { width: 40px; height: 40px; }
+  .dir-ends { padding-right: 2px; }
+  .swap-btn { align-self: flex-end; width: 44px; height: 44px; }
   .dir-field { min-height: 48px; }
   .dir-modes .seg-btn { padding: 0 8px; font-size: 14px; }
   .dir-sheet {
     position: absolute;
     z-index: 5;
     bottom: calc(var(--safe-b) + 8px);
-    max-height: 52dvh;
+    max-height: 40dvh;
     overflow-y: auto;
     padding: 14px 16px calc(16px + var(--safe-b) * 0);
     background: var(--panel);
     box-shadow: var(--shadow);
   }
   .dir-sheet:not(:has(.dir-results:not([hidden]), .dir-nav:not([hidden]), .dir-status:not(:empty))) { display: none; }
-  .route-main strong { font-size: 24px; }
+  .route-main strong { font-size: 22px; }
+  .route-card { padding: 10px 14px 12px; gap: 6px; border-radius: 20px; }
+  .route-detail { font-size: 12px; }
+  .dir-sheet { gap: 10px; }
+  .dir-results { gap: 10px; }
+  .route-cards { gap: 8px; }
   body[data-view="directions"] .rail { display: none; }
 
   /* Turn-by-turn: the next turn as a banner at the top, the trip in the
@@ -1452,6 +1475,8 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
   .city-head { flex-wrap: wrap; gap: 8px; }
   .hex { width: 24px; height: 24px; }
 
+  body:has(#locate-note:not([hidden])) .top-row,
+  body:has(#locate-note:not([hidden])) .track-float { visibility: hidden; }
   .tip-float {
     top: calc(var(--safe-t) + var(--edge));
     left: calc(var(--safe-l) + var(--edge));

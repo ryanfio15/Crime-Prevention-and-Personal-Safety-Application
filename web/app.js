@@ -1519,6 +1519,7 @@ async function cityFromGrantedLocation() {
     );
     const point = { lat: position.coords.latitude, lng: position.coords.longitude };
     state.userLocation = point;
+    state.userFixAt = Date.now();
     showUserDot(point);
     followLocation();
     return cityAt(point)?.source_id ?? null;
@@ -1591,6 +1592,7 @@ function followLocation() {
         lat: position.coords.latitude,
         lng: position.coords.longitude,
       };
+      state.userFixAt = Date.now();
       showUserDot(state.userLocation);
       renderCompass();
     },
@@ -1623,7 +1625,7 @@ async function locateMe() {
   button.setAttribute("aria-busy", "true");
   let point;
   try {
-    point = await getPosition();
+    point = await currentPosition();
   } catch (error) {
     showLocateNote(
       error?.code === 1
@@ -1637,6 +1639,7 @@ async function locateMe() {
     button.removeAttribute("aria-busy");
   }
   state.userLocation = point;
+  state.userFixAt = Date.now();
   showUserDot(point);
   followLocation();
   await goToLocation(point, before);
@@ -2346,6 +2349,15 @@ async function setToPoint(point) {
   setTo({ ...place, label: point.label ?? place.label });
 }
 
+/** The visitor's position: the watch's last fix while it is fresh (under
+    30 s), else a new one. A second one-off request while a watch runs can
+    sit until its timeout in some browsers, and the watch already has the
+    answer. */
+function currentPosition() {
+  const fresh = locationWatch !== null && state.userLocation && Date.now() - (state.userFixAt ?? 0) < 30_000;
+  return fresh ? Promise.resolve({ ...state.userLocation }) : getPosition();
+}
+
 function getPosition() {
   if (!navigator.geolocation) {
     return Promise.reject(new Error("This browser does not expose a location."));
@@ -2741,6 +2753,11 @@ async function startNavigation() {
   });
   holdScreenOn();
   renderNav();
+  // Start from the position already in hand while it is fresh, rather than
+  // "Finding your location…" until the new watch's first fix.
+  if (state.userLocation && Date.now() - (state.userFixAt ?? 0) < 30_000) {
+    onNavFix({ coords: { latitude: state.userLocation.lat, longitude: state.userLocation.lng, accuracy: null, heading: null, speed: null } });
+  }
 }
 
 function endNavigation() {
@@ -3051,7 +3068,7 @@ function wireSearch() {
     button.disabled = true;
     setStatus("dir-status", "Locating…");
     try {
-      const point = await getPosition();
+      const point = await currentPosition();
       state.userLocation = point;
       showUserDot(point);
       followLocation();
