@@ -565,7 +565,7 @@ function renderCompass() {
   $("near-list").innerHTML = html`${ranked.slice(0, 3).map((s) => html`<li>
     <span class="near-badge" data-band="${band(s.mean)}" aria-hidden="true">${s.point}</span>
     <span class="near-name">${COMPASS_NAMES[s.point][0].toUpperCase()}${COMPASS_NAMES[s.point].slice(1)}</span>
-    <span class="near-num"><span class="sr-only">${COMPASS_NAMES[s.point]}: </span>${formatRatio(s.mean)} · ${shortWords(s.mean)}</span>
+    <span class="near-num"><span class="sr-only">${COMPASS_NAMES[s.point]}: </span><strong>${formatRatio(s.mean)}</strong><span class="near-words">${shortWords(s.mean)}</span></span>
   </li>`)}`;
   const cityName = cityAt(state.userLocation ?? { lat: NaN, lng: NaN })?.city_name;
   $("near-origin-text").textContent = !origin ? ""
@@ -1053,7 +1053,9 @@ function renderCities() {
   const progress = new Map((state.progress?.cities ?? []).map((c) => [c.id, c]));
   const served = [...state.cities].map((city) => ({ id: city.source_id, name: city.city_name, city }));
   for (const [id, c] of progress) if (!cityById(id)) served.push({ id, name: c.name, city: null });
-  served.sort((a, b) => a.name.localeCompare(b.name));
+  // Ready cities by name, then any still on their first load.
+  const loadingRank = ({ id, city }) => Number(!city || Boolean(progress.get(id) && !progress.get(id).ready));
+  served.sort((a, b) => loadingRank(a) - loadingRank(b) || a.name.localeCompare(b.name));
   const now = new Date();
   const label = (city) => city?.windows?.[0]?.label ?? "Last 12 months";
 
@@ -1366,7 +1368,7 @@ function showCellPopup(h3Index, detail) {
           <span class="rating-words">${words}</span>
         </span>
       </div>
-      <p class="cell-sub">${track[0].toUpperCase()}${track.slice(1)} incidents · ${when} · ${windowLabel}
+      <p class="cell-sub cell-meta">${track[0].toUpperCase()}${track.slice(1)} incidents · ${when} · ${windowLabel}
         <br><span class="cell-time"></span></p>
       <div class="cell-actions">
         <button type="button" class="btn btn-primary" data-card="to">Take me here</button>
@@ -1777,7 +1779,8 @@ function clearOfControls() {
     below("dir-top");
     above("rail");
     above("cell-card");
-    const sheet = shownRect("dir-panel") && $("dir-panel").querySelector(".dir-sheet");
+    // The panel itself has no box on a phone; its two halves do.
+    const sheet = $("dir-panel").hidden ? null : $("dir-panel").querySelector(".dir-sheet");
     if (sheet?.getClientRects().length) pad.bottom = Math.max(pad.bottom, height - sheet.getBoundingClientRect().top + gap);
   }
   // Never so much that nothing is left to frame.
@@ -2511,7 +2514,8 @@ function renderDirections() {
       ? `${formatDuration(route.duration_s - fastest.duration_s)} longer, and passes about ` +
         `${Math.round((1 - ratio / fastAct.mean_ratio) * 100)}% less reported activity than the fastest way.`
       : null;
-    const rest = words.detail.split(" · ").slice(1).join(" · ");
+    const restText = words.detail.split(" · ").slice(1).join(" · ");
+    const rest = restText ? `${restText[0].toUpperCase()}${restText.slice(1)}.` : "";
     return html`<li>
       <button type="button" class="route-card" data-index="${card.index}"
               aria-pressed="${String(card.index === dir.selected)}">
@@ -2725,6 +2729,7 @@ async function startNavigation() {
   $("dir-nav").hidden = false;
   $("nav-recenter").hidden = true;
   $("nav-steps-block").hidden = true;
+  hideLocateNote();
   $("nav-steps-toggle").setAttribute("aria-expanded", "false");
   // The arrow is the visitor while navigating.
   if (userMarker) userMarker.getElement().hidden = true;
@@ -3208,8 +3213,14 @@ function wireContextPress() {
   surface.addEventListener("touchcancel", cancel);
 }
 
+/* The theme the basemap on screen was drawn for, and whether initMap has
+   finished (a theme switch before then is picked up at its end). */
+let mapTheme = null;
+let mapReady = false;
+
 async function initMap() {
-  const style = await resolveStyle(currentTheme());
+  mapTheme = currentTheme();
+  const style = await resolveStyle(mapTheme);
   map = new maplibregl.Map({
     container: "map",
     style,
@@ -3289,6 +3300,10 @@ async function initMap() {
   map.on("rotate", turnRoses);
 
   window.__safetyMap = map;
+  mapReady = true;
+  // The theme may have changed while the map was being made (a system
+  // switch, or a tap on the theme button during the first load).
+  if (mapTheme !== currentTheme()) applyMapTheme();
 }
 
 /**
@@ -3298,10 +3313,12 @@ async function initMap() {
  */
 let themeSeq = 0;
 async function applyMapTheme() {
-  if (!map) return;
+  if (!mapReady) return;
   const seq = ++themeSeq;
-  const style = await resolveStyle(currentTheme());
+  const theme = currentTheme();
+  const style = await resolveStyle(theme);
   if (seq !== themeSeq) return;
+  mapTheme = theme;
   map.setStyle(style, { diff: false });
   map.once("style.load", () => {
     if (seq !== themeSeq) return;
@@ -3377,6 +3394,8 @@ function setView(view, { focus = false } = {}) {
   if (!VIEWS.includes(view)) return;
   const before = document.body.dataset.view;
   if (view !== "directions" && before === "directions" && dir.open) closeDirections({ toView: false });
+  // The buddy's map tip belongs to the section it was said in.
+  if (view !== before) hideLocateNote();
   document.body.dataset.view = view;
   document.querySelectorAll(".rail-btn[data-view]").forEach((b) => {
     if (b.dataset.view === view) b.setAttribute("aria-current", "page");

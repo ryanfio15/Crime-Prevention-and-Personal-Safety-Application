@@ -869,6 +869,7 @@ svg { width: 22px; height: 22px; flex: none; }
   background: var(--soft);
 }
 .dir-field:focus-within { border-color: var(--primary); }
+.here-btn { width: 40px; height: 40px; background: var(--panel); color: var(--me); }
 .dir-field-to.is-set { border-color: var(--primary); }
 .dir-input {
   flex: 1;
@@ -933,7 +934,17 @@ svg { width: 22px; height: 22px; flex: none; }
 .route-detail { font-size: 13px; color: var(--muted); font-weight: 600; }
 .route-extra { color: var(--muted); font-weight: 700; font-size: 13px; }
 
-.dir-actions { display: flex; gap: 10px; }
+/* Let's go stays in reach under a long list of routes. */
+.dir-actions {
+  position: sticky;
+  bottom: -22px;
+  z-index: 1;
+  display: flex;
+  gap: 10px;
+  margin: 0 -22px;
+  padding: 10px 22px 16px;
+  background: linear-gradient(to bottom, transparent, var(--panel) 14px);
+}
 .dir-actions .btn-primary { flex: 1; }
 .dir-steps-block h3 { margin-bottom: 8px; }
 .dir-steps { margin: 0; padding: 0 0 0 20px; display: grid; gap: 8px; font-size: 14px; }
@@ -1023,6 +1034,8 @@ svg { width: 22px; height: 22px; flex: none; }
 }
 .near-badge[data-band="calm"], .near-badge[data-band="very"] { color: #ffffff; }
 .near-list .near-num { margin-left: auto; font-size: 13px; color: var(--muted); font-weight: 700; text-align: right; }
+.near-num strong { font-weight: 800; }
+.near-words::before { content: " · "; }
 .near-phone-row { display: none; }
 .near-origin { margin-top: auto; }
 
@@ -1046,7 +1059,7 @@ svg { width: 22px; height: 22px; flex: none; }
 }
 .city-card:disabled { cursor: default; }
 .city-card[aria-current="true"] { border-color: var(--primary); background: var(--soft); }
-.city-head { display: flex; align-items: flex-start; gap: 12px; }
+.city-head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 12px; }
 .hex {
   width: 32px; height: 32px;
   flex: none;
@@ -1054,10 +1067,10 @@ svg { width: 22px; height: 22px; flex: none; }
   background: var(--border);
 }
 .city-card.is-ready .hex { background: var(--ramp-0); }
-.city-name { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.city-name { display: flex; flex-direction: column; min-width: 0; flex: 1 1 110px; }
 .city-name strong { font-size: 19px; font-weight: 900; line-height: 1.2; }
 .city-name span { font-size: 13px; color: var(--muted); }
-.city-state { padding: 3px 10px; border-radius: var(--pill); font-size: 12.5px; font-weight: 800; white-space: nowrap; }
+.city-state { margin-left: auto; padding: 3px 10px; border-radius: var(--pill); font-size: 12.5px; font-weight: 800; white-space: nowrap; }
 .city-state.is-viewing { background: var(--primary); color: var(--on-primary); }
 .city-state.is-ready { background: var(--calm-bg); color: var(--calm-text); }
 .city-state.is-loading { background: var(--typ-bg); color: var(--typ-text); }
@@ -1132,6 +1145,8 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
 .help {
   width: min(980px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0;
   border: 0;
   border-radius: 40px;
@@ -1284,7 +1299,9 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
   #btn-key, #theme-fab { display: grid; }
   .fab { width: 52px; height: 52px; }
   body[data-view="near"] .map-fabs,
-  body[data-view="cities"] .map-fabs { display: none; }
+  body[data-view="cities"] .map-fabs,
+  body[data-view="directions"]:not(.navigating) .map-fabs { display: none; }
+  body.navigating #btn-key { display: none; }
 
   /* Sheets: radius 30, a drag handle, above the tab bar. */
   .sheet-handle { display: block; }
@@ -1311,8 +1328,20 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
   }
   .cell-card:not(.is-expanded) .cell-more,
   .cell-card:not(.is-expanded) .cell-today .cell-foot { display: none; }
-  .cell-expand { display: inline-flex; }
-  .cell-summary .cell-sub:nth-of-type(2) { display: none; }
+  .cell-expand { display: inline-flex; min-height: 36px; }
+  /* Collapsed, the sheet is the mockup's short version: name, rating, the
+     day's shape and the quieter-ahead line, the two buttons. */
+  .cell-card:not(.is-expanded) .cell-meta,
+  .cell-card:not(.is-expanded) .cell-today h3 { display: none; }
+  .cell-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .cell-actions .btn { padding: 0 10px; font-size: 15px; }
+  .cell-card .hours { height: 54px; }
+  .cell-card .tip-inline { padding: 8px 12px; font-size: 13px; }
+  .cell-card .tip-inline .buddy { width: 28px; height: 28px; }
+  .cell-body > section { gap: 8px; }
+  .rating { padding: 10px 12px; }
+  .rating-value { font-size: 24px; }
+  .cell-actions .btn { min-height: 48px; }
   .cell-body { grid-template-columns: 1fr; gap: 14px; }
   .card-close { top: 22px; }
   body:not([data-view="explore"]) .cell-card { display: none; }
@@ -1388,8 +1417,12 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
   .near-list li { flex-direction: column; gap: 4px; padding: 12px 6px; text-align: center; border-radius: 22px; background: var(--panel); }
   .near-list .near-name { display: none; }
   .near-list .near-num { margin: 0; text-align: center; color: var(--text); font-weight: 900; }
-  .near-phone-row { display: flex; gap: 10px; align-items: center; }
-  .near-phone-row .btn { flex: 1; }
+  .near-phone-row { display: flex; gap: 8px; align-items: center; }
+  .near-phone-row .seg-btn { padding: 0 12px; font-size: 14px; }
+  .near-phone-row .btn { flex: 1 1 0; min-width: 0; padding: 0 12px; font-size: 15px; }
+  .near-list .near-num strong { display: block; font-size: 15px; font-weight: 900; }
+  .near-list .near-words { display: block; font-size: 12px; color: var(--muted); font-weight: 700; }
+  .near-list .near-words::before { content: none; }
   .near-origin { margin-top: 0; background: none; padding: 0; justify-content: center; font-size: 12px; }
   .near-origin svg { display: none; }
   body.near-on-map .near-panel {
