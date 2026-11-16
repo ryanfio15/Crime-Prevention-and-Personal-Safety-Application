@@ -9,7 +9,7 @@ There are two ways in. Both build exactly the same project:
 | | For | What it takes |
 |---|---|---|
 | **[One-click template](#one-click-deploy)** | Anyone, no terminal | A Railway account and one **Deploy** button |
-| **[Command line](#command-line-deploy)** | Maintainers, CI | `railway login`, then `deploy/railway/up.sh` |
+| **[Command line](#command-line-deploy)** | Maintainers, CI | `railway login`, then `deploy/railway/up.sh` — [six steps, start to finish](#command-line-deploy) |
 
 The template has to be made once, by a maintainer, before anyone can use the button:
 [Making the template](#making-the-template).
@@ -143,37 +143,141 @@ deployers to set the schedule by hand after deploying. So nothing here depends o
 The same project without the template: for maintainers, CI, or trying a change before it is pushed (it uploads the
 working tree rather than building from GitHub).
 
-**You need:**
-- the Railway CLI: `npm i -g @railway/cli` (tested with 5.74.0);
-- `curl`, `jq` and `openssl`;
-- this repository checked out.
+Below is the whole run, start to finish: one command deploys, the rest is watching it come up. Steps 1–3 take about
+ten minutes of your time; steps 4–6 are waiting, and the site is live and loading data throughout. All six cities
+are the default, so nothing has to be passed to get them.
 
-Log the CLI in once per machine with `railway login`; on a machine without a browser, use
-`railway login --browserless`. In CI, export `RAILWAY_API_TOKEN` (an account token from
-[railway.com/account/tokens](https://railway.com/account/tokens)) instead. Keep it private: it can create and
-delete projects.
+### 1. Install what it needs
+
+| | Check |
+|---|---|
+| Railway CLI (tested with 5.74.0) | `npm i -g @railway/cli` → `railway --version` |
+| `curl`, `jq`, `openssl` | `curl --version && jq --version && openssl version` |
+| This repository, checked out | `git clone …` → `cd Crime-Prevention-and-Personal-Safety-Application` |
+
+On Windows, run everything from **Git Bash**, not PowerShell or `cmd`: the scripts are bash. `jq` and `openssl`
+come with Git for Windows; `curl` is in Windows itself.
+
+Run every command below from the repository root. The scripts find the repository from their own path, so
+`deploy/railway/up.sh` works from anywhere, but `railway logs` and friends want the linked project, which `up.sh`
+leaves set in this directory.
+
+### 2. Log in and check the account
+
+```bash
+railway login            # opens a browser; --browserless on a machine without one
+railway whoami           # confirm it is the account that should own the project
+unset RAILWAY_TOKEN      # a *project* token cannot create projects; up.sh refuses if one is set
+```
+
+In CI, export `RAILWAY_API_TOKEN` (an account token from
+[railway.com/account/tokens](https://railway.com/account/tokens)) instead of logging in. Keep it private: it can
+create and delete projects.
+
+The account needs a payment method on file, and enough plan headroom for an always-on database of several GB
+(see [What it builds](#what-it-builds)). Railway refuses the deploy otherwise, usually with a quota error on the
+first build.
+
+### 3. Deploy
 
 ```bash
 export SOCRATA_APP_TOKEN=<optional>     # faster first load for the four Socrata cities
-deploy/railway/up.sh
+deploy/railway/up.sh --cities phl,chi,sea,lax,dc,aus
 ```
 
-The script:
-1. creates a Railway project (`safety-map`) and keeps its id in `deploy/railway/.project-id`, which git ignores;
-2. creates the four services, both volumes and every variable, generating the database passwords;
-3. sets each service's start command and health check;
-4. uploads the checkout and builds and deploys `db`, `valhalla`, `api` and `etl` (10–20 minutes);
-5. gives `api` a public `https://….up.railway.app` address and prints it.
+`--cities` is the default, written out: all six cities, switched on by the worker's first tick. Drop `aus` if the
+City of Austin's reuse terms have not been confirmed for a public deployment (docs/DEPLOYMENT.md).
 
-The worker's first tick then starts the data load.
+The script runs for 10–20 minutes and prints a `==>` heading per stage:
 
-**Updating:** run the same command again. It updates the same project in place: settings and variables are
-re-applied and every service is rebuilt from the working tree. Passwords and data are kept. Rerunning also picks up
-each month's new routing tiles.
+| Stage | What happens |
+|---|---|
+| `creating Railway project 'safety-map'` | Creates the project, saves its id in `deploy/railway/.project-id` (git-ignored), and links this directory to it |
+| `services` | Creates `db`, `api`, `valhalla`, `etl` and the two volumes |
+| `variables` | Generates the two database passwords, sets every service's variables including `BOOTSTRAP_CITIES` |
+| `service settings` | Start commands, health check, Dockerfile paths, restart policy |
+| `building and deploying db / valhalla / api / etl` | Uploads the working tree and builds each one, in that order |
+| `public URL` | Gives `api` its `https://….up.railway.app` address |
 
-**Taking it down:** `deploy/railway/down.sh` asks you to type the project name, then deletes the whole project and
-its data. Billing stops with it. Accounts with two-factor authentication:
-`RAILWAY_2FA_CODE=123456 deploy/railway/down.sh`.
+It ends with `Done.` and the site's address. **If it stops before `Done.`, nothing further runs on its own** —
+fix what it reported ([Troubleshooting](#troubleshooting)) and run the same command again; it picks up the same
+project and skips what already exists.
+
+### 4. Watch the four services come up
+
+`up.sh` returns as soon as each build is handed to Railway; the builds themselves finish afterwards. Watch them:
+
+```bash
+railway logs --service db          # "database system is ready to accept connections"
+railway logs --service valhalla    # downloads ~1.2 GB of tiles into the image: slowest build
+railway logs --service api         # waits for db, applies migrations, then uvicorn
+railway logs --service etl         # the worker
+```
+
+Or open the project (`https://railway.com/project/<id>`, printed at the end) and watch all four tiles turn green.
+Expect in this order, over roughly 10–25 minutes:
+
+1. **db** — the first start runs `initdb` on the empty volume: several minutes, then `safety_app` is created.
+2. **valhalla** — the long build. The map, transit and search do not wait on it; only directions do.
+3. **api** — logs `database not ready (attempt N/600)` until `db` is up, then applies all migrations, then serves.
+   Its health check allows 25 minutes for exactly this.
+4. **etl** — logs `worker started: a tick now, then hourly at :20 UTC`, then `safety.schemawait`, which waits for
+   `api`'s migrations before anything else.
+
+### 5. Confirm the site is up
+
+```bash
+railway domain --service api                      # the address, if you lost it
+curl -s https://<address>/api/v1/health           # {"status":"ok",...}
+```
+
+Open `https://<address>` in a browser. The map loads immediately and shows a progress bar: there is no data yet.
+
+### 6. Confirm the ETL started with all six cities
+
+The first tick is what enables the cities. In `railway logs --service etl`, look for this sequence:
+
+```
+etl_tick: worker started: a tick now, then hourly at :20 UTC
+etl_tick: 2026-11-16 14:03 UTC: bootstrap=yes, ops=yes, incremental=yes (due cities only), hourly=yes
+etl_tick: running safety.schemawait --timeout 1800
+etl_tick: running safety.bootstrap --skip-migrate --skip-converge    <- enables the six cities
+etl_tick: running safety.ops                                          <- the one-year load begins
+```
+
+`bootstrap=yes` only ever appears on the first tick: it writes a marker on the volume, so a city switched off later
+is not switched back on. Then check the registry:
+
+```bash
+railway ssh --service api -- python -m safety.etl.run status
+```
+
+All six — `phl`, `chi`, `sea`, `lax`, `dc`, `aus` — should be listed as enabled. If `railway ssh` is unavailable,
+the **api** service's dashboard shell does the same. A city that fails its readiness check (usually a missing
+crosswalk) is reported and left off rather than forced on; switch it on once that is fixed:
+
+```bash
+railway ssh --service api -- python -m safety.etl.run enable --city aus
+```
+
+The next hourly tick picks it up. Nothing else has to be started: `safety.ops` is already loading, and each city
+appears on the map as soon as its own year of data lands. The whole first load takes one to a few hours, mostly
+waiting on the city portals. After that the worker ticks hourly at :20 UTC, pulling what is due and deleting
+anything older than a year, with no further action.
+
+### Updating
+
+Run the same command again. It updates the same project in place: settings and variables are re-applied and every
+service is rebuilt from the working tree. Passwords and data are kept, and the cities stay as they are — the
+bootstrap marker means `BOOTSTRAP_CITIES` is not re-applied, so a city switched off by hand stays off. Rerunning
+also picks up each month's new routing tiles.
+
+### Taking it down
+
+`deploy/railway/down.sh` asks you to type the project name, then deletes the whole project and its data. Billing
+stops with it. Accounts with two-factor authentication: `RAILWAY_2FA_CODE=123456 deploy/railway/down.sh`.
+
+### `up.sh` options
 
 | Option | Effect |
 |---|---|
