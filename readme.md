@@ -193,7 +193,8 @@ and systemd and python-dotenv parse anything fancier differently.
 | `API_POOL_TIMEOUT_SECONDS` | `10` | — | `api/main.py:62` | Wait for a pool slot before returning 503 |
 | `HSTS_MAX_AGE_SECONDS` | `86400` | — | `api/security.py` | HSTS on HTTPS responses |
 | `HTTP_TIMEOUT_SECONDS` | `120` | — | adapters, census | Portal request timeout |
-| `HTTP_MAX_RETRIES` | `4` | — | adapters, census | Portal retries |
+| `HTTP_MAX_RETRIES` | `4` | — | adapters, census | Portal retries (all but Philadelphia) |
+| `CARTO_MAX_RETRIES` | `6` | — | `etl/adapters/philadelphia.py` | Philadelphia (Carto) attempts; waits 5, 10, 20, 40, then 60 s |
 | `CONNECT_TIMEOUT_SECONDS` | `10` | — | DSN | libpq `connect_timeout` |
 | `MIGRATE_LOCK_WAIT_SECONDS` | `600` | — | `migrate.py` | Wait for a concurrent migrate |
 | `SOCRATA_APP_TOKEN` | *(empty)* | — | `etl/adapters/socrata.py` | Optional `X-App-Token` for chi, sea and lax; raises the quota. Not used by Austin, despite the comment in `config.py` |

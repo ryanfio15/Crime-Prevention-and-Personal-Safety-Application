@@ -118,6 +118,13 @@ class Settings(BaseSettings):
     # HTTP behaviour for source adapters.
     http_timeout_seconds: float = 120.0
     http_max_retries: int = 4
+    # Philadelphia's Carto endpoint has bad patches of a few minutes in which a
+    # month's query that normally succeeds comes back 400 (seen on Railway,
+    # 2026-11-16: the same URL failed at 02:04 and 02:08 and succeeded unchanged
+    # at 03:20). The shared four attempts over ~30 s lose a whole first load to
+    # one such patch, so Carto gets more attempts with longer, capped waits
+    # (philadelphia.py _get): about 2 minutes of waiting in all.
+    carto_max_retries: int = 6
 
     # Optional Socrata application token, shared by the four Socrata sources
     # (Chicago, Seattle, Los Angeles, Austin). Not credentials -- it identifies
