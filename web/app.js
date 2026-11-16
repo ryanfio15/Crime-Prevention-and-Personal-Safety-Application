@@ -3584,10 +3584,13 @@ function wireHelp() {
 }
 
 function wireShell() {
-  // Anything marked with a section opens it: the rail, the city chip, the
-  // small compass, the load pill.
+  // Any button marked with a section opens it: the rail, the city chip, the
+  // small compass, the load pill. Buttons only: <body> carries data-view too
+  // (the open section, for the stylesheet), and matching it would re-run
+  // setView on every click anywhere -- undoing "Show on map" and closing the
+  // phone's map key the moment it opened.
   document.addEventListener("click", (event) => {
-    const target = event.target.closest("[data-view]");
+    const target = event.target.closest("button[data-view]");
     if (target && !target.closest("#city-grid")) setView(target.dataset.view, { focus: target.classList.contains("rail-btn") });
   });
   document.querySelectorAll("[data-theme-choice]").forEach((b) => {

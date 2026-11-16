@@ -1246,7 +1246,7 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
     overflow: visible;
   }
   .rail-logo, .theme-switch { display: none; }
-  .rail-btn { flex: 1 1 0; width: auto; min-height: 58px; min-width: var(--tap); font-size: 11.5px; border-radius: 22px; }
+  .rail-btn { flex: 1 1 0; width: auto; min-height: 58px; min-width: var(--tap); font-size: clamp(10px, 3.1vw, 11.5px); white-space: nowrap; border-radius: 22px; }
 
   .top-row {
     top: calc(var(--safe-t) + var(--edge));
@@ -1412,15 +1412,20 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
     background: var(--land);
     box-shadow: none;
   }
-  .near-panel .panel-scroll { padding: calc(var(--safe-t) + 22px) 22px calc(var(--tabbar) + 16px); gap: 12px; }
+  /* The screen ends above the tab bar, so nothing it scrolls can sit under
+     the bar (on a short phone, Show on map did). */
+  .near-panel { bottom: calc(var(--tabbar) + 4px); }
+  .near-panel .panel-scroll { padding: calc(var(--safe-t) + 22px) 22px 16px; gap: 12px; }
   .near-title { font-size: 32px; }
   .near-list { grid-template-columns: repeat(3, 1fr); }
   .near-list li { flex-direction: column; gap: 4px; padding: 12px 6px; text-align: center; border-radius: 22px; background: var(--panel); }
   .near-list .near-name { display: none; }
   .near-list .near-num { margin: 0; text-align: center; color: var(--text); font-weight: 900; }
-  .near-phone-row { display: flex; gap: 8px; align-items: center; }
+  /* The toggle and Show on map side by side, or the button on its own line
+     when the screen is too narrow for both. */
+  .near-phone-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .near-phone-row .seg-btn { padding: 0 12px; font-size: 14px; }
-  .near-phone-row .btn { flex: 1 1 0; min-width: 0; padding: 0 12px; font-size: 15px; }
+  .near-phone-row .btn { flex: 1 1 150px; min-width: 0; padding: 0 12px; font-size: 15px; }
   .near-list .near-num strong { display: block; font-size: 15px; font-weight: 900; }
   .near-list .near-words { display: block; font-size: 12px; color: var(--muted); font-weight: 700; }
   .near-list .near-words::before { content: none; }
