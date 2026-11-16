@@ -4,15 +4,22 @@ The whole site on [Railway](https://railway.com) with one API instance and a pub
 command from a checkout. The data is kept current by a background worker until the project is deleted. The backend
 and frontend are the same as the Kubernetes deployment's (docs/KUBERNETES.md); only the hosting differs.
 
-Everything here goes through the Railway CLI and its login, so there is no token to create or paste:
+Everything here goes through the Railway CLI and its login, so there is no token to create or paste. **Every command
+below is typed into PowerShell on Windows** — the ordinary blue terminal, no WSL, no Linux, no Git Bash window:
 
-```bash
+```powershell
+$bash = "C:\Program Files\Git\bin\bash.exe"
+
 railway login
-deploy/railway/up.sh --cities phl,chi,sea,lax,dc,aus
+& $bash deploy/railway/up.sh --cities phl,chi,sea,lax,dc,aus
 ```
 
-[Deploying](#deploying) is that command in full — prerequisites, what it prints, and how to confirm the site is
+[Deploying](#deploying) is those commands in full — prerequisites, what they print, and how to confirm the site is
 serving and the data is loading.
+
+The deploy itself is a shell script, which is why PowerShell hands it to `bash.exe`. That program comes with Git for
+Windows, which is already installed if you cloned this repository, so there is nothing extra to set up and nothing to
+learn about it — `& $bash <script>` is the whole trick ([why](#why-powershell-calls-bashexe)).
 
 Contents: [What it builds](#what-it-builds) · [Deploying](#deploying) · [Everyday tasks](#everyday-tasks) ·
 [Updating](#updating) · [Taking it down](#taking-it-down) · [`up.sh` options](#upsh-options) ·
@@ -58,23 +65,49 @@ nothing has to be passed to get them.
 
 ### 1. Install what it needs
 
-| | Check |
-|---|---|
-| Railway CLI (tested with 5.74.0) | `npm i -g @railway/cli` → `railway --version` |
-| `curl`, `jq`, `openssl` | `curl --version && jq --version && openssl version` |
-| This repository, checked out | `git clone …` → `cd Crime-Prevention-and-Personal-Safety-Application` |
+Open **PowerShell** (Start menu → type `powershell` → Enter) and paste these four lines. Each one is a standard
+Windows installer; answer yes if Windows asks permission.
 
-On Windows, run everything from **Git Bash**, not PowerShell or `cmd`: the scripts are bash. `jq` and `openssl`
-come with Git for Windows; `curl` is in Windows itself.
+```powershell
+winget install Git.Git                  # git, and the bash.exe that runs the deploy script
+winget install OpenJS.NodeJS.LTS        # node + npm, which the Railway CLI installs through
+winget install jqlang.jq                # the deploy script reads Railway's answers with it
+npm install -g @railway/cli             # the Railway CLI itself (tested with 5.74.0)
+```
 
-Run every command below from the repository root. The scripts find the repository from their own path, so
-`deploy/railway/up.sh` works from anywhere, but `railway logs` and friends want the linked project, which `up.sh`
-leaves set in this directory.
+**Close PowerShell and open it again.** Installers add things to `PATH`, and a window that was already open does
+not see them — a "not recognized as the name of a cmdlet" error right after installing almost always means this
+step was skipped.
+
+Now get the code and check that everything is there:
+
+```powershell
+cd ~
+git clone https://github.com/ryanfio15/Crime-Prevention-and-Personal-Safety-Application.git
+cd Crime-Prevention-and-Personal-Safety-Application
+
+$bash = "C:\Program Files\Git\bin\bash.exe"
+
+git --version
+railway --version
+jq --version
+Test-Path $bash          # must print True
+```
+
+Four version numbers and `True`: you are ready. If `Test-Path` printed `False`, Git went somewhere else — find it
+with `(Get-Command git).Source` and use that folder's `bash.exe`.
+
+`$bash` lasts only as long as this PowerShell window. If you close it, set it again before using it; everything
+else survives.
+
+Run every command below **from the repository root** — the `Crime-Prevention-and-Personal-Safety-Application`
+folder you just `cd`'d into. `railway logs` and friends want the linked project, which `up.sh` leaves set in this
+directory.
 
 ### 2. Log in and check the account
 
-```bash
-railway login            # opens a browser; --browserless on a machine without one
+```powershell
+railway login            # opens your browser; --browserless on a machine without one
 railway whoami           # confirm it is the account that should own the project
 ```
 
@@ -88,15 +121,17 @@ that are not this one.
 | `RAILWAY_API_TOKEN` | An *account* token, from [railway.com/account/tokens](https://railway.com/account/tokens) | CI, or a machine with no browser, instead of logging in. Keep it private: it can create and delete projects |
 | `RAILWAY_TOKEN` | A *project* token, scoped to one project | Never, here. It can deploy to a service that exists but cannot create projects or services |
 
-If `RAILWAY_TOKEN` is already set in your shell — from a Railway CI snippet, a `.env`, an earlier experiment —
-`up.sh` stops before it changes anything and says so, because the deploy would otherwise fail partway through with
-an authorization error. Clear it and rerun:
+If `RAILWAY_TOKEN` is already set — from a Railway CI snippet, an earlier experiment — `up.sh` stops before it
+changes anything and says so, because the deploy would otherwise fail partway through with an authorization error.
+Check, and clear it only if something is there:
 
-```bash
-unset RAILWAY_TOKEN
+```powershell
+$env:RAILWAY_TOKEN                      # prints nothing at all = nothing to do
+Remove-Item Env:RAILWAY_TOKEN           # only if the line above printed a token
 ```
 
-If you have never set one, there is nothing to do.
+(`unset` is the equivalent in bash and does not exist in PowerShell; `Remove-Item Env:…` is how PowerShell spells
+it.)
 
 The account needs a payment method on file, and enough plan headroom for an always-on database of several GB
 (see [What it builds](#what-it-builds)). Railway refuses the deploy otherwise, usually with a quota error on the
@@ -104,10 +139,14 @@ first build.
 
 ### 3. Deploy
 
-```bash
-export SOCRATA_APP_TOKEN=<optional>     # faster first load for the four Socrata cities
-deploy/railway/up.sh --cities phl,chi,sea,lax,dc,aus
+```powershell
+$env:SOCRATA_APP_TOKEN = "<optional>"   # faster first load for the four Socrata cities; skip this line if you have none
+& $bash deploy/railway/up.sh --cities phl,chi,sea,lax,dc,aus
 ```
+
+The `&` is PowerShell's "run this program" symbol, and `$bash` is the path you set in step 1. Everything after it
+is passed to the script untouched. Any variable you set with `$env:` — like the Socrata token above — is passed
+down to it too.
 
 `--cities` is the default, written out: all six cities, switched on by the worker's first tick. Drop `aus` if the
 City of Austin's reuse terms have not been confirmed for a public deployment (docs/DEPLOYMENT.md).
@@ -131,14 +170,15 @@ project and skips what already exists.
 
 `up.sh` returns as soon as each build is handed to Railway; the builds themselves finish afterwards. Watch them:
 
-```bash
+```powershell
 railway logs --service db          # "database system is ready to accept connections"
 railway logs --service valhalla    # downloads ~1.2 GB of tiles into the image: slowest build
 railway logs --service api         # waits for db, applies migrations, then uvicorn
 railway logs --service etl         # the worker
 ```
 
-Or open the project (`https://railway.com/project/<id>`, printed at the end) and watch all four tiles turn green.
+Each one keeps printing until you stop it with **Ctrl+C**, which only closes the log view — it never stops the
+service. Or open the project (`https://railway.com/project/<id>`, printed at the end) and watch all four tiles turn green.
 Expect in this order, over roughly 10–25 minutes:
 
 1. **db** — the first start runs `initdb` on the empty volume: several minutes, then `safety_app` is created.
@@ -150,12 +190,15 @@ Expect in this order, over roughly 10–25 minutes:
 
 ### 5. Confirm the site is up
 
-```bash
-railway domain --service api                      # the address, if you lost it
-curl -s https://<address>/api/v1/health           # {"status":"ok",...}
+```powershell
+railway domain --service api                           # the address, if you lost it
+Invoke-RestMethod https://<address>/api/v1/health      # status : ok
+Start-Process https://<address>                        # opens the site in your browser
 ```
 
-Open `https://<address>` in a browser. The map loads immediately and shows a progress bar: there is no data yet.
+(Use `Invoke-RestMethod`, not `curl`: in PowerShell `curl` is a different command that does not take `-s`.)
+
+The map loads immediately and shows a progress bar: there is no data yet.
 
 ### 6. Confirm the ETL started with all six cities
 
@@ -172,7 +215,7 @@ etl_tick: running safety.ops                                          <- the one
 `bootstrap=yes` only ever appears on the first tick: it writes a marker on the volume, so a city switched off later
 is not switched back on. Then check the registry:
 
-```bash
+```powershell
 railway ssh --service api -- python -m safety.etl.run status
 ```
 
@@ -180,7 +223,7 @@ All six — `phl`, `chi`, `sea`, `lax`, `dc`, `aus` — should be listed as enab
 the **api** service's dashboard shell does the same. A city that fails its readiness check (usually a missing
 crosswalk) is reported and left off rather than forced on; switch it on once that is fixed:
 
-```bash
+```powershell
 railway ssh --service api -- python -m safety.etl.run enable --city aus
 ```
 
@@ -202,7 +245,7 @@ anything older than a year, with no further action.
 | City status, data quality | — | `railway ssh --service api -- python -m safety.etl.run status` |
 | Turn a city off | — | `railway ssh --service api -- python -m safety.etl.run enable --city <id> --off` |
 | Turn a city on | — | `railway ssh --service api -- python -m safety.etl.run enable --city <id>` (the next tick loads it) |
-| Health | open `https://<address>/api/v1/health` | `curl -s https://<address>/api/v1/health` |
+| Health | open `https://<address>/api/v1/health` | `Invoke-RestMethod https://<address>/api/v1/health` |
 
 Restarting `etl` in the middle of a load is safe. It stops the running step cleanly, and the next tick picks up from
 what the data says is still missing.
@@ -211,10 +254,11 @@ what the data says is still missing.
 
 ## Updating
 
-Run the same command again:
+Run the same command again, from the repository root:
 
-```bash
-deploy/railway/up.sh
+```powershell
+$bash = "C:\Program Files\Git\bin\bash.exe"     # only if this is a new PowerShell window
+& $bash deploy/railway/up.sh
 ```
 
 It updates the same project in place — `deploy/railway/.project-id` is how it finds it — re-applying settings and
@@ -228,12 +272,18 @@ Rerunning also picks up each month's new routing tiles.
 
 ## Taking it down
 
-```bash
-deploy/railway/down.sh
+```powershell
+$bash = "C:\Program Files\Git\bin\bash.exe"     # only if this is a new PowerShell window
+& $bash deploy/railway/down.sh
 ```
 
 It asks you to type the project name, then deletes the whole project and its data. Billing stops with it. Accounts
-with two-factor authentication: `RAILWAY_2FA_CODE=123456 deploy/railway/down.sh`.
+with two-factor authentication:
+
+```powershell
+$env:RAILWAY_2FA_CODE = "123456"
+& $bash deploy/railway/down.sh
+```
 
 ---
 
@@ -251,6 +301,23 @@ with two-factor authentication: `RAILWAY_2FA_CODE=123456 deploy/railway/down.sh`
 ---
 
 ## How it works
+
+### Why PowerShell calls `bash.exe`
+
+`up.sh` and `down.sh` are shell scripts, and PowerShell cannot run one itself. The options were a second,
+PowerShell copy of each script, or one copy called from PowerShell. Two copies of 400 lines of deploy logic drift
+apart — the copy nobody runs stops matching Railway's API first, and finds out during someone's deploy — so there
+is one copy, and PowerShell hands it to the `bash.exe` that Git for Windows installs.
+
+Nothing about this needs WSL, a Linux machine, or a Git Bash window. `bash.exe` is an ordinary program; `& $bash
+deploy/railway/up.sh` runs it the way `& $bash` would run any other. The script's own output appears in PowerShell
+exactly as it would anywhere else, and the Railway CLI, `git`, and everything else in this document are native
+Windows programs that PowerShell runs directly.
+
+If you prefer bash — on macOS, Linux, or in a Git Bash window on Windows — every command here works unchanged
+without the `& $bash` prefix: `deploy/railway/up.sh --cities …`.
+
+### The rest
 
 **The worker, not a cron job.** Kubernetes runs three CronJobs and a bootstrap Job. On Railway they are one
 always-on service, for two reasons:
@@ -341,6 +408,14 @@ Verified on 2026-11-14:
   - Every CLI flag used matches Railway CLI 5.74.0.
   - Every GraphQL query, mutation, argument and input field used exists in the live schema.
   - `railway api` works with only a browser login.
+- **From PowerShell on Windows 11** (2026-11-16), since that is what this document now tells you to type:
+  - `& $bash deploy/railway/up.sh --help` runs the script and exits 0, with `$bash` as written here.
+  - A variable set with `$env:` reaches the script (`SOCRATA_APP_TOKEN` arrives set).
+  - PowerShell passes a bare `--` through to a program untouched, which is what
+    `railway ssh --service api -- python -m …` needs.
+  - `winget` has `Git.Git`, `OpenJS.NodeJS.LTS` and `jqlang.jq`, but no Railway CLI, which is why that one is
+    installed through npm.
+  - `jq` is **not** part of Git for Windows and has to be installed separately; `curl` and `openssl` are.
 
 Not yet verified against a live Railway project:
 - the exact JSON `railway init --json` prints (the script falls back to `railway status --json`);
@@ -357,9 +432,13 @@ A first end-to-end run against a real Railway account is the remaining test.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `not logged in to Railway` | The CLI has no login on this machine | `railway login`, then rerun |
-| `unset RAILWAY_TOKEN` | A project token is set in the shell; it cannot create projects | `unset RAILWAY_TOKEN` and rerun |
+| `unset RAILWAY_TOKEN` | A project token is set; it cannot create projects | `Remove-Item Env:RAILWAY_TOKEN` and rerun |
 | `Railway API: Not Authorized` | Logged in to a different account, or the project is in a workspace you can't manage | `railway whoami`; `railway logout` and `railway login` as the right account |
-| `up.sh: railway is not installed` | The CLI is not on `PATH` | `npm i -g @railway/cli`; on Windows use Git Bash, where `npm`'s global bin is on `PATH` |
+| `The term 'railway' is not recognized…` | Installed, but this PowerShell window predates the install | Close PowerShell, open it again, retry. Still missing: `npm install -g @railway/cli` |
+| `unset : The term 'unset' is not recognized…` | `unset` is a bash command, and you are in PowerShell | `Remove-Item Env:RAILWAY_TOKEN` is PowerShell's spelling |
+| `& : The term 'C:\Program Files\Git\bin\bash.exe' is not recognized…` | `$bash` is unset (a new window) or Git is installed elsewhere | Set `$bash` again; check with `Test-Path $bash`, and find Git with `(Get-Command git).Source` |
+| `up.sh: jq is not installed` | `jq` does not come with Git for Windows | `winget install jqlang.jq`, then reopen PowerShell |
+| `deploy/railway/up.sh: No such file or directory` | PowerShell is not in the repository root | `cd` to the `Crime-Prevention-and-Personal-Safety-Application` folder and retry |
 | `up.sh` stops during a build | A build failed, or the account's plan ran out of room | The service's build log in the dashboard; fix, then rerun the same command |
 | `api` logs `database not ready (attempt N/600)` for minutes | The database's first start (initdb) | Wait; the API waits up to 20 minutes and its health check allows 25 |
 | `api` crash-loops with `password authentication failed` | The `db` volume was initialised with other passwords | Don't change the passwords by hand after the first deploy; on a brand-new project, delete it and deploy again |
