@@ -349,40 +349,21 @@ svg { width: 22px; height: 22px; flex: none; }
 }
 .band-chip.plain::before { display: none; }
 
-/* A face on a coloured disc, in the band's colour: smile, flat, frown. Pure
-   CSS: two eyes and a mouth. */
+/* A face on a coloured disc, in the band's colour: smile, flat or frown
+   (faceSvg in app.js draws it on a symmetric grid). */
 .face {
-  position: relative;
   display: inline-block;
   width: 46px; height: 46px;
   flex: none;
   border-radius: 50%;
   background: var(--band-ramp, var(--soft));
-  --ink: #ffffff;
+  color: #ffffff;
 }
-.face[data-band="busier"], .face[data-band="busy"] { --ink: #3a2b26; }
-.face[data-band="none"] { --ink: var(--muted); }
-.face::before {
-  content: "";
-  position: absolute;
-  left: 30%; top: 33%;
-  width: 13%; height: 13%;
-  border-radius: 50%;
-  background: var(--ink);
-  /* The second eye, the same distance to the right. */
-  box-shadow: 13px 0 0 var(--ink);
-}
-.face::after {
-  content: "";
-  position: absolute;
-  left: 31%; top: 50%;
-  width: 38%; height: 18%;
-  border: 3px solid var(--ink);
-  border-top: 0;
-  border-radius: 0 0 40px 40px;
-}
-.face[data-band="busier"]::after, .face[data-band="none"]::after { top: 62%; height: 0; border: 0; border-top: 3px solid var(--ink); border-radius: 3px; }
-.face[data-band="busy"]::after, .face[data-band="very"]::after { top: 60%; border: 3px solid var(--ink); border-bottom: 0; border-radius: 40px 40px 0 0; }
+.face[data-band="busier"], .face[data-band="busy"] { color: #3a2b26; }
+.face[data-band="none"] { color: var(--muted); }
+.face svg { display: block; width: 100%; height: 100%; }
+.face circle { fill: currentColor; }
+.face path { fill: none; stroke: currentColor; stroke-width: 3.2; stroke-linecap: round; }
 
 /* Card surface. */
 .card, .see-card, .cell-card, .panel, .search-card .search-box, .compass-mini,
@@ -737,20 +718,6 @@ svg { width: 22px; height: 22px; flex: none; }
 }
 .legend .range { margin-left: auto; color: var(--muted); font-size: 13px; font-weight: 600; white-space: nowrap; }
 
-.city-chips { display: flex; flex-wrap: wrap; gap: 8px; }
-.city-chips button {
-  appearance: none;
-  min-height: 40px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: var(--pill);
-  background: var(--soft);
-  font-size: 14px;
-  font-weight: 800;
-  cursor: pointer;
-}
-.city-chips button[aria-pressed="true"] { background: var(--primary); color: var(--on-primary); }
-.city-chips button:disabled { color: var(--muted); cursor: default; }
 .see-progress { display: grid; gap: 8px; font-size: 13px; color: var(--muted); }
 
 .legend-strip {

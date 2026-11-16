@@ -876,17 +876,11 @@ async function loadCities() {
   return cities;
 }
 
-/** The city picker: chips on the Explore card, the chip in the search box
-    and the Cities screen. Each only moves the map (switchCity); the one the
-    map is on is marked. Cities still on their first load are listed but
-    cannot be picked yet. */
+/** The city picker: the chip in the search box, which opens the Cities
+    screen, and that screen's cards. Picking one only moves the map
+    (switchCity); the one the map is on is marked. */
 function renderCitySelect() {
   const current = state.city ?? DEFAULT_CITY;
-  const loading = (state.progress?.cities ?? []).filter((c) => !cityById(c.id));
-  const served = [...state.cities].sort((a, b) => a.city_name.localeCompare(b.city_name));
-  $("city-chips").innerHTML = html`${served.map((city) => html`<button type="button"
-      data-city="${city.source_id}" aria-pressed="${String(city.source_id === current)}">${city.city_name}</button>`)}${
-    loading.map((c) => html`<button type="button" disabled title="Still loading">${c.name}</button>`)}`;
   const record = cityById(current);
   $("city-chip").textContent = record?.city_name ?? "";
   $("city-chip").setAttribute("aria-label", record ? `${record.city_name}: choose a city` : "Choose a city");
@@ -1272,6 +1266,21 @@ function colorForRatio(ratio) {
   return stops[stops.length - 1];
 }
 
+/* The face's mouth per band, on a 46-unit grid with the eyes at x 17 and
+   29, so every face is symmetric about x 23: a smile, flat, a frown. */
+const FACE_MOUTHS = {
+  calm: "M14.5 26.5 Q23 35 31.5 26.5",
+  busier: "M16 29 H30",
+  busy: "M14.5 32 Q23 24.5 31.5 32",
+  very: "M14.5 32 Q23 24.5 31.5 32",
+  none: "M16 29 H30",
+};
+
+/** A face for a band, as SVG (styled by .face in styles.css). */
+function faceSvg(b) {
+  return html`<svg viewBox="0 0 46 46"><circle cx="17" cy="18" r="3"></circle><circle cx="29" cy="18" r="3"></circle><path d="${FACE_MOUTHS[b] ?? FACE_MOUTHS.none}"></path></svg>`;
+}
+
 function removeCellPopup() {
   const card = $("cell-card");
   const hadFocus = card.contains(document.activeElement);
@@ -1362,7 +1371,7 @@ function showCellPopup(h3Index, detail) {
       <h2 class="cell-title" id="cell-title">${title}</h2>
       <p class="cell-sub">${sub}</p>
       <div class="rating" data-band="${b}">
-        <span class="face" data-band="${b}" aria-hidden="true"></span>
+        <span class="face" data-band="${b}" aria-hidden="true">${faceSvg(b)}</span>
         <span>
           <span class="rating-value">${ratio === null ? "—" : formatRatio(ratio)}</span>
           <span class="rating-words">${words}</span>
@@ -3622,7 +3631,6 @@ function wireShell() {
     if (isNarrow()) setView("explore");
     switchCity(button.dataset.city);
   };
-  $("city-chips").addEventListener("click", pickCity);
   // Near me on a phone: drop the screen to a short card, so the compass
   // drawn on the map shows; again to bring it back.
   $("near-show-map").onclick = () => {
