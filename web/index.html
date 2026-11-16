@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- viewport-fit=cover: the page runs under the notch and home bar, and the
+     floating controls keep clear with env(safe-area-inset-*). -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- Replaced with the city under the map once one is served. -->
 <title>Reported-incident risk</title>
 <link rel="preconnect" href="https://basemaps.cartocdn.com">
@@ -13,7 +15,7 @@
        curl -sSfL <url> | openssl dgst -sha384 -binary | openssl base64 -A
      crossorigin="anonymous" is required for SRI on a cross-origin fetch; unpkg
      answers with access-control-allow-origin: *. Same-origin files (styles.css,
-     html.js, hours.js, progress.js, app.js) need no integrity attribute. -->
+     theme.js, html.js, hours.js, progress.js, app.js) need no integrity attribute. -->
 <link href="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.css" rel="stylesheet"
       integrity="sha384-gNYNsUmuZqDYiT3gbirWTV5K7rt71RoveS/yXAaU09d4ZUmeDVTD3XoqB6uJAIFR"
       crossorigin="anonymous">
@@ -21,183 +23,358 @@
      choice, else the system's), so the page never paints the wrong theme. -->
 <script src="theme.js"></script>
 <link href="styles.css" rel="stylesheet">
+<link rel="preload" href="fonts/nunito-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/nunito-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin>
 </head>
-<body>
+<!-- data-view: which screen is open (explore, directions, near, cities). The
+     stylesheet lays each one out; app.js (setView) switches between them. -->
+<body data-view="explore">
 
-<main class="layout">
-  <section class="map-pane">
-    <div id="map" role="application" aria-label="Map of every covered city, hexagonal cells shaded by relative risk"></div>
+<!-- Icons, drawn once and reused with <use>. Decorative: every control that
+     shows one also has a text label or an aria-label. -->
+<svg class="icon-defs" aria-hidden="true" focusable="false">
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.5 4.5 5.4v6.1c0 4.7 3.2 8.6 7.5 10 4.3-1.4 7.5-5.3 7.5-10V5.4z" fill="currentColor"/><circle cx="9.3" cy="10.6" r="1.1" fill="var(--on-primary)"/><circle cx="14.7" cy="10.6" r="1.1" fill="var(--on-primary)"/><path d="M8.9 13.6c1.6 1.9 4.6 1.9 6.2 0" fill="none" stroke="var(--on-primary)" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  <symbol id="i-map" viewBox="0 0 24 24"><path d="M9 4 3.5 6v14L9 18l6 2 5.5-2V4L15 6zM9 4v14M15 6v14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
+  <symbol id="i-nav" viewBox="0 0 24 24"><path d="M20.5 3.5 3.5 10.6l7.2 2.7 2.7 7.2z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
+  <symbol id="i-near" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.6" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="m12 6.6-3.4 9.6L12 14l3.4 2.2z" fill="currentColor"/></symbol>
+  <symbol id="i-city" viewBox="0 0 24 24"><path d="M3.5 20.5h17M5.5 20.5V10l4-2.5v13M9.5 20.5V4.5l5 2.5v13.5M14.5 20.5V11l4 2v7.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.6" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.6 2.3c-.8.4-1.2 1-1.2 1.8v.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="17" r="1.1" fill="currentColor"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.6A7.8 7.8 0 0 1 9.4 4.5a7.8 7.8 0 1 0 10.1 10.1z" fill="currentColor"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.2" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="m15.2 15.2 5 5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+  <symbol id="i-locate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="12" cy="12" r="3" fill="currentColor"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5.5 12h13" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="m6.5 6.5 11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+  <symbol id="i-swap" viewBox="0 0 24 24"><path d="M8 4.5v15M8 4.5 4.8 7.7M8 4.5l3.2 3.2M16 19.5v-15M16 19.5l-3.2-3.2M16 19.5l3.2-3.2" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 4 8.5 4.5L12 13 3.5 8.5zM3.5 12.5 12 17l8.5-4.5M3.5 16.3 12 20.8l8.5-4.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.6" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M12 11v5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="7.8" r="1.1" fill="currentColor"/></symbol>
+</svg>
 
-    <!-- One row of controls floating on the map: the address search, Show
-         tiles and the violent / non-violent toggle. Nothing chooses the data:
-         every city is on the map, over the last year, coloured for the hour and
-         day it is now in each city. -->
-    <div class="map-controls">
-      <div class="map-controls-row">
-        <!-- Moves the map to a city (switchCity); every city stays drawn. It
-             follows the map, so panning to another city updates it
-             (updateFocus). Hidden until two or more cities are served. -->
-        <label class="field map-control" id="f-city-field" hidden>
-          <span class="field-label">City</span>
-          <select id="f-city"></select>
-        </label>
+<main class="app">
+  <div id="map" role="application" aria-label="Map of every covered city, hexagonal cells shaded by relative risk"></div>
 
-        <!-- Address search in the city on screen. A match drops a pin and opens
-             its cell's popup; Directions then routes to it. Shown once
-             /directions/status answers (hidden while the server has directions
-             and address search switched off). -->
-        <div class="map-control map-search" id="search-field" role="search" hidden>
-          <label class="field-label" for="search-input">Find an address</label>
-          <div class="combo">
-            <input type="text" id="search-input" class="dir-input" role="combobox"
-                   aria-autocomplete="list" aria-expanded="false" aria-controls="search-list"
-                   placeholder="Address, place or lat, lng" spellcheck="false" autocomplete="off">
-            <ul class="combo-list" id="search-list" role="listbox" aria-label="Address suggestions" hidden></ul>
-          </div>
-          <p class="map-search-status" id="search-status" role="status" aria-live="polite"></p>
-          <div class="map-search-actions" id="search-actions" hidden>
-            <button type="button" class="btn" id="btn-directions" aria-expanded="false"
-                    aria-controls="dir-panel">Directions</button>
-            <button type="button" class="search-clear" id="search-clear">Clear</button>
-          </div>
-        </div>
+  <!-- The five sections: a floating rail on the left on desktop, a floating
+       tab bar along the bottom on a phone. Same buttons, two layouts. -->
+  <nav class="rail" id="rail" aria-label="Sections">
+    <span class="rail-logo" aria-hidden="true"><svg><use href="#i-shield"/></svg></span>
+    <button type="button" class="rail-btn" data-view="explore" aria-current="page"><svg aria-hidden="true"><use href="#i-map"/></svg><span>Explore</span></button>
+    <button type="button" class="rail-btn" data-view="directions"><svg aria-hidden="true"><use href="#i-nav"/></svg><span>Directions</span></button>
+    <button type="button" class="rail-btn" data-view="near"><svg aria-hidden="true"><use href="#i-near"/></svg><span>Near me</span></button>
+    <button type="button" class="rail-btn" data-view="cities"><svg aria-hidden="true"><use href="#i-city"/></svg><span>Cities</span></button>
+    <button type="button" class="rail-btn" data-open-help aria-haspopup="dialog"><svg aria-hidden="true"><use href="#i-help"/></svg><span>Help</span></button>
+    <!-- Overrides the system theme; the choice is remembered (theme.js). -->
+    <div class="theme-switch" role="group" aria-label="Colour theme">
+      <button type="button" data-theme-choice="light" aria-pressed="false" aria-label="Light mode"><svg aria-hidden="true"><use href="#i-sun"/></svg></button>
+      <button type="button" data-theme-choice="dark" aria-pressed="false" aria-label="Dark mode"><svg aria-hidden="true"><use href="#i-moon"/></svg></button>
+    </div>
+  </nav>
 
-        <!-- Off makes the cells invisible, not absent: they still answer a
-             click with their popup. The track toggle goes with the colour. -->
-        <div class="field map-control" id="f-tiles-field">
-          <span class="field-label" id="f-tiles-label">Show tiles</span>
-          <div class="tabs" role="radiogroup" aria-labelledby="f-tiles-label" id="f-tiles">
-            <button type="button" class="tab" role="radio" data-tiles="on"
-                    aria-checked="true">On</button>
-            <button type="button" class="tab" role="radio" data-tiles="off"
-                    aria-checked="false">Off</button>
-          </div>
-        </div>
+  <!-- The top row: the small compass, then the search. It wraps on a
+       narrow window instead of needing a second breakpoint. -->
+  <div class="top-row">
+  <!-- Which way the nearby cells get quieter, small, on Explore. The full
+       version is the Near me screen. -->
+  <button type="button" class="compass-mini" id="compass" data-view="near" hidden>
+    <svg class="rose rose-mini" id="compass-rose" viewBox="-52 -52 104 104" aria-hidden="true"></svg>
+    <span class="compass-mini-text">
+      <span class="kicker">Want a calmer walk?</span>
+      <strong id="compass-readout">&mdash;</strong>
+      <span class="compass-foot" id="compass-foot"></span>
+    </span>
+  </button>
 
-        <!-- No visible heading, so the tablist names itself. -->
-        <div class="map-control" id="f-track-field">
-          <div class="tabs" role="tablist" aria-label="Offences ranked" id="f-track">
-            <button type="button" class="tab" role="tab" data-track="violent"
-                    aria-selected="true">Violent</button>
-            <button type="button" class="tab" role="tab" data-track="non_violent"
-                    aria-selected="false">Non-violent</button>
-          </div>
-        </div>
+  <!-- Address search in the city on screen. A match drops a pin and opens its
+       cell's card; "Take me here" then routes to it. Shown once
+       /directions/status answers (hidden while the server has directions and
+       address search switched off). -->
+  <div class="search-card" id="search-field" role="search" hidden>
+    <div class="search-box">
+      <svg class="search-icon" aria-hidden="true"><use href="#i-search"/></svg>
+      <label class="sr-only" for="search-input">Find an address</label>
+      <input type="text" id="search-input" role="combobox"
+             aria-autocomplete="list" aria-expanded="false" aria-controls="search-list"
+             placeholder="Where are you headed?" spellcheck="false" autocomplete="off">
+      <button type="button" class="icon-btn search-clear" id="search-clear" aria-label="Clear the search" hidden><svg aria-hidden="true"><use href="#i-close"/></svg></button>
+      <!-- The city on screen; opens the Cities screen. -->
+      <button type="button" class="city-chip" id="city-chip" data-view="cities" hidden></button>
+    </div>
+    <ul class="combo-list search-list" id="search-list" role="listbox" aria-label="Address suggestions" hidden></ul>
+    <p class="search-status" id="search-status" role="status" aria-live="polite"></p>
+  </div>
+
+    <div class="status-pills">
+      <!-- A live region, so a load error that stays on screen is announced. -->
+      <div class="status-pill loading" id="loading" role="status" aria-live="polite" hidden>Loading&hellip;</div>
+
+      <!-- While a city's first load runs: a small pill; the Cities screen has
+           the detail. -->
+      <button type="button" class="status-pill load-pill" id="load-pill" data-view="cities" hidden></button>
+    </div>
+
+  </div>
+
+  <!-- Violent / Non-violent under the search on a phone. Every .track-seg is
+       the same choice; app.js keeps them in step. -->
+  <div class="track-float">
+    <div class="seg track-seg" role="tablist" aria-label="Offences ranked">
+      <button type="button" class="seg-btn" role="tab" data-track="violent" aria-selected="true">Violent</button>
+      <button type="button" class="seg-btn" role="tab" data-track="non_violent" aria-selected="false">Non-violent</button>
+    </div>
+  </div>
+
+  <!-- Desktop, outside Explore: the hour the map is coloured for and the
+       track toggle, top right. -->
+  <div class="view-bar" id="view-bar">
+    <span class="time-chip"><svg aria-hidden="true"><use href="#i-clock"/></svg><span class="time-now"></span></span>
+    <div class="seg track-seg" role="tablist" aria-label="Offences ranked">
+      <button type="button" class="seg-btn" role="tab" data-track="violent" aria-selected="true">Violent</button>
+      <button type="button" class="seg-btn" role="tab" data-track="non_violent" aria-selected="false">Non-violent</button>
+    </div>
+  </div>
+
+  <!-- Round map buttons. Zoom only on desktop (a phone pinches); the key and
+       the theme button only on a phone (desktop has the card and the rail). -->
+  <div class="map-fabs" id="map-fabs">
+    <div class="zoom-pill">
+      <button type="button" class="fab-btn" id="zoom-in" aria-label="Zoom in"><svg aria-hidden="true"><use href="#i-plus"/></svg></button>
+      <button type="button" class="fab-btn" id="zoom-out" aria-label="Zoom out"><svg aria-hidden="true"><use href="#i-minus"/></svg></button>
+    </div>
+    <button type="button" class="fab" id="btn-key" aria-label="Map key and settings" aria-controls="see-card" aria-expanded="false"><svg aria-hidden="true"><use href="#i-layers"/></svg></button>
+    <button type="button" class="fab" id="theme-fab" aria-label="Switch to dark mode"><svg aria-hidden="true"><use href="#i-moon"/></svg></button>
+    <button type="button" class="fab" id="btn-locate" aria-label="Show my location"><svg aria-hidden="true"><use href="#i-locate"/></svg></button>
+  </div>
+
+  <!-- Explore, desktop right: what the map shows. A sheet behind the key
+       button on a phone. -->
+  <aside class="see-card" id="see-card" aria-labelledby="see-title">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <button type="button" class="icon-btn see-close" id="see-close" aria-label="Close the map key"><svg aria-hidden="true"><use href="#i-close"/></svg></button>
+    <h2 id="see-title">What would you like to see?</h2>
+    <div class="seg seg-wide track-seg" role="tablist" aria-label="Offences ranked">
+      <button type="button" class="seg-btn" role="tab" data-track="violent" aria-selected="true">Violent</button>
+      <button type="button" class="seg-btn" role="tab" data-track="non_violent" aria-selected="false">Non-violent</button>
+    </div>
+    <!-- Off makes the cells invisible, not absent: they still answer a click
+         with their card. -->
+    <div class="switch-row">
+      <span id="f-tiles-label">Color the map</span>
+      <button type="button" class="switch" id="f-tiles" role="switch" aria-checked="true" aria-labelledby="f-tiles-label"></button>
+    </div>
+    <p class="time-chip time-chip-wide"><svg aria-hidden="true"><use href="#i-clock"/></svg><span class="time-now"></span></p>
+    <h3>What the colors mean</h3>
+    <ul class="legend" id="legend"></ul>
+    <h3 id="city-chips-title">Cities</h3>
+    <div class="city-chips" id="city-chips" role="group" aria-labelledby="city-chips-title"></div>
+    <div class="see-progress" id="see-progress" hidden>
+      <p class="see-progress-text" id="see-progress-text"></p>
+      <div class="bar"><i id="see-progress-fill"></i></div>
+    </div>
+    <button type="button" class="link-btn" data-open-help aria-haspopup="dialog">How do we figure this out?</button>
+  </aside>
+
+  <!-- Desktop, outside Explore: the legend as one line, bottom right. -->
+  <ul class="legend legend-strip" id="legend-strip" aria-label="What the colors mean"></ul>
+
+  <!-- The selected hexagon, or a dropped pin: a card along the bottom on
+       desktop, a bottom sheet on a phone. app.js renders it (renderCellCard). -->
+  <section class="cell-card" id="cell-card" aria-labelledby="cell-title" hidden>
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <button type="button" class="icon-btn card-close" id="cell-close" aria-label="Close"><svg aria-hidden="true"><use href="#i-close"/></svg></button>
+    <div class="cell-body" id="cell-body"></div>
+  </section>
+
+  <!-- Directions: a left panel on desktop. On a phone the top part (where
+       from and to, how) sits at the top and the routes in a sheet below. -->
+  <section class="panel dir-panel" id="dir-panel" aria-labelledby="dir-title" hidden>
+    <div class="dir-top">
+      <div class="panel-head">
+        <h2 id="dir-title">Where to?</h2>
+        <button type="button" class="icon-btn" id="dir-close" aria-label="Close directions"><svg aria-hidden="true"><use href="#i-close"/></svg></button>
       </div>
-
-      <!-- Directions to the searched address, from the visitor's location or
-           a second address. -->
-      <section class="map-control dir-panel" id="dir-panel" aria-labelledby="dir-title" hidden>
-        <div class="dir-panel-head">
-          <h2 id="dir-title">Directions</h2>
-          <button type="button" class="dir-close" id="dir-close" aria-label="Close directions">&times;</button>
-        </div>
-
-        <div class="dir-row">
-          <span class="field-label">To</span>
-          <div class="dir-to-label" id="dir-to-label">&mdash;</div>
-        </div>
-
-        <div class="dir-row">
-          <label class="field-label" for="dir-from">From</label>
-          <div class="combo">
+      <div class="dir-ends">
+        <div class="dir-fields">
+          <div class="combo dir-field dir-field-from">
+            <span class="end-dot end-from" aria-hidden="true"></span>
+            <label class="sr-only" for="dir-from">From</label>
             <input type="text" id="dir-from" class="dir-input" role="combobox"
                    aria-autocomplete="list" aria-expanded="false" aria-controls="dir-from-list"
-                   placeholder="Type a start address" spellcheck="false" autocomplete="off">
+                   placeholder="From: a start address" spellcheck="false" autocomplete="off">
+            <button type="button" class="mini-btn" id="dir-from-here">Use my location</button>
             <ul class="combo-list" id="dir-from-list" role="listbox" aria-label="Start suggestions" hidden></ul>
           </div>
-          <div class="dir-from-actions">
-            <span>or</span>
-            <button type="button" class="btn" id="dir-from-here">Use my location</button>
+          <div class="combo dir-field dir-field-to">
+            <span class="end-dot end-to" aria-hidden="true"></span>
+            <label class="sr-only" for="dir-to">To</label>
+            <input type="text" id="dir-to" class="dir-input" role="combobox"
+                   aria-autocomplete="list" aria-expanded="false" aria-controls="dir-to-list"
+                   placeholder="To: where are you headed?" spellcheck="false" autocomplete="off">
+            <ul class="combo-list" id="dir-to-list" role="listbox" aria-label="Destination suggestions" hidden></ul>
           </div>
         </div>
+        <button type="button" class="icon-btn swap-btn" id="dir-swap" aria-label="Swap start and destination"><svg aria-hidden="true"><use href="#i-swap"/></svg></button>
+      </div>
+      <div class="seg seg-wide dir-modes" role="tablist" aria-label="Travel mode" id="dir-modes">
+        <button type="button" class="seg-btn" role="tab" data-mode="drive" aria-selected="false">Drive</button>
+        <button type="button" class="seg-btn" role="tab" data-mode="walk" aria-selected="true">Walk</button>
+        <button type="button" class="seg-btn" role="tab" data-mode="bike" aria-selected="false">Bike</button>
+        <button type="button" class="seg-btn" role="tab" data-mode="transit" aria-selected="false">Transit</button>
+      </div>
+    </div>
 
-        <div class="tabs dir-modes" role="tablist" aria-label="Travel mode" id="dir-modes">
-          <button type="button" class="tab" role="tab" data-mode="drive" aria-selected="false">Drive</button>
-          <button type="button" class="tab" role="tab" data-mode="walk" aria-selected="true">Walk</button>
-          <button type="button" class="tab" role="tab" data-mode="bike" aria-selected="false">Bike</button>
-          <button type="button" class="tab" role="tab" data-mode="transit" aria-selected="false">Transit</button>
-        </div>
+    <div class="dir-sheet">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <p class="dir-status" id="dir-status" role="status" aria-live="polite"></p>
 
-        <p class="dir-status" id="dir-status" role="status" aria-live="polite"></p>
-
-        <div class="dir-results" id="dir-results" hidden>
-          <p class="dir-track" id="dir-track"></p>
-          <ol class="route-cards" id="dir-cards"></ol>
+      <div class="dir-results" id="dir-results" hidden>
+        <h3 class="dir-count" id="dir-count"></h3>
+        <ol class="route-cards" id="dir-cards"></ol>
+        <p class="tip tip-inline" id="dir-why-tip" hidden><span class="buddy" aria-hidden="true"><svg><use href="#i-shield"/></svg></span><span id="dir-why"></span></p>
+        <div class="dir-actions">
           <!-- Follows the selected card, live, on the visitor's location. -->
-          <button type="button" class="btn btn-primary dir-start" id="dir-start">Start</button>
-          <p class="dir-why" id="dir-why"></p>
-          <details class="dir-steps-block">
-            <summary id="dir-steps-title">Steps</summary>
-            <ol class="dir-steps" id="dir-steps"></ol>
-          </details>
-          <ul class="dir-caveats" id="dir-caveats"></ul>
+          <button type="button" class="btn btn-primary" id="dir-start">Let's go</button>
+          <button type="button" class="btn btn-ghost" id="dir-steps-toggle" aria-expanded="false" aria-controls="dir-steps-block">Steps</button>
         </div>
+        <div class="dir-steps-block" id="dir-steps-block" hidden>
+          <h3 id="dir-steps-title">Steps</h3>
+          <ol class="dir-steps" id="dir-steps"></ol>
+        </div>
+        <p class="fineprint dir-track" id="dir-track"></p>
+        <ul class="dir-caveats" id="dir-caveats"></ul>
+        <p class="fineprint honest">Based on past reports near each path at this hour. Patterns, not predictions.</p>
+      </div>
 
-        <!-- Turn-by-turn: while it runs, everything else in the panel is hidden
-             (.is-navigating) and this list of the steps still ahead is all of
-             it. Steps drop off as they are passed. -->
-        <div class="dir-nav" id="dir-nav" hidden>
-          <div class="nav-head">
-            <p class="nav-summary"><strong id="nav-left"></strong> <span id="nav-eta"></span></p>
-            <button type="button" class="btn" id="nav-end">End</button>
-          </div>
-          <p class="nav-note" id="nav-note" role="status" aria-live="polite"></p>
-          <div class="nav-actions">
-            <button type="button" class="btn" id="nav-reroute" hidden>Reroute from here</button>
-            <button type="button" class="btn" id="nav-recenter" hidden>Recenter</button>
-          </div>
+      <!-- Turn-by-turn: while it runs, everything else in the panel is hidden
+           (.is-navigating). Steps drop off as they are passed. -->
+      <div class="dir-nav" id="dir-nav" hidden>
+        <div class="nav-banner" id="nav-banner">
+          <span class="nav-banner-icon" aria-hidden="true"><svg><use href="#i-nav"/></svg></span>
+          <span class="nav-banner-text">
+            <span class="nav-lead" id="nav-lead"></span>
+            <strong id="nav-next"></strong>
+          </span>
+        </div>
+        <div class="nav-head">
+          <p class="nav-summary"><strong id="nav-left"></strong> <span id="nav-eta"></span></p>
+          <button type="button" class="btn btn-danger" id="nav-end">End trip</button>
+        </div>
+        <p class="band-chip" id="nav-route-chip" hidden></p>
+        <p class="nav-note" id="nav-note" role="status" aria-live="polite"></p>
+        <div class="nav-actions">
+          <button type="button" class="btn btn-soft" id="nav-reroute" hidden>Reroute from here</button>
+          <button type="button" class="btn btn-soft" id="nav-recenter" hidden>Recenter</button>
+          <button type="button" class="btn btn-soft" id="nav-steps-toggle" aria-expanded="false" aria-controls="nav-steps-block">See all steps</button>
+        </div>
+        <div id="nav-steps-block" hidden>
           <p class="nav-on" id="nav-on"></p>
           <ol class="nav-steps" id="nav-steps"></ol>
         </div>
-
-        <p class="dir-attribution" id="dir-attribution"></p>
-      </section>
-    </div>
-
-    <!-- Which way the nearby cells get quieter, read from the layer on screen
-         around the visitor's location (or the map centre until they share it).
-         The rose turns with the map, so N always points at real north. -->
-    <div class="compass" id="compass" role="group" aria-labelledby="compass-title" hidden>
-      <div class="compass-title" id="compass-title">Lower-crime direction</div>
-      <div class="compass-dial" id="compass-dial" aria-hidden="true">
-        <div class="compass-rose" id="compass-rose">
-          <svg viewBox="-50 -50 100 100" class="compass-wedges" id="compass-wedges"></svg>
-          <span class="compass-cardinal" style="--a:0deg">N</span>
-          <span class="compass-cardinal" style="--a:90deg">E</span>
-          <span class="compass-cardinal" style="--a:180deg">S</span>
-          <span class="compass-cardinal" style="--a:270deg">W</span>
-          <div class="compass-needle" id="compass-needle"></div>
-        </div>
+        <p class="fineprint honest">Based on past reports. Patterns, not predictions.</p>
       </div>
-      <div class="compass-readout" id="compass-readout" aria-live="polite">&mdash;</div>
-      <div class="compass-foot" id="compass-foot"></div>
-    </div>
 
-    <!-- Where "Use my location" put the visitor, when it is not a cell on this
-         map: in no served city, or just past the edge of one. -->
-    <div class="locate-note" id="locate-note" role="status" aria-live="polite" hidden>
-      <span id="locate-note-text"></span>
-      <button type="button" class="btn" id="locate-note-go" hidden></button>
-      <button type="button" class="locate-note-close" id="locate-note-close"
-              aria-label="Dismiss">&times;</button>
-    </div>
-
-    <!-- A live region, so a load error that stays on screen is announced. -->
-    <div class="loading" id="loading" role="status" aria-live="polite" hidden>Loading&hellip;</div>
-
-    <!-- While a city's first load (the backfill) runs on the live site: how far
-         it has got and roughly how much longer it will take
-         (GET /api/v1/progress, web/progress.js). Cities appear as they finish. -->
-    <div class="load-progress" id="load-progress" hidden>
-      <div class="lp-text" id="lp-text" role="status" aria-live="polite"></div>
-      <div class="lp-bar" id="lp-bar" role="progressbar" aria-labelledby="lp-text"
-           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="lp-fill"></i></div>
-      <div class="lp-detail" id="lp-detail"></div>
+      <p class="fineprint dir-attribution" id="dir-attribution"></p>
     </div>
   </section>
 
+  <!-- Near me: the lower-crime direction around the visitor (or the map
+       centre), the full version of the small compass. -->
+  <section class="panel near-panel" id="near-panel" aria-labelledby="near-title" hidden>
+    <div class="panel-scroll">
+      <p class="kicker">Want a calmer walk?</p>
+      <h2 class="near-title" id="near-title" aria-live="polite">&mdash;</h2>
+      <p class="near-lede" id="near-lede"></p>
+      <!-- Turned against the map's bearing, so N is real north. -->
+      <div class="near-dial">
+        <svg class="rose rose-big" id="near-rose" viewBox="-52 -52 104 104" aria-hidden="true"></svg>
+      </div>
+      <ol class="near-list" id="near-list" aria-label="Quietest directions"></ol>
+      <div class="near-phone-row">
+        <div class="seg track-seg" role="tablist" aria-label="Offences ranked">
+          <button type="button" class="seg-btn" role="tab" data-track="violent" aria-selected="true">Violent</button>
+          <button type="button" class="seg-btn" role="tab" data-track="non_violent" aria-selected="false">Non-violent</button>
+        </div>
+        <button type="button" class="btn btn-primary" id="near-show-map" aria-pressed="false">Show on map</button>
+      </div>
+      <p class="note near-origin" id="near-origin"><svg aria-hidden="true"><use href="#i-info"/></svg><span id="near-origin-text"></span></p>
+    </div>
+  </section>
+
+  <!-- Cities: every served city (and any still on its first load) and how far
+       that load has got (GET /api/v1/progress, web/progress.js). Picking one
+       only moves the map. -->
+  <section class="panel cities-panel" id="cities-panel" aria-labelledby="cities-title" hidden>
+    <div class="panel-scroll">
+      <h2 id="cities-title">Cities</h2>
+      <p class="lede">All of them are on one map. Picking one just flies you there.</p>
+      <ul class="city-grid" id="city-grid"></ul>
+      <div class="load-progress" id="load-progress" hidden>
+        <div class="lp-text" id="lp-text" role="status" aria-live="polite"></div>
+        <div class="bar lp-bar" id="lp-bar" role="progressbar" aria-labelledby="lp-text"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="lp-fill"></i></div>
+        <div class="lp-detail" id="lp-detail"></div>
+      </div>
+      <p class="tip tip-inline" id="cities-tip" hidden><span class="buddy" aria-hidden="true"><svg><use href="#i-shield"/></svg></span><span id="cities-tip-text"></span></p>
+    </div>
+  </section>
+
+  <!-- The buddy's bubble over the map: where "Show my location" put the
+       visitor, a dropped pin, a route tip. Plain text from data the page
+       already has. -->
+  <div class="tip tip-float" id="locate-note" role="status" aria-live="polite" hidden>
+    <span class="buddy" aria-hidden="true"><svg><use href="#i-shield"/></svg></span>
+    <span class="tip-body">
+      <span id="locate-note-text"></span>
+      <button type="button" class="mini-btn" id="locate-note-go" hidden></button>
+    </span>
+    <button type="button" class="icon-btn tip-close" id="locate-note-close" aria-label="Dismiss"><svg aria-hidden="true"><use href="#i-close"/></svg></button>
+  </div>
+
 </main>
+
+<!-- How the map is made, in three steps, and the full method from
+     GET /api/v1/methodology under "Read the full method". -->
+<dialog class="help" id="help" aria-labelledby="help-title">
+  <div class="help-inner">
+    <div class="help-head">
+      <span class="buddy buddy-big" aria-hidden="true"><svg><use href="#i-shield"/></svg></span>
+      <div>
+        <h2 id="help-title">How do we figure this out?</h2>
+        <p class="lede">The short version, in three steps.</p>
+      </div>
+      <button type="button" class="icon-btn help-close" data-close-help aria-label="Close"><svg aria-hidden="true"><use href="#i-close"/></svg></button>
+    </div>
+    <ol class="help-steps">
+      <li>
+        <h3><span class="num" aria-hidden="true">1</span>We gather a year of reports</h3>
+        <div class="help-art help-bars" aria-hidden="true"><i style="height:40%"></i><i style="height:48%"></i><i style="height:56%"></i><i style="height:64%"></i><i style="height:72%"></i><i style="height:80%"></i><i style="height:88%"></i><i style="height:92%"></i><i style="height:84%"></i><i style="height:70%"></i><i style="height:58%"></i><i class="on" style="height:52%"></i></div>
+        <p>Each city publishes its crime reports. We use the last 12 months, so older reports roll off as new ones come in.</p>
+      </li>
+      <li>
+        <h3><span class="num" aria-hidden="true">2</span>We split each city into hexagons</h3>
+        <div class="help-art help-hexes" id="help-hexes" aria-hidden="true"></div>
+        <p>Each hexagon is about half a mile across. Zoom in and they split into smaller ones, about a fifth of a mile across.</p>
+      </li>
+      <li>
+        <h3><span class="num" aria-hidden="true">3</span>We compare it to its own city</h3>
+        <div class="help-example" aria-hidden="true"><span class="face" data-band="calm"></span><span><strong>0.78×</strong><span class="band-text" data-band="calm">22% below the city average</span></span></div>
+        <p>1.0× is the city's average for this hour and day of the week. Below 1 is quieter, above 1 is busier. Cities are never compared with each other.</p>
+      </li>
+    </ol>
+    <ul class="help-notes">
+      <li><span class="bang" aria-hidden="true">!</span><span><strong>It's not a forecast</strong>It shows what usually happens, not what will happen tonight.</span></li>
+      <li><span class="bang" aria-hidden="true">!</span><span><strong>Only reported incidents</strong>Some things never get reported, and busy places get more reports.</span></li>
+      <li><span class="bang" aria-hidden="true">!</span><span><strong>Quiet spots, simpler charts</strong>Where a hexagon has fewer than 48 reports, we skip the hour-by-hour chart.</span></li>
+    </ul>
+    <details class="help-full" id="help-full">
+      <summary>Read the full method</summary>
+      <div class="help-full-body" id="methodology-body">Loading&hellip;</div>
+    </details>
+    <div class="help-foot">
+      <button type="button" class="btn btn-primary" data-close-help>Got it</button>
+    </div>
+  </div>
+</dialog>
 
 <script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"
         integrity="sha384-81ppUWZZO+pveTPk4qU9cZuScEFULHfuOMHVJHFZ7xVBlWQTG1zsPrVIMGAl1WMb"

@@ -13,6 +13,7 @@ vm.runInNewContext(src, ctx);
 const {
   formatDuration, formatDistance, activitySentence, pickReason, routeCardModel,
   safeHex, textOn, transitLegSummary, latLngFromString, routesBbox, segmentFeatures,
+  ratioText, bandOf, ratioWords, bandName,
   routeLineFeatures, altFeatures, directionsKey, clockIn, debounce,
   navSteps, projectOnLine, navProgress, headingFromOrientation,
 } = ctx;
@@ -44,7 +45,7 @@ const comparable = (mean, extra = {}) => ({
 test("activitySentence is relative to the city, never 'safe'", () => {
   const low = activitySentence(comparable(0.62), "violent");
   assert.equal(low.headline, "Reported violent activity lower than the city average");
-  assert.match(low.detail, /^62% of the city average along the route$/);
+  assert.match(low.detail, /^0\.62× the city average along the route$/);
   const about = activitySentence(comparable(1.02), "non-violent");
   assert.match(about.headline, /about the city average/);
   for (const s of [low, about]) assert.doesNotMatch(`${s.headline} ${s.detail}`, /\bsafe|danger/i);
@@ -52,13 +53,49 @@ test("activitySentence is relative to the city, never 'safe'", () => {
 
 test("activitySentence names a hot stretch and partial coverage", () => {
   const s = activitySentence(comparable(1.3, { peak_ratio: 2.4, rated_share: 0.8 }), "violent");
-  assert.match(s.detail, /one stretch reaches 240%/);
+  assert.match(s.detail, /one stretch reaches 2\.40×/);
   assert.match(s.detail, /80% of the route is rated/);
 });
 
 test("activitySentence claims nothing when the route is not comparable", () => {
   const s = activitySentence({ comparable: false, rated_share: 0.3 }, "violent");
   assert.equal(s.headline, "Not enough data to compare");
+});
+
+test("ratioText writes multiples of the city average", () => {
+  assert.equal(ratioText(0.78), "0.78×");
+  assert.equal(ratioText(1.1), "1.10×");
+  assert.equal(ratioText(14.24), "14.2×");
+  // Never zero for a place where something was reported.
+  assert.equal(ratioText(0.001), "<0.01×");
+  assert.equal(ratioText(NaN), "—");
+});
+
+test("bandOf follows the ramp's hinges, not round numbers", () => {
+  assert.equal(bandOf(0), "calm");
+  assert.equal(bandOf(1.0), "calm");
+  // Yellow sits at 1.5x on the map, so 1.49x is still the green band.
+  assert.equal(bandOf(1.49), "calm");
+  assert.equal(bandOf(1.5), "busier");
+  assert.equal(bandOf(1.99), "busier");
+  assert.equal(bandOf(2), "busy");
+  assert.equal(bandOf(3), "very");
+  assert.equal(bandOf(12), "very");
+  assert.equal(bandOf(null), "none");
+  assert.equal(bandOf(-1), "none");
+  // Edges come from the caller (RAMP_HINGES in app.js).
+  assert.equal(bandOf(1.2, [1, 2, 3]), "busier");
+  for (const band of ["calm", "busier", "busy", "very", "none"]) assert.ok(bandName(band));
+  assert.equal(bandName("nonsense"), "Nothing reported");
+});
+
+test("ratioWords keeps the number honest", () => {
+  assert.equal(ratioWords(0.78), "22% quieter than the city average");
+  assert.equal(ratioWords(1.02), "about the city average");
+  assert.equal(ratioWords(1.4), "40% busier than the city average");
+  assert.equal(ratioWords(2.4), "2.40× the city average");
+  assert.equal(ratioWords(null), "no rating here");
+  for (const r of [0.1, 0.9, 1, 1.6, 3]) assert.doesNotMatch(ratioWords(r), /safe|danger/i);
 });
 
 test("pickReason", () => {

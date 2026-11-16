@@ -118,18 +118,20 @@ function valueDomain(features, prop, isPainted, perPerson) {
   return average > 0 ? { average, painted } : null;
 }
 
-/** The ratio in whichever form reads as a quantity: 1,400% has to be decoded,
-    14.0x does not.
+/** A cell's multiple of its city average as the page writes it: "0.78×"
+    (ratioText, web/directions.js, which also names the bottom end rather
+    than rounding it to zero). */
+const formatRatio = (ratio) => ratioText(ratio);
 
-    The bottom end is named rather than rounded, rather than
-    shown as zero: a big quiet cell -- one report among twenty thousand
-    people -- rounds to 0%, and 0% is the one thing this figure must not say
-    about a cell where something was reported. */
-function formatRatio(ratio) {
-  if (ratio >= 10) return `${ratio.toFixed(1)}×`;
-  if (ratio < 0.005) return "<1%";
-  return `${Math.round(ratio * 100)}%`;
-}
+/* The legend's bands, from the hinges above zero (1.5, 2, 3): a band always
+   matches the colour the map paints (bandOf, web/directions.js). */
+const BAND_EDGES = RAMP_HINGES.slice(1).map(([, ratio]) => ratio);
+const band = (ratio) => bandOf(ratio, BAND_EDGES);
+
+/* The one breakpoint, shared with styles.css (tests/js/breakpoint.test.mjs). */
+const NARROW_QUERY = "(max-width: 767.98px)";
+const narrowMedia = window.matchMedia(NARROW_QUERY);
+const isNarrow = () => narrowMedia.matches;
 
 const TRACK_LABELS = {
   violent: "violent",
@@ -207,34 +209,46 @@ const layerRes = (cityId) => state.layers.get(cityId)?.res ?? state.res;
 
 /* ------------------------------------------------------------------ basemap */
 
-const CARTO_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+/* Carto's light and dark basemaps, one per theme, from the hosts the CSP in
+   safety/api/security.py already allows (nothing new is loaded from anywhere
+   else). Same glyphs and sprite family, so the city labels look the same. */
+const CARTO_STYLES = {
+  light: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+  dark: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+};
+const RASTER_TILES = { light: "light_all", dark: "dark_all" };
 
 // Used only if the vector style is unreachable, so the page still renders a map.
-const RASTER_FALLBACK = {
+const rasterFallback = (theme) => ({
   version: 8,
   sources: {
     carto: {
       type: "raster",
-      tiles: [
-        "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-        "https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-        "https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-      ],
+      tiles: ["a", "b", "c"].map((s) => `https://${s}.basemaps.cartocdn.com/${RASTER_TILES[theme]}/{z}/{x}/{y}.png`),
       tileSize: 256,
       attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
     },
   },
   layers: [{ id: "carto", type: "raster", source: "carto" }],
-};
+});
 
-async function resolveStyle() {
+/* A style fetched once per theme, so switching back and forth is instant. */
+const styleCache = new Map();
+
+async function resolveStyle(theme = "light") {
+  const key = CARTO_STYLES[theme] ? theme : "light";
+  if (styleCache.has(key)) return structuredClone(styleCache.get(key));
   try {
-    const response = await fetch(CARTO_STYLE);
-    if (response.ok) return await response.json();
+    const response = await fetch(CARTO_STYLES[key]);
+    if (response.ok) {
+      const style = await response.json();
+      styleCache.set(key, style);
+      return structuredClone(style);
+    }
   } catch {
     /* fall through */
   }
-  return RASTER_FALLBACK;
+  return rasterFallback(key);
 }
 
 let map;
@@ -434,76 +448,239 @@ function compassSectors(origin) {
   };
 }
 
-/** Eight 45° wedges, each tinted with its sector's mean on the map's ramp. */
-function renderCompassWedges(sectors) {
-  const wedge = (i) => {
-    const a0 = ((i * 45 - 22.5 - 90) * Math.PI) / 180;
-    const a1 = ((i * 45 + 22.5 - 90) * Math.PI) / 180;
-    const r = 49;
-    return `M0 0 L${(r * Math.cos(a0)).toFixed(2)} ${(r * Math.sin(a0)).toFixed(2)} ` +
-      `A${r} ${r} 0 0 1 ${(r * Math.cos(a1)).toFixed(2)} ${(r * Math.sin(a1)).toFixed(2)} Z`;
-  };
-  $("compass-wedges").innerHTML = html`${(sectors ?? []).map(
-    (s, i) => html`<path d="${wedge(i)}" fill="${
-      s.mean === null ? "none" : rampColorAt(s.mean)
-    }" fill-opacity="0.55"></path>`
-  )}<circle r="20" fill="var(--surface-1)"></circle>`;
-}
+/* How far the compass reads, as the visitor is told it: COMPASS_RINGS keeps
+   it at about this at every cell size. */
+const COMPASS_REACH_KM = 1.5;
 
-/** Point the needle at the quietest nearby sector, or say there isn't one. */
-function renderCompass() {
-  const box = $("compass");
-  if (!map || !state.featureIndex?.size) {
-    box.hidden = true;
-    return;
-  }
-  box.hidden = false;
-  // The rose turns against the map, so its N stays on real north.
-  $("compass-rose").style.transform = `rotate(${-map.getBearing()}deg)`;
-
-  const origin = compassOrigin();
-  const result = compassSectors(origin);
-  const readout = $("compass-readout");
-  $("compass-foot").textContent = origin.away
-    ? `From map centre — ${origin.away}`
-    : `Nearby cells, from ${origin.from}`;
-
-  if (!result) {
-    box.dataset.state = "none";
-    renderCompassWedges(null);
-    readout.textContent = origin.from === "your location"
-      ? "You are just outside this city's data."
-      : "Move the map over a city.";
-    return;
-  }
-
-  renderCompassWedges(result.sectors);
+/** Where to point and how much lower it is, from compassSectors' result:
+    null when nothing nearby is meaningfully lower than here. */
+function compassPick(result) {
+  if (!result) return { best: null, ranked: [] };
   const ranked = result.sectors
     .map((s, i) => ({ ...s, index: i }))
     .filter((s) => s.mean !== null)
     .sort((a, b) => a.mean - b.mean);
-  const best = ranked[0];
+  const top = ranked[0];
+  const best = top && top.mean < result.here * (1 - COMPASS_MARGIN) ? top : null;
+  return { best, ranked };
+}
 
-  if (!best || best.mean >= result.here * (1 - COMPASS_MARGIN)) {
-    box.dataset.state = "none";
-    readout.innerHTML = result.here === 0
-      ? html`<b>Already quiet</b><span class="compass-detail">nothing lower nearby</span>`
-      : html`<b>No clear direction</b><span class="compass-detail">nothing nearby is meaningfully lower</span>`;
-    box.setAttribute("aria-label", "Lower-crime direction: none nearby");
-    return;
+/**
+ * The rose as SVG: eight ring-shaped wedges in their sector's colour (the
+ * map's ramp, so wedge and hexagons agree), the chosen one outlined, a short
+ * needle from the hub toward it, and the visitor's blue dot in the middle.
+ * `labels` writes N, NE, ... in the wedges (the big rose).
+ */
+function roseSvg(sectors, bestIndex, { labels = false } = {}) {
+  const outer = 49;
+  const inner = labels ? 16 : 14;
+  const at = (radius, deg) => {
+    const rad = ((deg - 90) * Math.PI) / 180;
+    return [(radius * Math.cos(rad)).toFixed(2), (radius * Math.sin(rad)).toFixed(2)];
+  };
+  const wedge = (i) => {
+    const [a0, a1] = [i * 45 - 22.5, i * 45 + 22.5];
+    const [x0, y0] = at(inner, a0);
+    const [x1, y1] = at(outer, a0);
+    const [x2, y2] = at(outer, a1);
+    const [x3, y3] = at(inner, a1);
+    return `M${x0} ${y0} L${x1} ${y1} A${outer} ${outer} 0 0 1 ${x2} ${y2} L${x3} ${y3} A${inner} ${inner} 0 0 0 ${x0} ${y0} Z`;
+  };
+  const list = sectors ?? COMPASS_POINTS.map((point) => ({ point, mean: null }));
+  const fills = list.map((s) => (s.mean === null ? zeroFill() : colorForRatio(s.mean)));
+  // The chosen wedge last, so its outline is not painted over by a neighbour.
+  const order = list.map((_, i) => i).sort((a, b) => (a === bestIndex) - (b === bestIndex));
+  const needle = bestIndex === null || bestIndex === undefined ? "" : (() => {
+    const [x, y] = at(inner + (labels ? 7 : 6), bestIndex * 45);
+    return html`<line class="needle" x1="0" y1="0" x2="${x}" y2="${y}"></line>`;
+  })();
+  return html`${order.map((i) => html`<path class="wedge${i === bestIndex ? " is-best" : ""}" d="${wedge(i)}" fill="${fills[i]}"></path>`)}${
+    labels ? list.map((s, i) => {
+      const [x, y] = at((inner + outer) / 2 + 2, i * 45);
+      return html`<text x="${x}" y="${y}">${s.point}</text>`;
+    }) : ""}${needle}<circle class="hub" r="${inner - 2}"></circle><circle class="me" r="${labels ? 4.6 : 4}"></circle>`;
+}
+
+/** The roses turn against the map, so their N stays on real north. */
+function turnRoses() {
+  if (!map) return;
+  const turn = `rotate(${-map.getBearing()}deg)`;
+  document.querySelectorAll(".rose").forEach((rose) => { rose.style.transform = turn; });
+}
+
+/** "55% quieter", "20% busier", or the band's name from double on. */
+function shortWords(ratio) {
+  if (ratio >= 2) return bandName(band(ratio));
+  const change = Math.round((ratio - 1) * 100);
+  if (Math.abs(change) < 5) return "about average";
+  return change < 0 ? `${-change}% quieter` : `${change}% busier`;
+}
+
+/** Point both roses at the quietest nearby sector, or say there isn't one. */
+function renderCompass() {
+  const box = $("compass");
+  const ready = Boolean(map && state.featureIndex?.size);
+  box.hidden = !ready;
+  const origin = ready ? compassOrigin() : null;
+  const result = ready ? compassSectors(origin) : null;
+  const { best, ranked } = compassPick(result);
+  const fromYou = origin?.from === "your location";
+  const track = TRACK_LABELS[state.track];
+  state.compass = { origin, result, best };
+
+  // The headline both share.
+  let headline;
+  let lede;
+  if (!ready) {
+    headline = "Move the map over a city";
+    lede = "The compass reads the hexagons around you, or the middle of the map.";
+  } else if (!result) {
+    headline = fromYou ? "You're just outside the data" : "Move the map over a city";
+    lede = fromYou
+      ? "Where you are is past the edge of this city's data, so there is nothing around you to compare."
+      : "The middle of the map is not over a city's hexagons.";
+  } else if (!best) {
+    headline = result.here === 0 ? "It's already quiet here" : "No clearly calmer way";
+    lede = result.here === 0
+      ? `Within about a mile, nothing nearby has fewer ${track} incidents at this hour.`
+      : `Within about a mile, no direction has meaningfully fewer ${track} incidents at this hour.`;
+  } else {
+    const drop = result.here > 0 ? Math.round((1 - best.mean / result.here) * 100) : null;
+    headline = `Head ${COMPASS_NAMES[best.point]}`;
+    lede = `Within about a mile of ${fromYou ? "you" : "the middle of the map"}, ${track} incidents at this hour are ` +
+      `usually lowest in that direction${drop === null ? "" : `, about ${drop}% lower than ${fromYou ? "where you are" : "there"}`}.`;
   }
 
-  box.dataset.state = "point";
-  $("compass-needle").style.transform = `rotate(${best.index * 45}deg)`;
-  const drop = result.here > 0 ? 1 - best.mean / result.here : null;
-  readout.innerHTML = html`<b>Head ${best.point}</b>${
-    drop === null ? "" : html`<span class="compass-detail">about ${Math.round(drop * 100)}% lower than here</span>`
-  }`;
-  box.setAttribute(
-    "aria-label",
-    `Lower-crime direction: ${COMPASS_NAMES[best.point]}` +
-      (drop === null ? "" : `, about ${Math.round(drop * 100)}% lower than here`)
-  );
+  // Small, on Explore.
+  $("compass-rose").innerHTML = roseSvg(result?.sectors, best?.index);
+  $("compass-readout").textContent = headline;
+  $("compass-foot").textContent = !result ? "" : fromYou ? "From you, within about a mile" : "From the map centre, within about a mile";
+  box.setAttribute("aria-label", `Want a calmer walk? ${headline}. Open Near me.`);
+  box.dataset.state = best ? "point" : "none";
+
+  // Big, on Near me.
+  $("near-title").textContent = headline;
+  $("near-lede").textContent = lede;
+  $("near-rose").innerHTML = roseSvg(result?.sectors, best?.index, { labels: true });
+  $("near-list").innerHTML = html`${ranked.slice(0, 3).map((s) => html`<li>
+    <span class="near-badge" data-band="${band(s.mean)}" aria-hidden="true">${s.point}</span>
+    <span class="near-name">${COMPASS_NAMES[s.point][0].toUpperCase()}${COMPASS_NAMES[s.point].slice(1)}</span>
+    <span class="near-num"><span class="sr-only">${COMPASS_NAMES[s.point]}: </span>${formatRatio(s.mean)} · ${shortWords(s.mean)}</span>
+  </li>`)}`;
+  const cityName = cityAt(state.userLocation ?? { lat: NaN, lng: NaN })?.city_name;
+  $("near-origin-text").textContent = !origin ? ""
+    : fromYou ? `Reading from your location, since you're in ${cityName ?? "this city"}. If you move the map to somewhere else, we use the middle of the map instead.`
+    : origin.away ? `Reading from the middle of the map, because ${origin.away}.`
+    : "Reading from the middle of the map. Tap the location button to read from where you are.";
+  turnRoses();
+  renderNearOverlay();
+}
+
+/* ---- the compass drawn on the map, on Near me */
+
+const nearEmpty = { type: "FeatureCollection", features: [] };
+
+function addNearLayers() {
+  if (map.getSource("near")) return;
+  map.addSource("near", { type: "geojson", data: nearEmpty });
+  const layers = map.getStyle().layers;
+  const lastRoad = layers.findLastIndex((layer) => /^(tunnel|road|bridge|highway)/.test(layer.id));
+  const before = layers.slice(lastRoad + 1).find((layer) => layer.type === "symbol")?.id;
+  map.addLayer({
+    id: "near-sectors", type: "fill", source: "near",
+    filter: ["==", ["get", "kind"], "sector"],
+    paint: { "fill-color": ["get", "color"], "fill-opacity": ["case", ["get", "best"], 0.4, 0.14] },
+  }, before);
+  map.addLayer({
+    id: "near-spokes", type: "line", source: "near",
+    filter: ["==", ["get", "kind"], "spoke"],
+    paint: { "line-color": themeColor("--panel", "#ffffff"), "line-width": 2.5, "line-opacity": 0.9 },
+  }, before);
+  map.addLayer({
+    id: "near-ring", type: "line", source: "near",
+    filter: ["==", ["get", "kind"], "ring"],
+    paint: { "line-color": primaryColor(), "line-width": 2.5, "line-dasharray": [2, 2] },
+  }, before);
+  map.addLayer({
+    id: "near-arrow", type: "line", source: "near",
+    filter: ["==", ["get", "kind"], "arrow"],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": themeColor("--text", "#3a2b26"), "line-width": 6 },
+  }, before);
+  map.addLayer({
+    id: "near-origin", type: "circle", source: "near",
+    filter: ["==", ["get", "kind"], "origin"],
+    paint: {
+      "circle-radius": 9,
+      "circle-color": themeColor("--me", "#4b7be5"),
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 3,
+    },
+  }, before);
+}
+
+/** A point `km` from `origin` on a compass bearing (degrees from north). */
+function offsetKm(origin, km, bearing) {
+  const rad = (bearing * Math.PI) / 180;
+  const lat = origin.lat + (km * Math.cos(rad)) / 111.32;
+  const lng = origin.lng + (km * Math.sin(rad)) / (111.32 * Math.cos((origin.lat * Math.PI) / 180));
+  return [lng, lat];
+}
+
+/** The circle the compass reads, its eight sectors tinted, and an arrow to
+    the quietest -- shown with the Near me screen open. */
+function renderNearOverlay() {
+  const source = map?.getSource("near");
+  if (!source) return;
+  const view = document.body.dataset.view;
+  const show = view === "near" && (!isNarrow() || document.body.classList.contains("near-on-map"));
+  const c = state.compass;
+  if (!show || !c?.result) {
+    source.setData(nearEmpty);
+    return;
+  }
+  const { origin, result, best } = c;
+  const features = [];
+  const ring = (from, to) => {
+    const points = [];
+    for (let deg = from; deg <= to; deg += 3) points.push(offsetKm(origin, COMPASS_REACH_KM, deg));
+    return points;
+  };
+  result.sectors.forEach((s, i) => {
+    if (s.mean === null) return;
+    const arc = ring(i * 45 - 22.5, i * 45 + 22.5);
+    features.push({
+      type: "Feature",
+      properties: { kind: "sector", color: colorForRatio(s.mean), best: best?.index === i },
+      geometry: { type: "Polygon", coordinates: [[[origin.lng, origin.lat], ...arc, [origin.lng, origin.lat]]] },
+    });
+  });
+  for (let i = 0; i < 8; i++) {
+    features.push({
+      type: "Feature",
+      properties: { kind: "spoke" },
+      geometry: { type: "LineString", coordinates: [[origin.lng, origin.lat], offsetKm(origin, COMPASS_REACH_KM, i * 45 + 22.5)] },
+    });
+  }
+  features.push({ type: "Feature", properties: { kind: "ring" }, geometry: { type: "LineString", coordinates: ring(0, 360) } });
+  if (best) {
+    const bearing = best.index * 45;
+    const tip = offsetKm(origin, COMPASS_REACH_KM * 0.72, bearing);
+    const tipPoint = { lng: tip[0], lat: tip[1] };
+    features.push({
+      type: "Feature",
+      properties: { kind: "arrow" },
+      geometry: {
+        type: "MultiLineString",
+        coordinates: [
+          [[origin.lng, origin.lat], tip],
+          [offsetKm(tipPoint, 0.22, bearing + 155), tip, offsetKm(tipPoint, 0.22, bearing - 155)],
+        ],
+      },
+    });
+  }
+  features.push({ type: "Feature", properties: { kind: "origin" }, geometry: { type: "Point", coordinates: [origin.lng, origin.lat] } });
+  source.setData({ type: "FeatureCollection", features });
 }
 
 /* --------------------------------------------------------------- data fetch */
@@ -699,22 +876,34 @@ async function loadCities() {
   return cities;
 }
 
-/** The city picker's options, by name. Shows the city the map is on, else
-    DEFAULT_CITY until the map has opened. One city is not a choice, so it
-    stays hidden until a second is served. */
+/** The city picker: chips on the Explore card, the chip in the search box
+    and the Cities screen. Each only moves the map (switchCity); the one the
+    map is on is marked. Cities still on their first load are listed but
+    cannot be picked yet. */
 function renderCitySelect() {
-  const select = $("f-city");
-  const sorted = [...state.cities].sort((a, b) => a.city_name.localeCompare(b.city_name));
-  select.replaceChildren(
-    ...sorted.map((city) => {
-      const option = document.createElement("option");
-      option.value = city.source_id;
-      option.textContent = city.city_name;
-      return option;
-    })
-  );
-  select.value = cityById(state.city)?.source_id ?? cityById(DEFAULT_CITY)?.source_id ?? sorted[0]?.source_id ?? "";
-  $("f-city-field").hidden = state.cities.length < 2;
+  const current = state.city ?? DEFAULT_CITY;
+  const loading = (state.progress?.cities ?? []).filter((c) => !cityById(c.id));
+  const served = [...state.cities].sort((a, b) => a.city_name.localeCompare(b.city_name));
+  $("city-chips").innerHTML = html`${served.map((city) => html`<button type="button"
+      data-city="${city.source_id}" aria-pressed="${String(city.source_id === current)}">${city.city_name}</button>`)}${
+    loading.map((c) => html`<button type="button" disabled title="Still loading">${c.name}</button>`)}`;
+  const record = cityById(current);
+  $("city-chip").textContent = record?.city_name ?? "";
+  $("city-chip").setAttribute("aria-label", record ? `${record.city_name}: choose a city` : "Choose a city");
+  $("city-chip").hidden = !record;
+  renderCities();
+}
+
+/** "Friday 9 PM": the hour and day the map is coloured for in the city on
+    screen. On the city's clock, not the browser's. */
+function renderTimeChips() {
+  const city = state.cityRecord ?? cityById(DEFAULT_CITY);
+  if (!city) return;
+  const { hour, day } = cityNow(city);
+  const when = `${dayName(day)} ${hourName(hour)}`;
+  document.querySelectorAll(".time-now").forEach((el) => {
+    el.textContent = el.closest(".see-card") ? `Right now · ${when}` : when;
+  });
 }
 
 /** Frame one city from its own stored bounding box. */
@@ -745,7 +934,8 @@ function updateFocus() {
   if (!city || city.source_id === state.city) return;
   state.city = city.source_id;
   state.cityRecord = city;
-  $("f-city").value = city.source_id;
+  renderCitySelect();
+  renderTimeChips();
   document.title = `${city.city_name} — reported-incident risk`;
   $("map").setAttribute(
     "aria-label",
@@ -772,7 +962,8 @@ function cityMarkerData() {
   };
 }
 
-function initCityMarkers() {
+function addCityLayers() {
+  if (map.getSource("cities")) return;
   map.addSource("cities", { type: "geojson", data: cityMarkerData() });
   map.addLayer({
     id: "city-dots",
@@ -780,10 +971,10 @@ function initCityMarkers() {
     source: "cities",
     maxzoom: CITY_MARKER_MAX_ZOOM,
     paint: {
-      "circle-radius": 7,
+      "circle-radius": 8,
       "circle-color": primaryColor(),
-      "circle-stroke-color": "#ffffff",
-      "circle-stroke-width": 2,
+      "circle-stroke-color": themeColor("--panel", "#ffffff"),
+      "circle-stroke-width": 3,
     },
   });
   map.addLayer({
@@ -802,6 +993,9 @@ function initCityMarkers() {
     },
     paint: { "text-color": themeColor("--text", "#3a2b26"), "text-halo-color": themeColor("--panel", "#ffffff"), "text-halo-width": 1.5 },
   });
+}
+
+function wireCityLayerEvents() {
   map.on("click", "city-dots", (event) => {
     const id = event.features?.[0]?.properties?.id;
     if (id) switchCity(id);
@@ -819,10 +1013,15 @@ function renderCityMarkers() {
 const PROGRESS_POLL_MS = 10_000;
 let progressTimer = null;
 
+/** The load's state in three places: the full bar on the Cities screen, a
+    line on the Explore card, and a small pill over the map. */
 function renderProgress(body) {
+  state.progress = body;
   const view = progressView(body);
-  const box = $("load-progress");
-  box.hidden = !view.show;
+  $("load-progress").hidden = !view.show;
+  $("see-progress").hidden = !view.show;
+  $("load-pill").hidden = !view.show;
+  renderCitySelect();
   if (!view.show) return;
   $("lp-text").textContent = view.text;
   $("lp-detail").textContent = view.detail;
@@ -830,6 +1029,66 @@ function renderProgress(body) {
   const bar = $("lp-bar");
   bar.setAttribute("aria-valuenow", String(Math.round(view.percent)));
   bar.setAttribute("aria-valuetext", view.text);
+
+  // "Austin is still loading, about 25 min left." -- one city by name, or
+  // how many, with the one estimate the endpoint gives for the whole load.
+  const waiting = (body.cities ?? []).filter((c) => !c.ready);
+  const eta = formatEta(body.eta_seconds);
+  const who = waiting.length === 1 ? `${waiting[0].name} is` : `${waiting.length} cities are`;
+  const line = `${who} still loading${eta ? `, ${eta}` : ""}.`;
+  $("see-progress-text").textContent = line;
+  $("see-progress-fill").style.width = `${view.percent}%`;
+  $("load-pill").textContent = `Loading · ${Math.floor(view.percent)}%`;
+  $("load-pill").setAttribute("aria-label", `${view.text}. Open Cities for detail.`);
+}
+
+/**
+ * The Cities screen: every served city, and any still on its first load,
+ * with its local time and whether it is ready. A ready city is a button that
+ * flies the map there (switchCity); a loading one shows its own progress.
+ */
+function renderCities() {
+  const grid = $("city-grid");
+  if (!grid) return;
+  const progress = new Map((state.progress?.cities ?? []).map((c) => [c.id, c]));
+  const served = [...state.cities].map((city) => ({ id: city.source_id, name: city.city_name, city }));
+  for (const [id, c] of progress) if (!cityById(id)) served.push({ id, name: c.name, city: null });
+  served.sort((a, b) => a.name.localeCompare(b.name));
+  const now = new Date();
+  const label = (city) => city?.windows?.[0]?.label ?? "Last 12 months";
+
+  grid.innerHTML = html`${served.map(({ id, name, city }) => {
+    const p = progress.get(id);
+    const loading = !city || (p && !p.ready);
+    const viewing = !loading && id === state.city;
+    const percent = loading ? Math.max(0, Math.min(100, p?.percent ?? 0)) : 100;
+    const state_ = viewing
+      ? html`<span class="city-state is-viewing">Viewing</span>`
+      : loading
+        ? html`<span class="city-state is-loading">Loading ${Math.floor(percent)}%</span>`
+        : html`<span class="city-state is-ready">Ready</span>`;
+    const what = loading && p?.phase ? PROGRESS_PHASES[p.phase] ?? p.phase : null;
+    return html`<li><button type="button" class="city-card${loading ? " is-loading" : " is-ready"}"
+        data-city="${id}" ${loading ? html`disabled` : ""} aria-current="${String(viewing)}">
+      <span class="city-head"><span class="hex" aria-hidden="true"></span>
+        <span class="city-name"><strong>${name}</strong><span>${
+          city ? `${cityTimeLabel(city.timezone, now)} local time` : "Not on the map yet"}</span></span>
+        ${state_}</span>
+      <span class="bar" aria-hidden="true"><i style="width:${percent}%"></i></span>
+      <span class="city-foot">${loading
+        ? `${what ? `${what[0].toUpperCase()}${what.slice(1)}` : "Waiting to start"}`
+        : label(city)}</span>
+    </button></li>`;
+  })}`;
+
+  const waiting = served.filter(({ id, city }) => !city || (progress.get(id) && !progress.get(id).ready));
+  $("cities-tip").hidden = waiting.length === 0;
+  if (waiting.length) {
+    const names = waiting.map((w) => w.name).join(", ");
+    $("cities-tip-text").textContent = waiting.length === 1
+      ? `${names} is still loading for the first time. You can use the other cities while it finishes, and it will appear on its own.`
+      : `${names} are still loading for the first time. You can use the other cities while they finish, and each will appear on its own.`;
+  }
 }
 
 /**
@@ -872,11 +1131,16 @@ async function onCitiesChanged() {
 
 /* --------------------------------------------------------------- the cell */
 
-/** Open a cell's popup: its rating now, and its hour and weekday shapes. */
-async function selectCell(h3Index) {
+/**
+ * Open a cell's card: its rating now, and its hour and weekday shapes.
+ * `place` names it when the cell was reached through an address -- a search,
+ * a dropped pin -- and is what "Take me here" routes to.
+ */
+async function selectCell(h3Index, { place = null } = {}) {
   if (state.selected && state.selected !== h3Index) {
     map.setFeatureState({ source: "cells", id: state.selected }, { selected: false });
   }
+  if (state.selected !== h3Index || place) state.cardPlace = place;
   state.selected = h3Index;
   map.setFeatureState({ source: "cells", id: h3Index }, { selected: true });
 
@@ -899,14 +1163,16 @@ function closeDetail() {
     state.selected = null;
   }
   state.detail = null;
+  state.cardPlace = null;
 }
 
-/** The popup's clock: the cell's city's exact time now, "10:13 PM EDT". */
+/** The card's clock: the cell's city's exact time now, "10:13 PM EDT". */
 function renderCityClock() {
-  const popupTime = document.querySelector(".cell-popup .cp-time");
-  if (popupTime && state.selected) {
-    popupTime.textContent = cityTimeLabel(cellCity(state.selected)?.timezone, new Date(), { zoneName: true });
+  const clock = document.querySelector("#cell-card .cell-time");
+  if (clock && state.selected) {
+    clock.textContent = `${cityTimeLabel(cellCity(state.selected)?.timezone, new Date(), { zoneName: true })} there now`;
   }
+  renderTimeChips();
 }
 
 /**
@@ -938,21 +1204,22 @@ function watchCityClock() {
 const pctOf = (change) => `${Math.abs(Math.round(change * 100))}%`;
 
 /**
- * "Lower-risk window: 1 PM – 4 PM — about 18% lower than now": plain text.
+ * The 12-hour outlook in one sentence, plain text: "Heads up: it usually gets
+ * quieter here from 1 AM to 4 AM, about 35% lower than now."
  *
  * Compared with right now, not the day's average: at 9 AM every stretch in
  * the next twelve hours is daytime and above average, so an average-based
- * figure would call the "lower-risk" window "24% above average". When even
- * the quietest stretch is still busier than the day as a whole, it says so.
+ * figure would call the "quieter" stretch "24% above average". When even the
+ * quietest stretch is still busier than the day as a whole, it says so.
  */
 function windowSentence(win) {
   if (win.startsNow) {
-    return `Lower-risk window: now until ${hourName(win.end)} — the quietest stretch of the next 12 hours`;
+    return `Right now is usually the quietest stretch of the next 12 hours here, until ${hourName(win.end)}.`;
   }
-  if (!win.quieter) return "No meaningfully quieter stretch in the next 12 hours";
-  const still = win.aboveAverage ? ", though still busier than its daily average" : "";
-  return `Lower-risk window: ${hourName(win.start)} – ${hourName(win.end)} — ` +
-    `about ${pctOf(win.vsNow)} lower than now${still}`;
+  if (!win.quieter) return "No meaningfully quieter stretch is usual here in the next 12 hours.";
+  const still = win.aboveAverage ? ", though still busier than an average hour of the day" : "";
+  return `Heads up: it usually gets quieter here from ${hourName(win.start)} to ${hourName(win.end)}, ` +
+    `about ${pctOf(win.vsNow)} lower than now${still}.`;
 }
 
 /* ------------------------------------------------------- cell size by zoom */
@@ -980,15 +1247,15 @@ async function syncResToZoom() {
   await refreshLayers();
 }
 
-/* ---------------------------------------------------------------- cell popup */
+/* ---------------------------------------------------------------- cell card */
 
-/* The whole cell view: the relative risk rating now, and the cell's day and
-   week against themselves, in a small box on the map. */
-let cellPopup = null;
+/* The whole cell view: the relative rating now, and the cell's day and week
+   against themselves -- a card along the bottom on desktop, a bottom sheet on
+   a phone. */
 
 /** "#rrggbb" for a multiple of the city average, by the same linear
     interpolation the fill's `interpolate` expression makes over
-    valueRampStops, so the outline matches the cell it belongs to. */
+    valueRampStops, so a swatch matches the cell it belongs to. */
 function colorForRatio(ratio) {
   if (ratio === null || ratio === undefined || ratio < 0) return zeroFill();
   const stops = valueRampStops(VALUE_RAMP);
@@ -1004,112 +1271,163 @@ function colorForRatio(ratio) {
 }
 
 function removeCellPopup() {
-  const popup = cellPopup;
-  cellPopup = null;
-  popup?.remove();
+  const card = $("cell-card");
+  const hadFocus = card.contains(document.activeElement);
+  card.hidden = true;
+  card.classList.remove("is-expanded");
+  $("cell-body").replaceChildren();
+  if (hadFocus) $("map").focus?.();
 }
 
-function showCellPopup(h3Index, detail) {
-  removeCellPopup();
+/** "About half a mile across": a cell's size, as the help dialog words it. */
+const cellSizeWords = (h3Index) => (h3.getResolution(h3Index) >= 9 ? "about a fifth of a mile across" : "about half a mile across");
 
+function showCellPopup(h3Index, detail) {
   const props = state.featureIndex.get(h3Index);
   const ratio = ratioNow(props);
+  const b = band(ratio);
   const city = cellCity(h3Index);
   const zone = city?.timezone;
   const { hour: nowHour, day: nowDay } = cityNow(city);
+  const track = TRACK_LABELS[state.track];
+  const place = state.cardPlace;
 
   // The rating is the same multiple of its city's average the cell's colour
-  // (and so the outline) comes from: the smoothed, severity-weighted rate the
-  // ranking is built on, at the hour and weekday it is now in that city.
+  // comes from: the smoothed, severity-weighted rate the ranking is built on,
+  // at the hour and weekday it is now in that city.
   const windowLabel = detail.window_label.toLowerCase();
-  const track = TRACK_LABELS[state.track];
-  const sense = ratio === null ? ""
-    : ratio > 1.05 ? "higher than the city average"
-    : ratio < 0.95 ? "lower than the city average"
-    : "about the city average";
-  // "Saturday at 10 PM": the time the rating is for -- now, in the cell's city.
-  const at = `${dayName(nowDay)} at ${hourName(nowHour)} · `;
-  const rating = ratio === null
-    ? {
-        value: "—",
-        label: `no ${track} risk rating for this cell · ${at}${windowLabel}`,
-      }
-    : {
-        value: formatRatio(ratio),
-        label: `relative ${track} risk — ${sense} in ${city?.city_name ?? "this city"} · ${at}${windowLabel}`,
-      };
+  const when = `${dayName(nowDay)} ${hourName(nowHour)}`;
+  const words = ratio === null
+    ? `No ${track} rating for this spot at ${when}`
+    : `${ratioWords(ratio)}`;
 
+  // The day: this cell's own 24 hours on this track, with now in orange and
+  // the quietest three-hour stretch ahead (hours.js) in green -- only when it
+  // is worth pointing at. Needs 48 reports across the day (hourVsUsual), the
+  // same floor the outlook uses; below that the chart is skipped.
   const counts = detail.hour_profile?.[state.track];
-  const max = Math.max(...(counts ?? []), 1);
-  const now = nowHour;
-  // The 12-hour outlook: the quietest three-hour stretch ahead, from this
-  // cell's own day on this track (hours.js). Its bars go green only when it
-  // is worth pointing at -- it starts now, or it is meaningfully lower.
-  const win = counts ? quietestWindow(counts, now) : null;
+  const enough = counts ? hourVsUsual(counts, nowHour) !== null : false;
+  const win = enough ? quietestWindow(counts, nowHour) : null;
   const safer = new Set(win && (win.startsNow || win.quieter) ? win.blocks : []);
-  const outlook = win
-    ? windowSentence(win)
-    : "Too few incidents here for a 12-hour outlook.";
-  const span = (hour) => `${hourName(hour)} – ${hourName(hour + 1)}`;
-  const chart = counts && counts.some((n) => n > 0)
-    ? html`<div class="cp-sub cp-time">${cityTimeLabel(zone, new Date(), { zoneName: true })}</div>
-      <div class="hours" role="img" aria-label="Reported ${TRACK_LABELS[state.track]} offences by hour of the day">${counts.map((n, hour) => {
-        const height = Math.max((n / max) * 100, n > 0 ? 4 : 0);
-        const on = n > 0 ? html` data-on` : "";
-        const current = hour === now ? html` data-selected` : "";
-        const quiet = safer.has(hour) ? html` data-safer` : "";
-        return html`<i style="height:${height}%"${on}${quiet}${current} title="${span(hour)}: ${nf.format(n)}"></i>`;
-      })}</div>
-      <div class="hours-axis"><span>12 AM</span><span>6 AM</span><span>12 PM</span><span>6 PM</span><span>11 PM</span></div>
-      <div class="cp-outlook">${outlook}</div>
-      <div class="cp-foot">Dark bar: now in the city.${safer.size ? " Green bars: the lower-risk window." : ""}
-        The usual pattern here, not a forecast.</div>`
-    : html`<div class="cp-foot">No incidents here with a recorded hour.</div>`;
+  const span = (h) => `${hourName(h)} – ${hourName(h + 1)}`;
+  const max = Math.max(...(counts ?? []), 1);
+  const today = enough
+    ? html`<section class="cell-today" aria-labelledby="cell-today-title">
+        <h3 id="cell-today-title">How it usually goes today</h3>
+        <div class="hours" role="img" aria-label="Reported ${track} incidents here by hour of the day; now is ${hourName(nowHour)}">${counts.map((n, h) => {
+          const height = Math.max((n / max) * 100, n > 0 ? 6 : 0);
+          return html`<i style="height:${height}%"${safer.has(h) ? html` data-safer` : ""}${h === nowHour ? html` data-selected` : ""} title="${span(h)}: ${nf.format(n)}"></i>`;
+        })}</div>
+        <div class="hours-axis" aria-hidden="true"><span>12 AM</span><span>6 AM</span><span>12 PM</span><span>6 PM</span><span>11 PM</span></div>
+        <p class="tip tip-inline"><span class="buddy" aria-hidden="true"><svg><use href="#i-shield"/></svg></span><span>${windowSentence(win)}</span></p>
+        <p class="cell-foot">Orange: now in ${city?.city_name ?? "the city"}.${safer.size ? " Green: the quieter stretch." : ""} The usual pattern here, not a forecast.</p>
+      </section>`
+    : html`<section class="cell-today">
+        <h3>How it usually goes today</h3>
+        <p class="note">${counts && counts.some((n) => n > 0)
+          ? "Fewer than 48 reports here across the day, so there is no hour-by-hour chart. The week pattern is below."
+          : "No reports here with a recorded hour."}</p>
+      </section>`;
 
-  // The week: this cell's incidents on each weekday, today's bar dark -- the
-  // day the rating above is for when the map is on today.
+  // The week: this cell's incidents on each weekday, today in orange.
   const days = detail.day_profile?.[state.track];
-  const today = nowDay;
   const week = days && days.some((n) => n > 0)
     ? (() => {
         const most = Math.max(...days, 1);
-        const vs = dayVsUsual(days, today);
+        const vs = dayVsUsual(days, nowDay);
         const sentence = !vs
-          ? "Too few incidents here to compare days of the week."
+          ? "Too few reports here to compare days of the week."
           : vs.direction === "flat"
-            ? `${dayName(today)}s here are about an average day.`
-            : `${dayName(today)}s here see ${pctOf(vs.change)} ${vs.direction === "up" ? "more" : "fewer"} ` +
-              `${TRACK_LABELS[state.track]} incidents than an average day.`;
-        return html`<div class="cp-sub">By day of the week</div>
-          <div class="hours days" role="img" aria-label="Reported ${TRACK_LABELS[state.track]} offences by day of the week">${days.map((n, day) => {
-            const height = Math.max((n / most) * 100, n > 0 ? 4 : 0);
-            const on = n > 0 ? html` data-on` : "";
-            const current = day === today ? html` data-selected` : "";
-            return html`<i style="height:${height}%"${on}${current} title="${dayName(day)}: ${nf.format(n)}"></i>`;
+            ? `${dayName(nowDay)}s here are about an average day.`
+            : `${dayName(nowDay)}s are ${vs.direction === "up" ? "a bit busier" : "a bit quieter"} here, about ` +
+              `${pctOf(vs.change)} ${vs.direction === "up" ? "above" : "below"} an average day.`;
+        return html`<section class="cell-week cell-more" aria-labelledby="cell-week-title">
+          <h3 id="cell-week-title">Across the week</h3>
+          <div class="hours days" role="img" aria-label="Reported ${track} incidents here by day of the week; today is ${dayName(nowDay)}">${days.map((n, d) => {
+            const height = Math.max((n / most) * 100, n > 0 ? 6 : 0);
+            return html`<i style="height:${height}%"${d === nowDay ? html` data-selected` : ""} title="${dayName(d)}: ${nf.format(n)}"></i>`;
           })}</div>
-          <div class="days-axis">${days.map((_, day) => html`<span>${dayName(day).slice(0, 3)}</span>`)}</div>
-          <div class="cp-outlook">${sentence}</div>`;
+          <div class="days-axis" aria-hidden="true">${days.map((_, d) => html`<span${d === nowDay ? html` class="is-today"` : ""}>${dayName(d)[0]}</span>`)}</div>
+          <p class="cell-foot">${sentence} Patterns, not predictions.</p>
+        </section>`;
       })()
     : "";
 
-  const box = document.createElement("div");
-  box.className = "cp";
-  box.innerHTML = html`<div class="cp-value">${rating.value}</div>
-    <div class="cp-label">${rating.label}</div>${chart}${week}`;
+  const title = place?.label ?? "This hexagon";
+  const sub = place?.dropped ? "Nearest address" : place ? (city?.city_name ?? "") : `${cellSizeWords(h3Index)}, ${city?.city_name ?? ""}`;
+  $("cell-body").innerHTML = html`<section class="cell-summary" data-band="${b}">
+      ${place?.dropped ? html`<p class="cell-kicker">Dropped pin</p>` : ""}
+      <h2 class="cell-title" id="cell-title">${title}</h2>
+      <p class="cell-sub">${sub}</p>
+      <div class="rating" data-band="${b}">
+        <span class="face" data-band="${b}" aria-hidden="true"></span>
+        <span>
+          <span class="rating-value">${ratio === null ? "—" : formatRatio(ratio)}</span>
+          <span class="rating-words">${words}</span>
+        </span>
+      </div>
+      <p class="cell-sub">${track[0].toUpperCase()}${track.slice(1)} incidents · ${when} · ${windowLabel}
+        <br><span class="cell-time"></span></p>
+      <div class="cell-actions">
+        <button type="button" class="btn btn-primary" data-card="to">Take me here</button>
+        <button type="button" class="btn btn-ghost" data-card="from">${place?.dropped ? "Start from here" : "Start here"}</button>
+      </div>
+      <button type="button" class="link-btn cell-expand" aria-expanded="false">See the week pattern</button>
+    </section>${today}${week}`;
 
-  const [lat, lng] = h3.cellToLatLng(h3Index);
-  // closeOnClick off: the map's own click handler decides, so clicking a
-  // second cell swaps the popup instead of racing a close against the open.
-  const popup = new maplibregl.Popup({ closeOnClick: false, maxWidth: "240px", className: "cell-popup" })
-    .setLngLat([lng, lat])
-    .setDOMContent(box)
-    .addTo(map);
-  popup.getElement().style.setProperty("--cell-color", colorForRatio(ratio));
-  popup.on("close", () => {
-    // Only the close button gets here with this popup still current.
-    if (cellPopup === popup) closeDetail();
+  const card = $("cell-card");
+  card.style.setProperty("--cell-color", colorForRatio(ratio));
+  card.hidden = false;
+  renderCityClock();
+}
+
+/** The address a card stands for: its place when it has one, else the
+    nearest address to the middle of its hexagon. */
+async function cardPlace() {
+  if (state.cardPlace) return state.cardPlace;
+  if (!state.selected) return null;
+  const [lat, lng] = h3.cellToLatLng(state.selected);
+  const { place } = await placeAt({ lat, lng });
+  return place;
+}
+
+function wireCellCard() {
+  const card = $("cell-card");
+  $("cell-close").onclick = () => closeDetail();
+  card.addEventListener("click", async (event) => {
+    const expand = event.target.closest(".cell-expand");
+    if (expand) {
+      const open = card.classList.toggle("is-expanded");
+      expand.setAttribute("aria-expanded", String(open));
+      expand.textContent = open ? "Show less" : "See the week pattern";
+      return;
+    }
+    const action = event.target.closest("[data-card]");
+    if (!action) return;
+    action.disabled = true;
+    const place = await cardPlace().catch(() => null);
+    action.disabled = false;
+    if (!place) return;
+    if (action.dataset.card === "to") routeTo(place);
+    else routeFrom(place);
   });
-  cellPopup = popup;
+
+  // The sheet's handle on a phone: drag down to close, up to show more; a
+  // tap toggles. The close button and "See the week pattern" do the same
+  // from a keyboard.
+  let drag = null;
+  card.addEventListener("pointerdown", (event) => {
+    if (!isNarrow() || !event.target.closest(".sheet-handle, .cell-summary h2, .cell-kicker")) return;
+    drag = { y: event.clientY, id: event.pointerId };
+  });
+  card.addEventListener("pointerup", (event) => {
+    if (!drag || drag.id !== event.pointerId) return;
+    const dy = event.clientY - drag.y;
+    drag = null;
+    if (dy > 60) closeDetail();
+    else if (dy < -30 || Math.abs(dy) < 6) card.querySelector(".cell-expand")?.click();
+  });
+  card.addEventListener("pointercancel", () => { drag = null; });
 }
 
 /* ------------------------------------------------------------------ geolocate */
@@ -1199,6 +1517,7 @@ async function cityFromGrantedLocation() {
     );
     const point = { lat: position.coords.latitude, lng: position.coords.longitude };
     state.userLocation = point;
+    showUserDot(point);
     followLocation();
     return cityAt(point)?.source_id ?? null;
   } catch {
@@ -1240,10 +1559,26 @@ async function switchCity(sourceId) {
   await resSync;
 }
 
+/* The visitor's blue dot, once they have shared a location. */
+let userMarker = null;
+function showUserDot(point) {
+  if (!map || !point) return;
+  if (!userMarker) {
+    const el = document.createElement("div");
+    el.className = "user-dot";
+    el.setAttribute("aria-hidden", "true");
+    el.append(document.createElement("span"));
+    userMarker = new maplibregl.Marker({ element: el });
+  }
+  userMarker.setLngLat([point.lng, point.lat]).addTo(map);
+  // While navigating, the arrow (nav.marker) is the visitor instead.
+  userMarker.getElement().hidden = nav.active;
+}
+
 /**
- * Keep the compass on the visitor as they move, once they have shared a
- * location. Only the compass follows -- the map and the open cell stay where
- * the visitor put them.
+ * Keep the compass (and the blue dot) on the visitor as they move, once they
+ * have shared a location. The map and the open card stay where the visitor
+ * put them.
  */
 let locationWatch = null;
 function followLocation() {
@@ -1254,10 +1589,110 @@ function followLocation() {
         lat: position.coords.latitude,
         lng: position.coords.longitude,
       };
+      showUserDot(state.userLocation);
       renderCompass();
     },
     () => { /* keep the last fix */ },
     { enableHighAccuracy: true, maximumAge: 15000 }
+  );
+}
+
+/* Within this far of a city's data, being outside it still gets a "View
+   <city>" button; farther, the map goes back to the city being looked at. */
+const NEAR_CITY_MILES = 50;
+
+/**
+ * The Locate button: ask for the visitor's location (only now, on their
+ * tap -- never on page load), then show it. Nothing about the location leaves
+ * the page: the cell is worked out here from the coordinates (design doc
+ * S10), and the city from bounding boxes already in hand.
+ */
+async function locateMe() {
+  const button = $("btn-locate");
+  if (!navigator.geolocation) {
+    showLocateNote("This browser does not share a location.");
+    return;
+  }
+  // The city on screen when the visitor asked: where the map goes back to if
+  // they turn out to be nowhere near any city.
+  const before = state.city ?? DEFAULT_CITY;
+  button.disabled = true;
+  button.classList.add("is-busy");
+  button.setAttribute("aria-busy", "true");
+  let point;
+  try {
+    point = await getPosition();
+  } catch (error) {
+    showLocateNote(
+      error?.code === 1
+        ? "Location is off for this site. Allow it in your browser's settings to see where you are."
+        : `Could not read your location${error?.message ? `: ${error.message}` : ""}.`
+    );
+    return;
+  } finally {
+    button.disabled = false;
+    button.classList.remove("is-busy");
+    button.removeAttribute("aria-busy");
+  }
+  state.userLocation = point;
+  showUserDot(point);
+  followLocation();
+  await goToLocation(point, before);
+}
+
+/** Show where the visitor is, or say plainly why the map cannot. */
+async function goToLocation(point, before) {
+  hideLocateNote();
+  const home = cityAt(point);
+
+  if (!home) {
+    const near = nearestCity(point);
+    const miles = near ? near.km / 1.609344 : Infinity;
+    if (near && miles <= NEAR_CITY_MILES) {
+      showLocateNote(
+        `You're outside the cities this map covers. The nearest is ${near.city.city_name}, about ${milesLabel(near.km)} away.`,
+        near.city.source_id === state.city
+          ? null
+          : { label: `View ${near.city.city_name}`, run: () => switchCity(near.city.source_id) }
+      );
+      renderCompass();
+      return;
+    }
+    // Nowhere near any city: say so, then put the map back on the city the
+    // visitor was looking at (Philadelphia if none).
+    const back = cityById(before) ?? cityById(DEFAULT_CITY) ?? state.cities[0];
+    showLocateNote(
+      `You're outside the cities this map covers` +
+        (near ? `; the nearest, ${near.city.city_name}, is about ${milesLabel(near.km)} away` : "") +
+        (back ? `. Back to ${back.city_name} for now.` : ".")
+    );
+    if (back) await switchCity(back.source_id);
+    renderCompass();
+    return;
+  }
+
+  await flyAndSettle([point.lng, point.lat], Math.max(map.getZoom(), 14));
+  const cell = coveredCell(point);
+  if (!cell) {
+    // Inside the box but past the edge of the data: across the city line, or
+    // somewhere the source publishes nothing.
+    showLocateNote(`You're in ${home.city_name}, but just outside the area its data covers.`);
+    renderCompass();
+    return;
+  }
+  selectCell(cell, { place: { ...point, label: "You are here" } });
+  renderCompass();
+}
+
+/** The buddy's tip, once per visit: how to drop a pin. */
+let pinTipShown = false;
+function pinTip() {
+  if (pinTipShown) return;
+  pinTipShown = true;
+  showLocateNote(
+    isNarrow()
+      ? "Pin dropped! Press and hold anywhere on the map to check a spot, or to start directions from it."
+      : "Pin dropped! Right-click anywhere on the map to check a spot, or to start directions from it."
   );
 }
 
@@ -1304,20 +1739,52 @@ const UNAVAILABLE = {
 };
 // Close enough to read the street the address is on.
 const SEARCH_ZOOM = 15;
-const isNarrow = () => window.matchMedia("(max-width: 600px)").matches;
 
-/** Camera padding that keeps a target clear of the floating controls: the
-    search box above it on a phone, the directions sheet below it once open,
-    the column down the left edge on a wide screen. */
+/** Where an element is on screen, or null when it is not shown. */
+function shownRect(id) {
+  const el = $(id);
+  return el && el.getClientRects().length ? el.getBoundingClientRect() : null;
+}
+
+/** Camera padding that keeps a target clear of whatever floats over the
+    map: the rail or tab bar, the open panel or sheet, the search and the
+    Explore card. Measured, so it follows the layout rather than repeating it. */
 function clearOfControls() {
   const gap = 24;
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  const pad = { top: gap, bottom: gap, left: gap, right: gap };
+  const below = (id) => {
+    const r = shownRect(id);
+    if (r) pad.top = Math.max(pad.top, r.bottom + gap);
+  };
+  const above = (id) => {
+    const r = shownRect(id);
+    if (r) pad.bottom = Math.max(pad.bottom, height - r.top + gap);
+  };
   if (!isNarrow()) {
-    return dir.open ? { top: 60, bottom: 60, right: 60, left: 360 } : { top: 0, bottom: 0, left: 0, right: 0 };
+    pad.left = (shownRect("rail")?.right ?? 0) + gap;
+    for (const id of ["dir-panel", "near-panel", "cities-panel"]) {
+      const r = shownRect(id);
+      if (r) pad.left = Math.max(pad.left, r.right + gap);
+    }
+    const see = shownRect("see-card");
+    if (see) pad.right = width - see.left + gap;
+    below("search-field");
+    above("cell-card");
+  } else {
+    below("search-field");
+    below("dir-top");
+    above("rail");
+    above("cell-card");
+    const sheet = shownRect("dir-panel") && $("dir-panel").querySelector(".dir-sheet");
+    if (sheet?.getClientRects().length) pad.bottom = Math.max(pad.bottom, height - sheet.getBoundingClientRect().top + gap);
   }
-  const top = $("search-field").getBoundingClientRect().bottom + gap;
-  const sheet = $("dir-panel");
-  const bottom = dir.open && !sheet.hidden ? window.innerHeight - sheet.getBoundingClientRect().top + gap : gap;
-  return { top, bottom, left: gap, right: gap };
+  // Never so much that nothing is left to frame.
+  pad.top = Math.min(pad.top, height * 0.45);
+  pad.bottom = Math.min(pad.bottom, height * 0.45);
+  pad.left = Math.min(pad.left, width * 0.6);
+  return pad;
 }
 
 async function postJson(path, body, signal) {
@@ -1406,6 +1873,25 @@ function renderDirAttribution() {
   `;
 }
 
+/** The selected track's multiple of the city average at a point, from the
+    cells on the map: null for the no-data fill, undefined where no loaded
+    cell covers it. */
+function ratioAtPoint(point) {
+  if (!point || !Number.isFinite(point.lat) || !Number.isFinite(point.lng)) return undefined;
+  const city = cityAt(point);
+  if (!city) return undefined;
+  const props = state.featureIndex.get(h3.latLngToCell(point.lat, point.lng, layerRes(city.source_id)));
+  return props ? ratioNow(props) : undefined;
+}
+
+/** One word for a chip, in the band's own terms: the green band ("typical or
+    quieter") says which of the two. */
+function chipWord(ratio) {
+  const b = band(ratio);
+  if (b === "calm") return ratio < 0.95 ? "Quieter" : "Typical";
+  return b === "none" ? "No reports" : bandName(b);
+}
+
 /* ---- address boxes: an ARIA combobox each */
 
 /**
@@ -1421,11 +1907,18 @@ function wireCombo(input, list, { onChoose, onType, statusId }) {
   const render = (next) => {
     options = next;
     active = -1;
-    list.innerHTML = html`${next.map(
-      (o, i) => html`<li role="option" id="${list.id}-opt-${i}" data-index="${i}" aria-selected="false">
-        <span class="opt-title">${o.title}</span>${o.subtitle ? html`<span class="opt-sub">${o.subtitle}</span>` : ""}
-      </li>`
-    )}`;
+    // Numbered, each with how its hexagon compares now -- read from the
+    // cells already on the map, so there is no request per suggestion. A
+    // place whose hexagon is not loaded gets no chip rather than a guess.
+    list.innerHTML = html`${next.map((o, i) => {
+      const ratio = ratioAtPoint(o.point ?? o);
+      const b = ratio === undefined ? "none" : band(ratio);
+      return html`<li role="option" id="${list.id}-opt-${i}" data-index="${i}" aria-selected="false">
+        <span class="opt-num" data-band="${b}" aria-hidden="true">${i + 1}</span>
+        <span class="opt-text"><span class="opt-title">${o.title}</span>${o.subtitle ? html`<span class="opt-sub">${o.subtitle}</span>` : ""}</span>
+        ${ratio === undefined ? "" : html`<span class="band-chip plain" data-band="${b}">${chipWord(ratio)}<span class="sr-only">, ${ratio === null ? "nothing reported" : formatRatio(ratio)}</span></span>`}
+      </li>`;
+    })}`;
     list.hidden = next.length === 0;
     input.setAttribute("aria-expanded", String(next.length > 0));
     input.removeAttribute("aria-activedescendant");
@@ -1574,7 +2067,7 @@ function refuseSearch(message) {
   setStatus("search-status", message, true);
 }
 
-/** Pin `place`, fly to it and open its cell's popup -- if it is a cell of
+/** Pin `place`, fly to it and open its cell's card -- if it is a cell of
     the city on screen. */
 async function showPlace(place) {
   const seq = ++search.seq;
@@ -1591,17 +2084,13 @@ async function showPlace(place) {
   pinPlace(place, cell);
 }
 
-/** Right-click on the map. The first pins that point where it is, with no
-    camera move, and fills the search box with the nearest address -- a way
-    to find an address by pointing at it. Once there is a destination, the
-    next sets the start instead (pinClickedStart), opening the directions
-    panel if it is not open; a new destination starts from Clear or a search. */
+/** Right-click (press and hold on a phone) on the map. With directions open
+    it sets the start (pinClickedStart). Otherwise it drops a pin where it
+    is, with no camera move, and opens the dropped pin's card with the
+    nearest address -- a way to find an address by pointing at it. */
 async function pinClickedPoint(lngLat) {
   const point = { lat: lngLat.lat, lng: lngLat.lng };
-  if (search.place) {
-    if (!dir.open) openDirections({ focus: false });
-    return pinClickedStart(point);
-  }
+  if (dir.open) return pinClickedStart(point);
   const seq = ++search.seq;
   clearSearchPin();
   const problem = pointProblem(point, "That point");
@@ -1618,12 +2107,13 @@ async function pinClickedPoint(lngLat) {
   if (seq !== search.seq) return;
   setStatus("search-status", "");
   $("search-input").value = place.label;
-  pinPlace(place, cell);
+  pinPlace({ ...place, dropped: true }, cell);
+  pinTip();
 }
 
-/** Right-click once there is a destination: the same, for the start. Its A
-    pin goes down at once, the start box fills with the nearest address, and
-    the route is asked for. */
+/** Right-click with directions open: the same, for the start. Its pin goes
+    down at once, the start box fills with the nearest address, and the route
+    is asked for. */
 async function pinClickedStart(point) {
   const seq = ++dir.fromSeq;
   const problem = pointProblem(point, "That start");
@@ -1647,32 +2137,24 @@ async function pinClickedStart(point) {
   setFrom(place);
 }
 
-/** Make `place` the searched address: its pin, its cell's popup, and the
-    directions destination when the panel is open. */
+/** Make `place` the searched address: its pin and its cell's card. It is
+    also the destination "Take me here" uses. */
 function pinPlace(place, cell) {
   search.marker?.remove();
   search.place = place;
   search.marker = searchPin().setLngLat([place.lng, place.lat]).addTo(map);
-  $("search-actions").hidden = false;
-  selectCell(cell);
-  // An open panel routes to the new address.
-  if (dir.open) {
-    search.marker.remove();
-    $("dir-to-label").textContent = place.label;
-    clearResult();
-    placeMarkers();
-    if (dir.from) submitDirections();
-  }
+  $("search-clear").hidden = false;
+  selectCell(cell, { place });
 }
 
 function clearSearchPin() {
   search.place = null;
   search.marker?.remove();
   search.marker = null;
-  $("search-actions").hidden = true;
+  $("search-clear").hidden = true;
 }
 
-/** Back to no address: the box, the pin, the panel and any route. */
+/** Back to no address: the box, the pin, the card and any route. */
 function resetSearch() {
   search.seq += 1;
   closeDirections();
@@ -1680,40 +2162,97 @@ function resetSearch() {
   dir.fromSeq += 1;
   dir.from = null;
   $("dir-from").value = "";
+  $("dir-to").value = "";
   $("search-input").value = "";
   setStatus("search-status", "");
+  closeDetail();
 }
 
 /* ---- the directions panel */
 
-/** `focus: false` leaves the start box unfocused -- for a right-click, which
-    fills it, so a phone does not raise its keyboard. */
+/** Open the panel (setView("directions") calls this). With no destination
+    yet, the To box is empty and gets the focus; with no start, From does. */
 function openDirections({ focus = true } = {}) {
-  if (!search.place) return;
   dir.open = true;
   $("dir-panel").hidden = false;
   document.body.classList.add("dir-open");
-  $("btn-directions").setAttribute("aria-expanded", "true");
-  $("dir-to-label").textContent = search.place.label;
-  // The route takes the map: the popup would sit on top of it, and the
-  // searched pin becomes the B end.
+  syncDirEnds();
+  // The route takes the map: the card would sit on top of it, and the
+  // searched pin becomes the destination's end pin.
   closeDetail();
   search.marker?.remove();
   placeMarkers();
-  if (dir.result) drawRoutes();
-  if (focus) $("dir-from").focus();
+  if (dir.result) {
+    drawRoutes();
+    $("dir-results").hidden = false;
+  } else if (dir.from && search.place) {
+    submitDirections();
+  }
+  if (focus) (search.place ? (dir.from ? $("dir-start") : $("dir-from")) : $("dir-to")).focus();
 }
 
-function closeDirections() {
+/** Close the panel. `toView` false: the caller is already switching to
+    another section (setView), so this does not switch back to Explore. */
+function closeDirections({ toView = true } = {}) {
   endNavigation();
   if (!dir.open) return;
   dir.open = false;
   $("dir-panel").hidden = true;
   document.body.classList.remove("dir-open");
-  $("btn-directions").setAttribute("aria-expanded", "false");
   clearResult();
   clearRouteLayers();
   if (search.marker) search.marker.addTo(map);
+  if (toView && document.body.dataset.view === "directions") setView("explore");
+}
+
+/** The From and To boxes show the trip's two ends. */
+function syncDirEnds() {
+  $("dir-from").value = dir.from?.label ?? $("dir-from").value;
+  $("dir-to").value = search.place?.label ?? "";
+  $("dir-to").closest(".dir-field").classList.toggle("is-set", Boolean(search.place));
+}
+
+/** Set (or clear, with null) the destination, and route once there is a
+    start too. */
+function setTo(place) {
+  search.place = place;
+  syncDirEnds();
+  clearResult();
+  placeMarkers();
+  if (place && dir.from) submitDirections();
+}
+
+/** "Take me here": the place becomes the destination and Directions opens. */
+function routeTo(place) {
+  search.place = place;
+  $("search-input").value = place.label ?? "";
+  $("search-clear").hidden = false;
+  closeDetail();
+  setView("directions");
+  setTo(place);
+  if (!dir.from) $("dir-from").focus();
+}
+
+/** "Start here": the place becomes the start and Directions opens. */
+function routeFrom(place) {
+  closeDetail();
+  setView("directions");
+  setFrom(place);
+  if (!search.place) $("dir-to").focus();
+}
+
+/** Swap the two ends. */
+function swapEnds() {
+  const from = dir.from;
+  const to = search.place;
+  dir.fromSeq += 1;
+  dir.from = to;
+  search.place = from;
+  $("dir-from").value = to?.label ?? "";
+  syncDirEnds();
+  clearResult();
+  placeMarkers();
+  if (dir.from && search.place) submitDirections();
 }
 
 function clearResult() {
@@ -1725,25 +2264,20 @@ function clearResult() {
   dir.result = null;
   $("dir-results").hidden = true;
   setStatus("dir-status", "");
+  $("dir-status").classList.remove("sr-only");
   clearRouteLayers({ keepMarkers: true });
 }
 
 function endMarker(end) {
   const el = document.createElement("div");
-  // MapLibre positions the marker with its own transform, so the turn that
-  // makes the pin's point goes on an inner element.
+  // MapLibre positions the marker with its own transform, so the look goes
+  // on an inner element.
   el.className = "route-pin-marker";
   const pin = document.createElement("div");
   pin.className = `route-pin route-pin-${end}`;
-  const letter = document.createElement("span");
-  letter.textContent = end === "from" ? "A" : "B";
-  pin.append(letter);
   el.append(pin);
   el.setAttribute("aria-hidden", "true");
-  // The pin is a square turned 45°, its point 18 px (half the 26 px
-  // diagonal) below its centre: lift it so the point, not the middle, sits on
-  // the place.
-  return new maplibregl.Marker({ element: el, anchor: "center", offset: [0, -18] });
+  return new maplibregl.Marker({ element: el, anchor: "center" });
 }
 
 /** A pin at each end of the trip, where they are not already. */
@@ -1764,7 +2298,7 @@ function setFrom(place) {
   $("dir-from").value = place?.label ?? "";
   clearResult();
   placeMarkers();
-  if (place) submitDirections();
+  if (place && search.place) submitDirections();
 }
 
 /** Name a point (reverse geocode) and say which served city it is in. */
@@ -1795,7 +2329,18 @@ async function setFromPoint(point) {
     );
     return;
   }
-  setFrom({ ...place, label: point.label === undefined ? `Your location (${place.label})` : place.label });
+  setFrom({ ...place, label: point.label === undefined ? `My location (${place.label})` : place.label });
+}
+
+/** A destination typed as lat, lng: the same check. */
+async function setToPoint(point) {
+  const { place, city } = await placeAt(point);
+  if (city !== state.city) {
+    const name = state.cityRecord?.city_name ?? "this city";
+    setStatus("dir-status", city ? `That place is in another city. Directions stay within ${name}.` : `That place is outside ${name}.`, true);
+    return;
+  }
+  setTo({ ...place, label: point.label ?? place.label });
 }
 
 function getPosition() {
@@ -1881,11 +2426,54 @@ function showResult(result) {
   const bounds = routesBbox(result.routes);
   if (bounds) map.fitBounds(bounds, { padding: clearOfControls(), maxZoom: 16, duration: 700 });
   const n = result.routes.length;
+  // Announced, not shown: the heading over the cards says the same.
   setStatus(
     "dir-status",
     `${n} ${MODE_NAMES[result.mode].toLowerCase()} route${n === 1 ? "" : "s"} found · ` +
       `fastest ${formatDuration(result.routes[result.picks?.[state.track]?.fastest ?? 0].duration_s)}`
   );
+  $("dir-status").classList.add("sr-only");
+}
+
+/* The card labels, in UI 5's words. The model's roles (routeCardModel) are
+   about reported activity, never safety (design doc S13); "calmer" says the
+   same thing the way the page talks. */
+const ROLE_WORDS = {
+  "Fastest and safest": "Fastest and calmest",
+  Safest: "Calmer route",
+  Fastest: "Fastest",
+  Alternative: "Another option",
+};
+const MODE_VERBS = { walk: "walk", drive: "drive", bike: "bike" };
+
+/** Great-circle length of a line of [lng, lat] points, in km. */
+function lineKm(coords) {
+  let km = 0;
+  for (let i = 1; i < coords.length; i++) {
+    km += distanceKm({ lng: coords[i - 1][0], lat: coords[i - 1][1] }, { lng: coords[i][0], lat: coords[i][1] });
+  }
+  return km;
+}
+
+/** The route's stretches as bars, each as long as it is and coloured by its
+    own multiple of the city average (route.activity[track].segments, the same
+    the map draws). Neighbours in the same band are joined. */
+function stretchBars(activity) {
+  const bars = [];
+  for (const seg of activity?.segments ?? []) {
+    const ratio = seg.ratio === null ? null : seg.ratio;
+    const km = lineKm(seg.coordinates ?? []);
+    if (!(km > 0)) continue;
+    const b = band(ratio);
+    const last = bars.at(-1);
+    if (last && last.band === b) {
+      last.km += km;
+      last.sum += (ratio ?? 0) * km;
+    } else {
+      bars.push({ band: b, km, sum: (ratio ?? 0) * km, rated: ratio !== null });
+    }
+  }
+  return bars.map((bar) => ({ ...bar, color: bar.rated ? colorForRatio(bar.sum / bar.km) : zeroFill() }));
 }
 
 function renderDirections() {
@@ -1893,10 +2481,16 @@ function renderDirections() {
   if (!result) return;
   const track = TRACK_LABELS[state.track];
   const cards = routeCardModel(result, state.track);
+  const fastestIndex = result.picks?.[state.track]?.fastest ?? 0;
+  const fastest = result.routes[fastestIndex];
+  const n = cards.length;
 
   $("dir-results").hidden = false;
+  $("dir-count").textContent = result.mode === "transit"
+    ? `${n} transit option${n === 1 ? "" : "s"}`
+    : `${n} way${n === 1 ? "" : "s"} to ${MODE_VERBS[result.mode] ?? "go"} there`;
   $("dir-track").textContent =
-    `Compared on ${track} offences (the map's selected ranking), against ` +
+    `Compared on ${track} incidents, against ` +
     `${result.window?.label?.toLowerCase() ?? "the city"}` +
     (result.daily
       ? ", at the day and hour each stretch would be passed."
@@ -1904,16 +2498,31 @@ function renderDirections() {
 
   $("dir-cards").innerHTML = html`${cards.map((card) => {
     const route = result.routes[card.index];
-    const words = activitySentence(card.activity, track);
-    const swatch = card.activity?.comparable ? colorForRatio(card.activity.mean_ratio) : zeroFill();
+    const activity = card.activity;
+    const words = activitySentence(activity, track);
+    const ratio = activity?.comparable ? activity.mean_ratio : null;
+    const b = band(ratio);
     const legs = route.mode === "transit" ? route.legs.map(transitLegSummary) : [];
+    const bars = stretchBars(activity);
+    // The calmer card's own "why", from the two routes' numbers: how much
+    // longer, and how much less reported activity than the fastest.
+    const fastAct = fastest.activity?.[state.track];
+    const why = card.role === "Safest" && fastAct?.comparable && ratio !== null && fastAct.mean_ratio > 0
+      ? `${formatDuration(route.duration_s - fastest.duration_s)} longer, and passes about ` +
+        `${Math.round((1 - ratio / fastAct.mean_ratio) * 100)}% less reported activity than the fastest way.`
+      : null;
+    const rest = words.detail.split(" · ").slice(1).join(" · ");
     return html`<li>
       <button type="button" class="route-card" data-index="${card.index}"
               aria-pressed="${String(card.index === dir.selected)}">
-        <span class="route-role">${card.role}${card.extra ? html` <span class="route-extra">${card.extra}</span>` : ""}</span>
-        <span class="route-main"><strong>${card.duration}</strong> · ${card.distance}${
+        <span class="route-top">
+          <span class="route-role"${card.role === "Safest" || card.role === "Fastest and safest" ? html` data-band="calm"` : ""}>${ROLE_WORDS[card.role] ?? card.role}</span>
+          <span class="route-ratio" data-band="${b}">${ratio === null ? "Not rated" : `${formatRatio(ratio)} city avg`}</span>
+        </span>
+        <span class="route-main"><strong>${card.duration}</strong><span>${card.distance}</span>${
+          card.extra ? html`<span class="route-extra">${card.extra}</span>` : ""}${
           route.mode === "transit" && route.start_time
-            ? html` · leaves ${clockIn(route.start_time, result.timezone)}`
+            ? html`<span>leaves ${clockIn(route.start_time, result.timezone)}</span>`
             : ""
         }</span>
         ${legs.length ? html`<span class="route-legs">${legs.map((leg) =>
@@ -1921,16 +2530,19 @@ function renderDirections() {
             ? html`<span class="leg-chip" style="${leg.color ? `background:${leg.color};color:${leg.textColor}` : ""}">${leg.name}</span>`
             : html`<span class="leg-walk">${leg.text.split(" ")[0]}</span>`
         )}</span>` : ""}
-        <span class="route-activity"><span class="swatch" style="background:${swatch}" aria-hidden="true"></span>${words.headline}</span>
-        <span class="route-detail">${words.detail}</span>
+        ${bars.length ? html`<span class="route-stretches" aria-hidden="true">${bars.map((bar) =>
+          html`<i style="flex-grow:${bar.km.toFixed(3)};background:${bar.color}"></i>`)}</span>` : ""}
+        <span class="route-detail">${why ?? `${words.headline}.`}${rest ? html`<br>${rest}` : ""}</span>
       </button>
     </li>`;
   })}`;
 
   // Why no slower route is the lower-activity pick -- only true, and only
-  // shown, when the fastest is on top.
-  const fastestOnTop = cards[0].index === (result.picks?.[state.track]?.fastest ?? 0);
-  $("dir-why").textContent = fastestOnTop ? pickReason(result.picks?.[state.track], result.mode) ?? "" : "";
+  // shown, when the fastest is on top. The buddy says it.
+  const fastestOnTop = cards[0].index === fastestIndex;
+  const reason = fastestOnTop ? pickReason(result.picks?.[state.track], result.mode) ?? "" : "";
+  $("dir-why").textContent = reason;
+  $("dir-why-tip").hidden = !reason;
   $("dir-caveats").innerHTML = html`${(result.caveats ?? []).map((c) => html`<li>${c}</li>`)}`;
   renderSteps();
   drawRoutes();
@@ -2112,6 +2724,10 @@ async function startNavigation() {
   document.body.classList.add("navigating");
   $("dir-nav").hidden = false;
   $("nav-recenter").hidden = true;
+  $("nav-steps-block").hidden = true;
+  $("nav-steps-toggle").setAttribute("aria-expanded", "false");
+  // The arrow is the visitor while navigating.
+  if (userMarker) userMarker.getElement().hidden = true;
   closeDetail();
   nav.watch = navigator.geolocation.watchPosition(onNavFix, onNavError, {
     enableHighAccuracy: true,
@@ -2136,6 +2752,7 @@ function endNavigation() {
   $("dir-panel").classList.remove("is-navigating");
   document.body.classList.remove("navigating");
   $("dir-nav").hidden = true;
+  if (userMarker) userMarker.getElement().hidden = false;
 }
 
 /** Move the visitor along the route for fix `p`; `accuracy` in metres. */
@@ -2201,13 +2818,15 @@ async function rerouteFromHere() {
   if (!dir.result) setNavNote("No new route could be found from here.");
 }
 
-/** The panel while navigating: what is left, and the steps still ahead. */
+/** The panel while navigating: the next turn as a banner, the time and
+    distance left, the route's own rating, and the steps still ahead. */
 function renderNav() {
   if (!nav.active) return;
   const route = nav.route;
   const street = route.mode !== "transit";
   const arrived = nav.index >= nav.steps.length;
   const offRoute = !arrived && nav.off >= NAV_OFF_FIXES;
+  const zone = dir.result?.timezone;
 
   setNavNote(
     nav.rerouting ? "Finding a new route from here…"
@@ -2221,13 +2840,22 @@ function renderNav() {
   // Distance left: the rest of this step, and every step after it.
   const rest = nav.lengths.slice(nav.index + 1).reduce((sum, m) => sum + m, 0);
   const left = arrived ? 0 : (nav.remaining ?? nav.lengths[nav.index] ?? 0) + rest;
-  $("nav-left").textContent = arrived ? "Arrived" : formatDistance(left);
-  if (arrived) $("nav-eta").textContent = "";
-  else if (route.end_time) $("nav-eta").textContent = `· arrive ${clockIn(route.end_time, dir.result?.timezone)}`;
-  else {
-    const speed = route.duration_s > 0 ? route.distance_m / route.duration_s : 0;
-    $("nav-eta").textContent = speed > 0 ? `· ${formatDuration(left / speed)}` : "";
-  }
+  const speed = route.duration_s > 0 ? route.distance_m / route.duration_s : 0;
+  const secondsLeft = speed > 0 ? left / speed : null;
+  $("nav-left").textContent = arrived ? "Arrived" : secondsLeft === null ? formatDistance(left) : formatDuration(secondsLeft);
+  const arrive = route.end_time
+    ? clockIn(route.end_time, zone)
+    : secondsLeft === null ? null : cityTimeLabel(zone, new Date(Date.now() + secondsLeft * 1000));
+  $("nav-eta").textContent = arrived ? "" : `${formatDistance(left)}${arrive ? ` · you'll arrive at ${arrive}` : ""}`;
+
+  // The route's own rating, as on its card.
+  const activity = route.activity?.[state.track];
+  const ratio = activity?.comparable ? activity.mean_ratio : null;
+  const card = routeCardModel(dir.result, state.track).find((c) => c.index === dir.selected);
+  const chip = $("nav-route-chip");
+  chip.hidden = ratio === null;
+  chip.dataset.band = band(ratio);
+  chip.textContent = ratio === null ? "" : `${ROLE_WORDS[card?.role] ?? "This route"} · ${formatRatio(ratio)} the city average`;
 
   // A street step's instruction is done where it begins, so on step i the
   // next thing to do is step i + 1's, in what is left of step i. A transit
@@ -2240,6 +2868,12 @@ function renderNav() {
   const lead = nav.remaining === null ? ""
     : street ? `In ${formatDistance(nav.remaining)}`
     : current?.kind === "street" ? `${formatDistance(nav.remaining)} to go` : "";
+
+  // The banner: the next thing to do.
+  const next = ahead[0];
+  $("nav-lead").textContent = arrived ? "" : lead || (next ? "Next" : "");
+  $("nav-next").textContent = arrived ? "You have arrived" : next ? next.text : current?.text ?? "Follow the route";
+
   $("nav-steps").innerHTML = html`${ahead.map((step, i) => html`<li class="nav-step${i === 0 ? " is-next" : ""}">
     ${i === 0 && lead ? html`<span class="nav-lead">${lead}</span>` : ""}
     <span class="nav-text">${step.chip
@@ -2253,7 +2887,8 @@ function renderNav() {
 
 /** Route sources and layers, above the cells and roads but under the street
     and place names, so a name stays readable along the route. */
-function initRouteLayers() {
+function addRouteLayers() {
+  if (map.getSource("route-line")) return;
   const empty = { type: "FeatureCollection", features: [] };
   for (const id of ["route-alt", "route-line", "route-activity"]) {
     map.addSource(id, { type: "geojson", data: empty });
@@ -2263,33 +2898,35 @@ function initRouteLayers() {
   const layers = map.getStyle().layers;
   const lastRoad = layers.findLastIndex((layer) => /^(tunnel|road|bridge|highway)/.test(layer.id));
   const before = layers.slice(lastRoad + 1).find((layer) => layer.type === "symbol")?.id;
+  // The other routes: dotted, quiet, still clickable.
   map.addLayer({
     id: "route-alt-line", type: "line", source: "route-alt",
     layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": themeColor("--route-alt", "#8a766b"), "line-width": 4, "line-opacity": 0.6, "line-dasharray": [1.5, 1.5] },
+    paint: { "line-color": themeColor("--route-alt", "#8a766b"), "line-width": 5, "line-opacity": 0.75, "line-dasharray": [0.3, 1.6] },
   }, before);
-  // A dark casing: the route sits on cells painted in the same ramp it is
+  // A casing: the route sits on cells painted in the same ramp it is
   // coloured with, and only an edge keeps a green route off a green cell.
   map.addLayer({
     id: "route-casing", type: "line", source: "route-line",
     layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": themeColor("--route-casing", "#3a2b26"), "line-width": 10, "line-opacity": 0.55 },
+    paint: { "line-color": themeColor("--route-casing", "#ffffff"), "line-width": 12, "line-opacity": 0.95 },
   }, before);
   map.addLayer({
     id: "route-line", type: "line", source: "route-line",
     filter: ["!", ["get", "walk"]],
     layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": ["coalesce", ["get", "color"], primaryColor()], "line-width": 6 },
+    paint: { "line-color": ["coalesce", ["get", "color"], primaryColor()], "line-width": 7 },
   }, before);
   map.addLayer({
     id: "route-walk", type: "line", source: "route-line",
     filter: ["get", "walk"],
     layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": primaryColor(), "line-width": 6, "line-dasharray": [0.1, 1.8] },
+    paint: { "line-color": primaryColor(), "line-width": 7, "line-dasharray": [0.1, 1.8] },
   }, before);
-  // The reported activity along the route, on the map's own ramp, drawn over
-  // the plain line. Only scored stretches have segments, so a transit ride
-  // keeps its line colour between the walks.
+  // The reported activity along the route, stretch by stretch, on the map's
+  // own ramp (route.activity[track].segments from /directions), drawn over the
+  // plain line. Only scored stretches have segments, so a transit ride keeps
+  // its line colour between the walks.
   map.addLayer({
     id: "route-activity", type: "line", source: "route-activity",
     layout: { "line-cap": "round", "line-join": "round" },
@@ -2298,10 +2935,12 @@ function initRouteLayers() {
         "case", ["<", ["get", "ratio"], 0], zeroFill(),
         ["interpolate", ["linear"], ["get", "ratio"], ...valueRampStops(VALUE_RAMP)],
       ],
-      "line-width": 6,
+      "line-width": 7,
     },
   }, before);
+}
 
+function wireRouteLayerEvents() {
   map.on("click", "route-alt-line", (event) => {
     const alt = event.features?.[0];
     if (alt && dir.open) selectRoute(alt.properties.index);
@@ -2343,11 +2982,19 @@ function wireSearch() {
   });
   $("search-clear").onclick = () => {
     resetSearch();
-    closeDetail();
     $("search-input").focus();
   };
-  $("btn-directions").onclick = () => (dir.open ? closeDirections() : openDirections());
+  $("btn-locate").onclick = locateMe;
   $("dir-start").onclick = startNavigation;
+  $("dir-swap").onclick = swapEnds;
+  // Steps, under the cards; all steps while navigating.
+  for (const [toggle, block] of [["dir-steps-toggle", "dir-steps-block"], ["nav-steps-toggle", "nav-steps-block"]]) {
+    $(toggle).onclick = () => {
+      const open = $(block).hidden;
+      $(block).hidden = !open;
+      $(toggle).setAttribute("aria-expanded", String(open));
+    };
+  }
   $("nav-end").onclick = () => {
     endNavigation();
     $("dir-start").focus();
@@ -2363,8 +3010,21 @@ function wireSearch() {
   });
   $("dir-close").onclick = () => {
     closeDirections();
-    $("btn-directions").focus();
+    document.querySelector('.rail-btn[data-view="directions"]')?.focus();
   };
+
+  wireCombo($("dir-to"), $("dir-to-list"), {
+    statusId: "dir-status",
+    onChoose: (place) => (latLngFromString(place.label) ? setToPoint(place) : setTo(place)),
+    // Typing over a chosen destination un-chooses it.
+    onType: () => {
+      if (!search.place) return;
+      search.place = null;
+      $("dir-to").closest(".dir-field").classList.remove("is-set");
+      clearResult();
+      placeMarkers();
+    },
+  });
 
   wireCombo($("dir-from"), $("dir-from-list"), {
     statusId: "dir-status",
@@ -2388,6 +3048,8 @@ function wireSearch() {
     try {
       const point = await getPosition();
       state.userLocation = point;
+      showUserDot(point);
+      followLocation();
       await setFromPoint(point);
     } catch (error) {
       setStatus("dir-status", `Could not read your location: ${error.message}`, true);
@@ -2438,8 +3100,116 @@ function cellsBeforeId() {
   return above?.id;
 }
 
+/**
+ * The cells, and the outline of the selected one, under the basemap's roads
+ * and labels (cellsBeforeId). Safe to call again after a style change, which
+ * drops every source and layer the page added.
+ */
+function addCellLayers() {
+  if (!map.getSource("cells")) {
+    map.addSource("cells", {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: state.features },
+      promoteId: "h3",
+    });
+  }
+  const before = cellsBeforeId();
+  if (!map.getLayer("cells-fill")) {
+    map.addLayer({
+      id: "cells-fill",
+      type: "fill",
+      source: "cells",
+      paint: { "fill-color": fillColorExpression(), "fill-opacity": cellsOpacity() },
+    }, before);
+  }
+  // The selected hexagon, outlined in the page's orange. Still a hexagon:
+  // only the interface around the map is rounded.
+  if (!map.getLayer("cells-outline")) {
+    map.addLayer({
+      id: "cells-outline",
+      type: "line",
+      source: "cells",
+      layout: { "line-join": "round" },
+      paint: {
+        "line-color": primaryColor(),
+        "line-width": 3.5,
+        "line-opacity": ["case", ["boolean", ["feature-state", "selected"], false], 1, 0],
+      },
+    }, before);
+  }
+
+  // Building footprints are fills the basemap draws after its roads. Left above
+  // the cells they would grey the colour out block by block at street zoom, so
+  // they go underneath with the land and water.
+  const layers = map.getStyle().layers;
+  const cellsAt = layers.findIndex((layer) => layer.id === "cells-fill");
+  for (const layer of layers.slice(cellsAt + 1)) {
+    if (layer.type === "fill") map.moveLayer(layer.id, "cells-fill");
+  }
+}
+
+/** Every layer the page draws on the basemap. */
+function addOverlayLayers() {
+  addCellLayers();
+  addRouteLayers();
+  addNearLayers();
+  addCityLayers();
+}
+
+/* The moment of the last press-and-hold, so the tap the finger's lift
+   produces does not also close or pick a cell. */
+let longPressAt = 0;
+const justLongPressed = () => Date.now() - longPressAt < 800;
+
+/**
+ * Right-click on desktop, press-and-hold on a phone: the same action
+ * (pinClickedPoint). iOS Safari never sends contextmenu for a touch, so the
+ * hold is timed here: 500 ms on one finger that moves less than 10 px. Android
+ * Chrome sends both; the second is dropped.
+ */
+function wireContextPress() {
+  const press = (lngLat) => {
+    // Only while address search is on: the box it fills is hidden otherwise.
+    // Not while navigating: a new pin would end the trip being followed.
+    if ($("search-field").hidden || nav.active) return;
+    pinClickedPoint(lngLat);
+  };
+  map.on("contextmenu", (event) => {
+    if (justLongPressed()) return;
+    press(event.lngLat);
+  });
+
+  const surface = map.getCanvasContainer();
+  let timer = null;
+  let start = null;
+  const cancel = () => {
+    clearTimeout(timer);
+    timer = null;
+  };
+  surface.addEventListener("touchstart", (event) => {
+    cancel();
+    if (event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    start = { x: touch.clientX, y: touch.clientY };
+    timer = setTimeout(() => {
+      timer = null;
+      longPressAt = Date.now();
+      navigator.vibrate?.(12);
+      const rect = surface.getBoundingClientRect();
+      press(map.unproject([start.x - rect.left, start.y - rect.top]));
+    }, 500);
+  }, { passive: true });
+  surface.addEventListener("touchmove", (event) => {
+    if (!timer) return;
+    const touch = event.touches[0];
+    if (Math.hypot(touch.clientX - start.x, touch.clientY - start.y) > 10) cancel();
+  }, { passive: true });
+  surface.addEventListener("touchend", cancel);
+  surface.addEventListener("touchcancel", cancel);
+}
+
 async function initMap() {
-  const style = await resolveStyle();
+  const style = await resolveStyle(currentTheme());
   map = new maplibregl.Map({
     container: "map",
     style,
@@ -2454,32 +3224,12 @@ async function initMap() {
     attributionControl: { compact: true },
   });
 
-  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+  // Zoom is the page's own round buttons (#zoom-in, #zoom-out); the scale bar
+  // stays MapLibre's.
   map.addControl(new maplibregl.ScaleControl({ maxWidth: SCALE_MAX_WIDTH, unit: "imperial" }), "bottom-right");
 
   await new Promise((resolve) => map.on("load", resolve));
-
-  map.addSource("cells", {
-    type: "geojson",
-    data: { type: "FeatureCollection", features: [] },
-    promoteId: "h3",
-  });
-
-  map.addLayer({
-    id: "cells-fill",
-    type: "fill",
-    source: "cells",
-    paint: { "fill-color": zeroFill(), "fill-opacity": cellsOpacity() },
-  }, cellsBeforeId());
-
-  // Building footprints are fills the basemap draws after its roads. Left above
-  // the cells they would grey the colour out block by block at street zoom, so
-  // they go underneath with the land and water.
-  const layers = map.getStyle().layers;
-  const cellsAt = layers.findIndex((layer) => layer.id === "cells-fill");
-  for (const layer of layers.slice(cellsAt + 1)) {
-    if (layer.type === "fill") map.moveLayer(layer.id, "cells-fill");
-  }
+  addOverlayLayers();
 
   map.on("mousemove", "cells-fill", (event) => {
     const feature = event.features?.[0];
@@ -2502,20 +3252,23 @@ async function initMap() {
   });
 
   map.on("click", "cells-fill", (event) => {
+    if (justLongPressed()) return;
     // A click on another route picks that route, not the cell under it.
-    if (dir.open && map.queryRenderedFeatures(event.point, { layers: ["route-alt-line"] }).length) return;
+    if (dir.open && map.getLayer("route-alt-line") && map.queryRenderedFeatures(event.point, { layers: ["route-alt-line"] }).length) return;
     const feature = event.features?.[0];
     if (feature) selectCell(feature.properties.h3);
   });
   map.on("click", (event) => {
+    if (justLongPressed()) return;
+    // Mid theme switch the page's layers are briefly not on the map.
+    if (!map.getLayer("cells-fill")) return;
     const onCell = map.queryRenderedFeatures(event.point, { layers: ["cells-fill"] }).length;
     if (!onCell) closeDetail();
+    setKeyOpen(false);
   });
-  // Only while address search is on: the box it fills is hidden otherwise.
-  map.on("contextmenu", (event) => {
-    // Not while navigating: a new pin would end the trip being followed.
-    if (!$("search-field").hidden && !nav.active) pinClickedPoint(event.lngLat);
-  });
+  wireContextPress();
+  wireRouteLayerEvents();
+  wireCityLayerEvents();
   // Moving the map by hand stops it following the visitor, until Recenter.
   map.on("dragstart", (event) => {
     if (!nav.active || !event.originalEvent) return;
@@ -2532,13 +3285,35 @@ async function initMap() {
     resSync = syncResToZoom();
     renderCompass();
   });
-  map.on("rotate", () => {
-    $("compass-rose").style.transform = `rotate(${-map.getBearing()}deg)`;
-  });
+  // The roses turn against the map, so their N stays on real north.
+  map.on("rotate", turnRoses);
 
-  initRouteLayers();
-  initCityMarkers();
   window.__safetyMap = map;
+}
+
+/**
+ * Swap the basemap for the theme (Carto's Positron or Dark Matter, from the
+ * hosts the CSP already allows) and put every page layer back on it with the
+ * data already in hand. setStyle drops sources, layers and feature state.
+ */
+let themeSeq = 0;
+async function applyMapTheme() {
+  if (!map) return;
+  const seq = ++themeSeq;
+  const style = await resolveStyle(currentTheme());
+  if (seq !== themeSeq) return;
+  map.setStyle(style, { diff: false });
+  map.once("style.load", () => {
+    if (seq !== themeSeq) return;
+    state.hovered = null;
+    addOverlayLayers();
+    if (state.selected) map.setFeatureState({ source: "cells", id: state.selected }, { selected: true });
+    renderCityMarkers();
+    drawRoutes();
+    renderNearOverlay();
+    renderLegend();
+  });
+  renderLegend();
 }
 
 /* --------------------------------------------------------------------- wiring */
@@ -2566,47 +3341,280 @@ function cellsOpacity() {
 
 /** The track toggle picks the colour the cells are painted in, so it shows
     only while the tiles are on. */
-function syncTrackField() {
-  $("f-track-field").hidden = !state.tiles;
-}
-
 function setTiles(on) {
   state.tiles = on;
-  $("f-tiles")
-    .querySelectorAll("[data-tiles]")
-    .forEach((b) => b.setAttribute("aria-checked", String((b.dataset.tiles === "on") === on)));
+  $("f-tiles").setAttribute("aria-checked", String(on));
   map.setPaintProperty("cells-fill", "fill-opacity", cellsOpacity());
-  syncTrackField();
 }
 
-/* The only two controls: Show tiles, and which offences the colour ranks.
-   There is nothing else to choose -- every city, the last year, coloured for
-   the hour and day it is now in each city. */
+/** Which offences the colour ranks. Every .track-seg on the page is this one
+    choice, so they all move together. Both tracks are rated on every feature
+    (rateCity): switching is a repaint, with no request and no loading state. */
+function setTrack(track) {
+  if (!TRACK_PROPS[track]) return;
+  state.track = track;
+  document.querySelectorAll(".track-seg [data-track]").forEach((b) => {
+    b.setAttribute("aria-selected", String(b.dataset.track === track));
+  });
+  repaint();
+  // The card's rating and charts are per track too, and the detail is
+  // already in hand -- re-read it rather than re-request it.
+  if (state.detail && state.selected) showCellPopup(state.selected, state.detail);
+  // Both tracks ride on every route too.
+  if (dir.result) renderDirections();
+}
+
+/* ---- the shell: sections, theme, zoom, the key, help */
+
+const VIEWS = ["explore", "directions", "near", "cities"];
+
+/**
+ * Open one section. Explore is the map; Directions, Near me and Cities each
+ * have a panel (left on desktop, a sheet or screen on a phone). Help is a
+ * dialog over whichever is open.
+ */
+function setView(view, { focus = false } = {}) {
+  if (!VIEWS.includes(view)) return;
+  const before = document.body.dataset.view;
+  if (view !== "directions" && before === "directions" && dir.open) closeDirections({ toView: false });
+  document.body.dataset.view = view;
+  document.querySelectorAll(".rail-btn[data-view]").forEach((b) => {
+    if (b.dataset.view === view) b.setAttribute("aria-current", "page");
+    else b.removeAttribute("aria-current");
+  });
+  $("near-panel").hidden = view !== "near";
+  $("cities-panel").hidden = view !== "cities";
+  setKeyOpen(false);
+  document.body.classList.remove("near-on-map");
+  $("near-show-map").setAttribute("aria-pressed", "false");
+  $("near-show-map").textContent = "Show on map";
+  if (view === "directions" && !dir.open) openDirections({ focus });
+  if (view === "near") renderCompass();
+  if (view === "cities") renderCities();
+  renderNearOverlay();
+  // From the rail, focus follows into the section just opened.
+  const heading = focus ? $({ near: "near-title", cities: "cities-title" }[view] ?? "") : null;
+  if (heading) {
+    heading.setAttribute("tabindex", "-1");
+    heading.focus();
+  }
+}
+
+/** The phone's map key (the Explore card as a sheet). */
+function setKeyOpen(open) {
+  document.body.classList.toggle("key-open", open);
+  $("btn-key").setAttribute("aria-expanded", String(open));
+}
+
+/** The sun / moon buttons show the theme on screen; the phone's single map
+    button offers the other one. */
+function syncThemeButtons() {
+  const theme = currentTheme();
+  document.querySelectorAll("[data-theme-choice]").forEach((b) => {
+    b.setAttribute("aria-pressed", String(b.dataset.themeChoice === theme));
+  });
+  const other = theme === "dark" ? "light" : "dark";
+  $("theme-fab").setAttribute("aria-label", `Switch to ${other} mode`);
+  $("theme-fab").querySelector("use").setAttribute("href", other === "dark" ? "#i-moon" : "#i-sun");
+}
+
+/** The legend, built from RAMP_HINGES: one row per band, its range read off
+    the hinges, its swatch the ramp colour at the middle of it. */
+function renderLegend() {
+  const [a, b, c] = BAND_EDGES;
+  const x = (n) => `${n}×`;
+  const rows = [
+    { band: "calm", range: `under ${x(a)}`, sw: `linear-gradient(135deg, ${colorForRatio(0)} 0 50%, ${colorForRatio(a * 0.5)} 50%)` },
+    { band: "busier", range: `${x(a)} to ${x(b)}`, sw: colorForRatio(a) },
+    { band: "busy", range: `${x(b)} to ${x(c)}`, sw: colorForRatio(b) },
+    { band: "very", range: `${x(c)} and up`, sw: colorForRatio(c) },
+    { band: "none", range: "no reports", sw: zeroFill() },
+  ];
+  const items = html`${rows.map((r) => html`<li><span class="sw" style="--sw:${r.sw}" aria-hidden="true"></span>${bandName(r.band)}<span class="range">${r.range}</span></li>`)}`;
+  $("legend").innerHTML = items;
+  $("legend-strip").innerHTML = items;
+}
+
+/* ---- Help: "How do we figure this out?" */
+
+let helpOpener = null;
+
+function openHelp(opener = null) {
+  const dialog = $("help");
+  if (dialog.open) return;
+  helpOpener = opener;
+  document.querySelectorAll(".rail-btn[data-open-help]").forEach((b) => b.setAttribute("aria-expanded", "true"));
+  dialog.showModal();
+}
+
+function closeHelp() {
+  $("help").close();
+}
+
+/** The full method, as the server writes it for the city on screen. Every
+    field is server prose (registry text included) and goes through html``;
+    terms_url becomes a link only if it is a plain http(s) URL. Fields the
+    server leaves out are skipped rather than shown empty. */
+async function loadMethodology() {
+  const body = $("methodology-body");
+  if (body.dataset.city === state.city) return;
+  body.dataset.city = state.city ?? "";
+  body.textContent = "Loading…";
+  let m;
+  try {
+    const response = await fetch(`${API}/methodology?city=${encodeURIComponent(state.city ?? DEFAULT_CITY)}`);
+    if (!response.ok) throw new Error(String(response.status));
+    m = await response.json();
+  } catch {
+    body.textContent = "The full method could not be loaded just now. Try again shortly.";
+    delete body.dataset.city;
+    return;
+  }
+  const list = (items) => (Array.isArray(items) && items.length ? html`<ul>${items.map((line) => html`<li>${line}</li>`)}</ul>` : "");
+  const para = (text) => (text ? html`<p>${text}</p>` : "");
+  const row = (label, value) => (value === null || value === undefined || value === "" ? "" : html`<div><dt>${label}</dt><dd>${value}</dd></div>`);
+  const pct = (share) => (typeof share === "number" ? `${(share * 100).toFixed(1)}%` : null);
+  const terms = safeHttpUrl(m.terms_url);
+  const cell = m.cell_model ?? {};
+  const safety = m.safety_measure;
+  const tod = m.time_of_day;
+  body.innerHTML = html`
+    ${para(m.what_this_shows)}
+    ${m.what_this_is_not?.length ? html`<div class="callout"><h3>What this is not</h3>${list(m.what_this_is_not)}</div>` : ""}
+    ${m.known_limitations?.length ? html`<h3>Known limitations</h3>${list(m.known_limitations)}` : ""}
+    <h3>The hexagons</h3>
+    ${cell.grid ? html`<p>${cell.grid} hexagons at resolution ${cell.primary_resolution ?? "—"}${
+      cell.primary_resolution_note ? ` (${cell.primary_resolution_note})` : ""}${
+      cell.detail_resolution ? html`, and resolution ${cell.detail_resolution}${
+        cell.detail_resolution_note ? ` (${cell.detail_resolution_note})` : ""} when you zoom in` : ""}.</p>` : ""}
+    ${para(cell.window)}
+    ${para(cell.relative_measure)}
+    ${safety ? html`<h3>The ranking</h3>${para(safety.what_it_is)}${para(safety.why_two_rankings)}
+      ${para(safety.weights?.note)}
+      <dl>${row("Severity source", safety.weights?.source)}${row("Weight scheme", safety.weights?.scheme_version)}${
+        row("Published weights cover", pct(safety.weights?.published_share) && `${pct(safety.weights.published_share)} of incidents`)}</dl>
+      ${para(safety.weights?.fallback_note)}${para(safety.smoothing?.note)}${list(safety.known_limitations)}` : ""}
+    ${tod ? html`<h3>Time of day</h3>${para(tod.what_it_is)}${list(tod.how_it_works)}${para(tod.hour_factor_note)}
+      ${tod.timestamp_caveat ? html`<div class="callout"><h3>What the timestamps are</h3><p>${tod.timestamp_caveat}</p></div>` : ""}
+      <dl>${row("Incidents with a known hour", pct(tod.coverage?.hour_known_share))}</dl>
+      ${para(tod.coverage?.note)}${para(tod.scope?.note)}${list(tod.known_limitations)}` : ""}
+    ${m.classification ? html`<h3>Offence classification</h3>${para(m.classification.standard)}
+      <dl>${row("Crosswalk version", m.classification.crosswalk_version)}</dl>` : ""}
+    <h3>Source and attribution</h3>
+    ${para(m.attribution)}
+    <dl>${row("Data as of", m.data_as_of ? new Date(m.data_as_of).toLocaleString() : null)}${
+      row("Coverage", m.coverage?.start && m.coverage?.end ? `${m.coverage.start} to ${m.coverage.end}` : null)}${
+      row("Incidents loaded", typeof m.coverage?.incidents === "number" ? nf.format(m.coverage.incidents) : null)}${
+      row("Update cadence", m.update_cadence)}</dl>
+    ${para(m.freshness_note)}${para(m.location_precision_note)}
+    ${terms ? html`<p><a href="${terms}" target="_blank" rel="noopener">Source dataset and terms of use</a></p>` : ""}
+  `;
+}
+
+function wireHelp() {
+  document.addEventListener("click", (event) => {
+    const opener = event.target.closest("[data-open-help]");
+    if (opener) openHelp(opener);
+  });
+  document.querySelectorAll("[data-close-help]").forEach((b) => { b.onclick = closeHelp; });
+  const dialog = $("help");
+  // A click on the backdrop (the dialog itself, outside its content) closes it.
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) closeHelp();
+  });
+  dialog.addEventListener("close", () => {
+    document.querySelectorAll(".rail-btn[data-open-help]").forEach((b) => b.removeAttribute("aria-expanded"));
+    helpOpener?.focus?.();
+    helpOpener = null;
+  });
+  $("help-full").addEventListener("toggle", () => {
+    if ($("help-full").open) loadMethodology();
+  });
+  // The second step's picture: a little field of hexagons on the ramp.
+  const tones = [0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.2, 2.6, 3.2];
+  $("help-hexes").innerHTML = html`${Array.from({ length: 40 }, (_, i) => {
+    const t = tones[(i * 7 + Math.floor(i / 10) * 3) % tones.length];
+    return html`<i style="background:${colorForRatio(t)}"></i>`;
+  })}`;
+}
+
+function wireShell() {
+  // Anything marked with a section opens it: the rail, the city chip, the
+  // small compass, the load pill.
+  document.addEventListener("click", (event) => {
+    const target = event.target.closest("[data-view]");
+    if (target && !target.closest("#city-grid")) setView(target.dataset.view, { focus: target.classList.contains("rail-btn") });
+  });
+  document.querySelectorAll("[data-theme-choice]").forEach((b) => {
+    b.onclick = () => setTheme(b.dataset.themeChoice);
+  });
+  $("theme-fab").onclick = () => setTheme(currentTheme() === "dark" ? "light" : "dark");
+  document.addEventListener("themechange", () => {
+    syncThemeButtons();
+    applyMapTheme();
+  });
+  syncThemeButtons();
+
+  $("zoom-in").onclick = () => map.zoomIn();
+  $("zoom-out").onclick = () => map.zoomOut();
+  $("btn-key").onclick = () => setKeyOpen(!document.body.classList.contains("key-open"));
+  $("see-close").onclick = () => {
+    setKeyOpen(false);
+    $("btn-key").focus();
+  };
+
+  $("f-tiles").onclick = () => setTiles(!state.tiles);
+  document.querySelectorAll(".track-seg").forEach((seg) => {
+    seg.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-track]");
+      if (button) setTrack(button.dataset.track);
+    });
+    // Arrow keys move along the toggle, as in any tablist.
+    seg.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+      const tabs = [...seg.querySelectorAll("[data-track]")];
+      const next = tabs[(tabs.indexOf(document.activeElement) + 1) % tabs.length];
+      next.focus();
+      setTrack(next.dataset.track);
+    });
+  });
+
+  // Only moves the map; updateFocus keeps the chips on the city it lands in.
+  const pickCity = (event) => {
+    const button = event.target.closest("[data-city]:not(:disabled)");
+    if (!button) return;
+    if (isNarrow()) setView("explore");
+    switchCity(button.dataset.city);
+  };
+  $("city-chips").addEventListener("click", pickCity);
+  // Near me on a phone: drop the screen to a short card, so the compass
+  // drawn on the map shows; again to bring it back.
+  $("near-show-map").onclick = () => {
+    const on = document.body.classList.toggle("near-on-map");
+    $("near-show-map").setAttribute("aria-pressed", String(on));
+    $("near-show-map").textContent = on ? "Back to the compass" : "Show on map";
+    const origin = state.compass?.origin;
+    if (on && origin) map.easeTo({ center: [origin.lng, origin.lat], zoom: Math.max(map.getZoom(), 13.5), duration: 600 });
+    renderNearOverlay();
+  };
+  $("city-grid").addEventListener("click", pickCity);
+
+  wireHelp();
+  narrowMedia.addEventListener?.("change", () => {
+    setKeyOpen(false);
+    renderNearOverlay();
+  });
+  // Escape closes the topmost floating thing.
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    if (document.body.classList.contains("key-open")) setKeyOpen(false);
+    else if (!$("locate-note").hidden) hideLocateNote();
+    else if (!$("cell-card").hidden) closeDetail();
+  });
+}
+
 function wireControls() {
-  // Only moves the map; updateFocus keeps the picker on the city it lands in.
-  $("f-city").onchange = (event) => switchCity(event.target.value);
-
-  $("f-tiles").querySelectorAll("[data-tiles]").forEach((button) => {
-    button.onclick = () => setTiles(button.dataset.tiles === "on");
-  });
-
-  // Both tracks are rated on every feature (rateCity), so switching is a
-  // repaint with no request and no loading state.
-  $("f-track").querySelectorAll("[data-track]").forEach((button) => {
-    button.onclick = () => {
-      state.track = button.dataset.track;
-      $("f-track")
-        .querySelectorAll("[data-track]")
-        .forEach((b) => b.setAttribute("aria-selected", String(b === button)));
-      repaint();
-      // The popup's rating, outline and charts are per track too, and the
-      // detail is already in hand -- re-read it rather than re-request it.
-      if (state.detail && state.selected) showCellPopup(state.selected, state.detail);
-      // Both tracks ride on every route too.
-      if (dir.result) renderDirections();
-    };
-  });
-
+  wireShell();
   wireSearch();
   $("locate-note-close").onclick = hideLocateNote;
 }
@@ -2655,6 +3663,9 @@ async function openOnFirstCity() {
 (async function main() {
   await initMap();
   wireControls();
+  wireCellCard();
+  renderLegend();
+  renderTimeChips();
   // Not awaited: the map does not wait on routing being up, nor on the bar.
   loadDirectionsStatus();
   pollProgress();

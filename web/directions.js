@@ -31,11 +31,62 @@ function formatDistance(metres) {
   return miles < 10 ? `${miles.toFixed(1)} mi` : `${Math.round(miles)} mi`;
 }
 
-/** A ratio as the panel writes one (formatRatio in app.js): 85%, 1.4x past 10. */
+/** A multiple of the city average as the page writes one (UI 5): "0.78×",
+    "1.60×", "14.2×" past 10. The bottom end is named rather than rounded to
+    zero: a big quiet cell -- one report among twenty thousand people -- would
+    round to 0.00×, and zero is the one thing this figure must not say about a
+    place where something was reported. */
 function ratioText(ratio) {
+  if (typeof ratio !== "number" || !Number.isFinite(ratio)) return "—";
   if (ratio >= 10) return `${ratio.toFixed(1)}×`;
-  if (ratio < 0.005) return "<1%";
-  return `${Math.round(ratio * 100)}%`;
+  if (ratio < 0.005) return "<0.01×";
+  return `${ratio.toFixed(2)}×`;
+}
+
+/**
+ * Which colour band a multiple of the city average falls in -- the bands the
+ * legend lists, the faces and the chips. `edges` are the ramp's hinges above
+ * zero (app.js passes them from RAMP_HINGES: 1.5, 2, 3), so a band always
+ * matches the colour the map paints the same cell:
+ *   calm   under 1.5x   (green; a little over average is not a warning)
+ *   busier 1.5x to 2x   (yellow)
+ *   busy   2x to 3x     (orange)
+ *   very   3x and up    (red)
+ *   none   no rating    (the no-data fill)
+ */
+function bandOf(ratio, edges = [1.5, 2, 3]) {
+  if (typeof ratio !== "number" || !Number.isFinite(ratio) || ratio < 0) return "none";
+  if (ratio < edges[0]) return "calm";
+  if (ratio < edges[1]) return "busier";
+  if (ratio < edges[2]) return "busy";
+  return "very";
+}
+
+const BAND_NAMES = {
+  calm: "Typical or quieter",
+  busier: "Busier",
+  busy: "Much busier",
+  very: "Busiest",
+  none: "Nothing reported",
+};
+
+/** A band's name in the legend's words. */
+function bandName(band) {
+  return BAND_NAMES[band] ?? BAND_NAMES.none;
+}
+
+/** "22% quieter than the city average", "about the city average", "40%
+    busier than the city average", or "2.4× the city average" from double on,
+    where a percentage stops reading naturally. The exact multiple is always
+    shown beside it. */
+function ratioWords(ratio) {
+  if (typeof ratio !== "number" || !Number.isFinite(ratio) || ratio < 0) return "no rating here";
+  if (ratio >= 2) return `${ratioText(ratio)} the city average`;
+  const change = Math.round((ratio - 1) * 100);
+  if (Math.abs(ratio - 1) < 0.05) return "about the city average";
+  return change < 0
+    ? `${Math.abs(change)}% quieter than the city average`
+    : `${change}% busier than the city average`;
 }
 
 const SENSE_WORDS = {
@@ -60,7 +111,7 @@ function activitySentence(activity, trackLabel) {
     };
   }
   const words = SENSE_WORDS[activity.sense] ?? SENSE_WORDS.about;
-  const parts = [`${ratioText(activity.mean_ratio)} of the city average along the route`];
+  const parts = [`${ratioText(activity.mean_ratio)} the city average along the route`];
   if (activity.peak_ratio !== null && activity.peak_ratio >= 2) {
     parts.push(`one stretch reaches ${ratioText(activity.peak_ratio)}`);
   }
