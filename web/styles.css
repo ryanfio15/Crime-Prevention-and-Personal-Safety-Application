@@ -781,8 +781,14 @@ body:has(#cell-card:not([hidden])) .legend-strip { display: none !important; }
 .cell-card {
   position: absolute;
   z-index: 5;
-  left: var(--left);
-  right: calc(var(--safe-r) + var(--edge) + var(--see-w) + var(--edge));
+  /* Between the rail (or open panel) and the right column, at most 1100 px
+     wide -- its three sections -- and centred on the screen when there is
+     room for that, else as near the centre as the two edges allow. */
+  --card-l: var(--left);
+  --card-r: calc(100vw - var(--safe-r) - var(--edge) - var(--see-w) - var(--edge));
+  --card-w: min(1100px, calc(var(--card-r) - var(--card-l)));
+  left: clamp(var(--card-l), calc(50vw - var(--card-w) / 2), calc(var(--card-r) - var(--card-w)));
+  width: var(--card-w);
   bottom: calc(var(--safe-b) + var(--edge));
   max-height: min(46dvh, 420px);
   /* The card does not scroll; its body does. A rounded, shadowed scroll box
@@ -1167,7 +1173,7 @@ body[data-view="cities"] .view-bar,
 body[data-view="cities"] .legend-strip { display: none; }
 body:not([data-view="explore"]) .map-fabs { right: calc(var(--safe-r) + var(--edge)); top: calc(var(--safe-t) + var(--edge) + 64px); }
 body[data-view="cities"] .map-fabs { top: calc(var(--safe-t) + var(--edge)); }
-body:not([data-view="explore"]) .cell-card { right: calc(var(--safe-r) + var(--edge) + 48px + var(--edge)); }
+body:not([data-view="explore"]) .cell-card { --card-r: calc(100vw - var(--safe-r) - var(--edge) - 48px - var(--edge)); }
 /* Outside Explore the top row holds only the status pills: under the time
    and track bar, from the panel to the round map buttons (not Explore's
    card, which is not there). */
@@ -1188,9 +1194,7 @@ body[data-view="cities"] .app { --left: calc(var(--rail-right) + 560px + var(--e
 /* The card keeps at least 340 px: on a narrow desktop window there is no
    room beside a wide panel (Cities is 560 px), and it then overlaps the
    panel rather than collapsing to nothing. */
-body:not([data-view="explore"]) .cell-card {
-  left: min(var(--left), calc(100vw - var(--safe-r) - var(--edge) - 48px - var(--edge) - 340px));
-}
+body:not([data-view="explore"]) .cell-card { --card-l: min(var(--left), calc(var(--card-r) - 340px)); }
 body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: var(--ctrl-lift, 56px); }
 
 /* -------------------------------------------------------------- the help --- */
@@ -1415,7 +1419,9 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: var(--ct
   body[data-view="directions"] .cell-card { bottom: calc(var(--safe-b) + 8px); }
   /* A sheet edge to edge in every section; the desktop rules that keep the
      card beside a panel are more specific and would otherwise apply here. */
-  body[data-view] .cell-card { left: calc(var(--safe-l) + 8px); right: calc(var(--safe-r) + 8px); }
+  /* A phone's sheet: edge to edge, centred at 600 px on a wider (landscape)
+     phone rather than stretching. */
+  body[data-view] .cell-card { left: calc(var(--safe-l) + 8px); right: calc(var(--safe-r) + 8px); width: auto; max-width: 600px; margin-inline: auto; }
   body[data-view="directions"]:has(#cell-card:not([hidden])) .dir-sheet { display: none; }
 
   /* Directions: where from / to at the top, the routes in a sheet. */
@@ -1614,6 +1620,7 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: var(--ct
   body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: calc(var(--sheet-gap, var(--tabbar)) + 4px); }
   /* #8: with no room above a sheet for all three, only Locate stays. */
   .map-fabs.is-cramped :is(#btn-key, #theme-fab) { display: none; }
+  .map-fabs.is-buried { visibility: hidden; }
 
   .help {
     width: 100vw;

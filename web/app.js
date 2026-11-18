@@ -3737,11 +3737,13 @@ function placeAboveSheets() {
   const sheet = $("dir-panel").hidden ? null : $("dir-panel").querySelector(".dir-sheet");
   if (sheet?.getClientRects().length) tops.push(sheet.getBoundingClientRect().top);
   if (document.body.classList.contains("near-on-map")) tops.push(shownRect("near-panel")?.top ?? height);
-  let top = tops.length ? Math.min(...tops) : height;
-  // A sheet that fills most of the screen leaves no map to credit: the line
-  // stays by the tab bar (under the sheet) rather than off the top.
-  if (top < height * 0.35) top = shownRect("rail")?.top ?? height;
-  app.style.setProperty("--sheet-gap", `${Math.max(0, Math.round(height - top))}px`);
+  // The top of whatever covers the bottom of the map: the buttons go above it.
+  const top = tops.length ? Math.min(...tops) : height;
+  // The credit line too -- unless the sheet fills most of the screen, which
+  // leaves no map to credit: then it stays by the tab bar, under the sheet,
+  // rather than being pushed off the top.
+  const creditTop = top < height * 0.35 ? shownRect("rail")?.top ?? height : top;
+  app.style.setProperty("--sheet-gap", `${Math.max(0, Math.round(height - creditTop))}px`);
 
   if (!fabs.getClientRects().length) return;
   // Above the credit line, below whatever is at the top of the screen.
@@ -3753,9 +3755,12 @@ function placeAboveSheets() {
     shownRect("nav-banner")?.bottom ?? 0,
   ) + 12;
   const floor = top - 44;
-  fabs.classList.remove("is-cramped");
+  fabs.classList.remove("is-cramped", "is-buried");
   const room = floor - ceiling;
   if (fabs.offsetHeight > room) fabs.classList.add("is-cramped");
+  // Not even Locate fits above the sheet: hide the buttons rather than leave
+  // them underneath it, out of reach. They come back when the sheet closes.
+  if (fabs.offsetHeight > room) fabs.classList.add("is-buried");
   const preferred = height * 0.38;
   fabs.style.top = `${Math.round(Math.max(ceiling, Math.min(preferred, floor - fabs.offsetHeight)))}px`;
 }
