@@ -113,6 +113,18 @@
       <button type="button" class="status-pill load-pill" id="load-pill" data-view="cities" hidden></button>
     </div>
 
+    <!-- The buddy's bubble, in the top row under the search: where "Show my location" put the
+         visitor, a dropped pin, a route tip. Plain text from data the page
+         already has. -->
+    <div class="tip tip-float" id="locate-note" role="status" aria-live="polite" hidden>
+      <span class="buddy" aria-hidden="true"><svg><use href="#i-shield"/></svg></span>
+      <span class="tip-body">
+        <span id="locate-note-text"></span>
+        <button type="button" class="mini-btn" id="locate-note-go" hidden></button>
+      </span>
+      <button type="button" class="icon-btn tip-close" id="locate-note-close" aria-label="Dismiss"><svg aria-hidden="true"><use href="#i-close"/></svg></button>
+    </div>
+
   </div>
 
   <!-- Desktop, outside Explore: the hour the map is coloured for and the
@@ -142,25 +154,29 @@
   <aside class="see-card" id="see-card" aria-labelledby="see-title">
     <div class="sheet-handle" aria-hidden="true"></div>
     <button type="button" class="icon-btn see-close" id="see-close" aria-label="Close the map key"><svg aria-hidden="true"><use href="#i-close"/></svg></button>
-    <h2 id="see-title">What would you like to see?</h2>
-    <div class="seg seg-wide track-seg" role="tablist" aria-label="Offences ranked">
-      <button type="button" class="seg-btn" role="tab" data-track="violent" aria-selected="true">Violent</button>
-      <button type="button" class="seg-btn" role="tab" data-track="non_violent" aria-selected="false">Non-violent</button>
+    <!-- The body scrolls, not the rounded card: a rounded scroll box over the
+         WebGL map makes Chrome skip painting part of the map behind it. -->
+    <div class="see-body">
+      <h2 id="see-title">What would you like to see?</h2>
+      <div class="seg seg-wide track-seg" role="tablist" aria-label="Offences ranked">
+        <button type="button" class="seg-btn" role="tab" data-track="violent" aria-selected="true">Violent</button>
+        <button type="button" class="seg-btn" role="tab" data-track="non_violent" aria-selected="false">Non-violent</button>
+      </div>
+      <!-- Off makes the cells invisible, not absent: they still answer a click
+           with their card. -->
+      <div class="switch-row">
+        <span id="f-tiles-label">Color the map</span>
+        <button type="button" class="switch" id="f-tiles" role="switch" aria-checked="true" aria-labelledby="f-tiles-label"></button>
+      </div>
+      <p class="time-chip time-chip-wide"><svg aria-hidden="true"><use href="#i-clock"/></svg><span class="time-now"></span></p>
+      <h3>What the colors mean</h3>
+      <ul class="legend" id="legend"></ul>
+      <div class="see-progress" id="see-progress" hidden>
+        <p class="see-progress-text" id="see-progress-text"></p>
+        <div class="bar"><i id="see-progress-fill"></i></div>
+      </div>
+      <button type="button" class="link-btn" data-open-help aria-haspopup="dialog">How do we figure this out?</button>
     </div>
-    <!-- Off makes the cells invisible, not absent: they still answer a click
-         with their card. -->
-    <div class="switch-row">
-      <span id="f-tiles-label">Color the map</span>
-      <button type="button" class="switch" id="f-tiles" role="switch" aria-checked="true" aria-labelledby="f-tiles-label"></button>
-    </div>
-    <p class="time-chip time-chip-wide"><svg aria-hidden="true"><use href="#i-clock"/></svg><span class="time-now"></span></p>
-    <h3>What the colors mean</h3>
-    <ul class="legend" id="legend"></ul>
-    <div class="see-progress" id="see-progress" hidden>
-      <p class="see-progress-text" id="see-progress-text"></p>
-      <div class="bar"><i id="see-progress-fill"></i></div>
-    </div>
-    <button type="button" class="link-btn" data-open-help aria-haspopup="dialog">How do we figure this out?</button>
   </aside>
 
   <!-- Desktop, outside Explore: the legend as one line, bottom right. -->
@@ -307,17 +323,6 @@
     </div>
   </section>
 
-  <!-- The buddy's bubble over the map: where "Show my location" put the
-       visitor, a dropped pin, a route tip. Plain text from data the page
-       already has. -->
-  <div class="tip tip-float" id="locate-note" role="status" aria-live="polite" hidden>
-    <span class="buddy" aria-hidden="true"><svg><use href="#i-shield"/></svg></span>
-    <span class="tip-body">
-      <span id="locate-note-text"></span>
-      <button type="button" class="mini-btn" id="locate-note-go" hidden></button>
-    </span>
-    <button type="button" class="icon-btn tip-close" id="locate-note-close" aria-label="Dismiss"><svg aria-hidden="true"><use href="#i-close"/></svg></button>
-  </div>
 
 </main>
 

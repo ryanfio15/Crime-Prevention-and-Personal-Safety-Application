@@ -354,7 +354,9 @@ function navSteps(route, timeZone) {
     return route.legs.map((leg, i) => {
       const s = transitLegSummary(leg);
       const last = i === route.legs.length - 1;
-      const to = leg.destination?.name;
+      // The stops are `from` and `to` (TransitLeg.to_dict in
+      // safety/routing/schema.py).
+      const to = leg.to?.name;
       const ends = leg.end_time ? Date.parse(leg.end_time) : NaN;
       const points = leg.geometry?.coordinates ?? [];
       if (s.kind === "street") {
@@ -371,7 +373,7 @@ function navSteps(route, timeZone) {
         kind: "ride",
         text: `Take ${s.name}${s.text ? ` ${s.text}` : ""}`,
         sub: [
-          leg.origin?.name ? `Board at ${leg.origin.name}${leaves ? ` · ${leaves}` : ""}` : leaves,
+          leg.from?.name ? `Board at ${leg.from.name}${leaves ? ` · ${leaves}` : ""}` : leaves,
           to ? `get off at ${to}` : "",
           s.detail,
         ].filter(Boolean).join(" · "),

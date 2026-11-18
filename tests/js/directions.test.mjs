@@ -308,10 +308,10 @@ test("navSteps turns transit legs into walk and ride steps", () => {
     geometry: { type: "LineString", coordinates: [] },
     legs: [
       { mode: "WALK", transit: false, duration_s: 240, distance_m: 300,
-        destination: { name: "Dupont Circle" }, geometry: { coordinates: EAST },
+        to: { name: "Dupont Circle" }, geometry: { coordinates: EAST },
         end_time: "2026-11-02T22:04:00Z" },
       { mode: "SUBWAY", transit: true, duration_s: 600, route_name: "Red", headsign: "Glenmont",
-        origin: { name: "Dupont Circle" }, destination: { name: "Union Station" }, num_stops: 4,
+        from: { name: "Dupont Circle" }, to: { name: "Union Station" }, num_stops: 4,
         start_time: "2026-11-02T22:06:00Z", end_time: "2026-11-02T22:16:00Z",
         geometry: { coordinates: NORTH } },
     ],
@@ -322,6 +322,16 @@ test("navSteps turns transit legs into walk and ride steps", () => {
   assert.equal(ride.text, "Take Red toward Glenmont");
   assert.match(ride.sub, /Board at Dupont Circle · 5:06 PM · get off at Union Station · 10 min · 4 stops/);
   assert.equal(ride.chip.name, "Red");
+});
+
+test("navSteps reads the stops from the API's own field names", () => {
+  // TransitLeg.to_dict (safety/routing/schema.py) sends `from` and `to`;
+  // `origin` / `destination` are not part of the response and must not name a stop.
+  const leg = (extra) => ({ mode: "WALK", transit: false, duration_s: 60, distance_m: 80, geometry: { coordinates: EAST }, ...extra });
+  const route = { mode: "transit", geometry: { coordinates: [] }, legs: [leg({ destination: { name: "Wrong" } }), leg({ to: { name: "End" } })] };
+  const [first, last] = plain(navSteps(route, "America/New_York"));
+  assert.equal(first.text, "Walk to your destination");
+  assert.equal(last.text, "Walk to your destination");
 });
 
 test("projectOnLine measures off-line and along-line distance", () => {

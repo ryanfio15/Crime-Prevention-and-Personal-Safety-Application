@@ -2286,16 +2286,30 @@ function syncDirEnds() {
 /** Set (or clear, with null) the destination, and route once there is a
     start too. */
 function setTo(place) {
-  search.place = place;
+  setSearchPlace(place);
   syncDirEnds();
   clearResult();
   placeMarkers();
   if (place && dir.from) submitDirections();
 }
 
+/**
+ * Make `place` (or null) the destination, with its pin. The pin is shown
+ * only while directions are closed -- the route's own end pin stands in for
+ * it while they are open -- and closeDirections puts it back. Setting the
+ * place without the pin left an address in the search box with nothing on
+ * the map once directions closed.
+ */
+function setSearchPlace(place) {
+  search.place = place;
+  search.marker?.remove();
+  search.marker = place ? searchPin().setLngLat([place.lng, place.lat]) : null;
+  if (search.marker && !dir.open) search.marker.addTo(map);
+}
+
 /** "Take me here": the place becomes the destination and Directions opens. */
 function routeTo(place) {
-  search.place = place;
+  setSearchPlace(place);
   $("search-input").value = place.label ?? "";
   $("search-clear").hidden = false;
   closeDetail();
@@ -2328,7 +2342,7 @@ function swapEnds() {
   const to = search.place;
   dir.fromSeq += 1;
   dir.from = to;
-  search.place = from;
+  setSearchPlace(from);
   $("dir-from").value = to?.label ?? "";
   syncDirEnds();
   clearResult();
@@ -3140,7 +3154,7 @@ function wireSearch() {
     // Typing over a chosen destination un-chooses it.
     onType: () => {
       if (!search.place) return;
-      search.place = null;
+      setSearchPlace(null);
       $("dir-to").closest(".dir-field").classList.remove("is-set");
       clearResult();
       placeMarkers();
@@ -3527,6 +3541,8 @@ function setView(view, { focus = false } = {}) {
   if (view === "near") renderCompass();
   if (view === "cities") renderCities();
   renderNearOverlay();
+  fitDesktopBars();
+  placeAboveSheets();
   // From the rail, focus follows into the section just opened.
   const heading = focus ? $({ near: "near-title", cities: "cities-title" }[view] ?? "") : null;
   if (heading) {
@@ -3673,6 +3689,94 @@ function wireHelp() {
   })}`;
 }
 
+/* ---- things that make room for each other */
+
+/**
+ * Desktop, outside Explore: the time / track bar (top right) and the legend
+ * strip (bottom right) sit beside the side panel. On a window too narrow for
+ * that, the time chip goes (the toggle stays, compact) and the legend strip
+ * hides, rather than either sliding under the panel.
+ */
+function fitDesktopBars() {
+  const bar = $("view-bar");
+  const strip = $("legend-strip");
+  bar.classList.remove("is-tight");
+  strip.classList.remove("is-hidden");
+  if (isNarrow()) return;
+  const panel = ["dir-panel", "near-panel", "cities-panel"].map(shownRect).find(Boolean);
+  if (!panel) return;
+  const clear = panel.right + 12;
+  if ((shownRect("view-bar")?.left ?? Infinity) < clear) bar.classList.add("is-tight");
+  if ((shownRect("legend-strip")?.left ?? Infinity) < clear) strip.classList.add("is-hidden");
+}
+
+/**
+ * Phone: the map's credit line and the round map buttons sit just above
+ * whichever sheet is open (the card, the routes, the key, Cities, Near me's
+ * short card), else above the tab bar -- never underneath one. With no room
+ * above a sheet for all three buttons, only Locate stays.
+ */
+function placeAboveSheets() {
+  const app = document.querySelector(".app");
+  const fabs = $("map-fabs");
+  if (!isNarrow()) {
+    app.style.removeProperty("--sheet-gap");
+    fabs.style.top = "";
+    fabs.classList.remove("is-cramped");
+    // Desktop: lift the credit line above the hexagon card when they meet.
+    app.style.removeProperty("--ctrl-lift");
+    const card = shownRect("cell-card");
+    const ctrl = document.querySelector(".maplibregl-ctrl-bottom-right")?.getBoundingClientRect();
+    if (card && ctrl && ctrl.left < card.right && ctrl.right > card.left && ctrl.bottom > card.top) {
+      app.style.setProperty("--ctrl-lift", `${Math.round(window.innerHeight - card.top + 8)}px`);
+    }
+    return;
+  }
+  const height = window.innerHeight;
+  const tops = ["cell-card", "see-card", "cities-panel", "rail"].map(shownRect).filter(Boolean).map((r) => r.top);
+  const sheet = $("dir-panel").hidden ? null : $("dir-panel").querySelector(".dir-sheet");
+  if (sheet?.getClientRects().length) tops.push(sheet.getBoundingClientRect().top);
+  if (document.body.classList.contains("near-on-map")) tops.push(shownRect("near-panel")?.top ?? height);
+  let top = tops.length ? Math.min(...tops) : height;
+  // A sheet that fills most of the screen leaves no map to credit: the line
+  // stays by the tab bar (under the sheet) rather than off the top.
+  if (top < height * 0.35) top = shownRect("rail")?.top ?? height;
+  app.style.setProperty("--sheet-gap", `${Math.max(0, Math.round(height - top))}px`);
+
+  if (!fabs.getClientRects().length) return;
+  // Above the credit line, below whatever is at the top of the screen.
+  const ceiling = Math.max(
+    shownRect("search-field")?.bottom ?? 0,
+    shownRect("load-pill")?.bottom ?? 0,
+    shownRect("locate-note")?.bottom ?? 0,
+    $("dir-panel").hidden ? 0 : $("dir-panel").querySelector(".dir-top").getBoundingClientRect().bottom,
+    shownRect("nav-banner")?.bottom ?? 0,
+  ) + 12;
+  const floor = top - 44;
+  fabs.classList.remove("is-cramped");
+  const room = floor - ceiling;
+  if (fabs.offsetHeight > room) fabs.classList.add("is-cramped");
+  const preferred = height * 0.38;
+  fabs.style.top = `${Math.round(Math.max(ceiling, Math.min(preferred, floor - fabs.offsetHeight)))}px`;
+}
+
+function wireRoom() {
+  const again = () => {
+    fitDesktopBars();
+    placeAboveSheets();
+  };
+  // A sheet opening, closing or changing height changes its size, which is
+  // what the observer reports.
+  const observer = new ResizeObserver(again);
+  for (const id of ["cell-card", "see-card", "cities-panel", "near-panel", "rail", "view-bar", "legend-strip", "search-field", "locate-note"]) {
+    observer.observe($(id));
+  }
+  observer.observe($("dir-panel").querySelector(".dir-sheet"));
+  observer.observe($("dir-panel").querySelector(".dir-top"));
+  window.addEventListener("resize", again);
+  again();
+}
+
 function wireShell() {
   // Any button marked with a section opens it: the rail, the city chip, the
   // small compass, the load pill. Buttons only: <body> carries data-view too
@@ -3711,7 +3815,9 @@ function wireShell() {
     seg.addEventListener("keydown", (event) => {
       if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
       const tabs = [...seg.querySelectorAll("[data-track]")];
-      const next = tabs[(tabs.indexOf(document.activeElement) + 1) % tabs.length];
+      const at = tabs.indexOf(document.activeElement);
+      if (at < 0) return;
+      const next = tabs[(at + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
       next.focus();
       setTrack(next.dataset.track);
     });
@@ -3752,6 +3858,7 @@ function wireShell() {
 
 function wireControls() {
   wireShell();
+  wireRoom();
   wireSearch();
   $("locate-note-close").onclick = hideLocateNote;
 }
