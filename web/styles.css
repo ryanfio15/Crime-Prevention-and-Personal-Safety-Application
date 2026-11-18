@@ -116,6 +116,9 @@
 [hidden] { display: none !important; }
 
 html, body {
+  /* The app is one fixed screen: it never rubber-bands as a whole (iOS).
+     The map's own pan and zoom are touch handlers, not page scrolling. */
+  overscroll-behavior: none;
   margin: 0;
   height: 100%;
   background: var(--land);
@@ -1414,7 +1417,12 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
   .route-card .route-main strong { font-size: 21px; }
   .dir-sheet > .sheet-handle { display: none; }
   .dir-sheet .route-cards { gap: 6px; }
-  .dir-sheet .dir-actions { padding-top: 8px; padding-bottom: 12px; }
+  /* The button row bleeds to the sheet's edges: the sheet's own 16 px
+     padding here, not the desktop panel's 22 px (6 px too wide, which let
+     the sheet slide sideways). */
+  .dir-sheet .dir-actions { margin: 0 -16px; padding: 8px 16px 12px; }
+  /* The sheet scrolls up and down only, and stops at its ends. */
+  .dir-sheet { overflow-x: hidden; touch-action: pan-y; overscroll-behavior: contain; }
   .route-card .route-main { grid-column: 1; grid-row: 1; }
   .route-card .route-top { grid-column: 2; grid-row: 1; flex-direction: column; align-items: flex-end; gap: 3px; }
   .route-card .route-role { padding: 2px 9px; font-size: 12px; }
@@ -1498,6 +1506,9 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
     max-height: calc(100dvh - var(--tabbar) - var(--safe-t) - 24px);
   }
   .cities-panel .panel-scroll { padding: 20px 18px; }
+  /* Scrolling past the end of a sheet or screen stops there instead of
+     carrying on into the page. */
+  .see-card, .panel-scroll { overscroll-behavior: contain; overflow-x: hidden; }
   .cities-panel h2 { font-size: 26px; }
   .city-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
   .city-card { padding: 12px; gap: 8px; border-radius: 20px; }
