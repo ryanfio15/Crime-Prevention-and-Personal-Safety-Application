@@ -458,7 +458,12 @@ svg { width: 22px; height: 22px; flex: none; }
 .maplibregl-ctrl-scale { background: color-mix(in srgb, var(--panel) 80%, transparent); border-color: var(--muted); color: var(--text); }
 
 /* Where floating things start, past the rail: the left edge of the free map. */
-.app { --left: calc(var(--safe-l) + var(--edge) + var(--rail-w) + var(--edge)); }
+.app {
+  /* Where the free map starts: past the rail, and past the open panel in
+     the sections that have one (below). */
+  --rail-right: calc(var(--safe-l) + var(--edge) + var(--rail-w) + var(--edge));
+  --left: var(--rail-right);
+}
 
 /* ---- the rail (desktop) / tab bar (phone) */
 .rail {
@@ -833,7 +838,7 @@ svg { width: 22px; height: 22px; flex: none; }
   top: calc(var(--safe-t) + var(--edge));
   bottom: calc(var(--safe-b) + var(--edge));
   width: 404px;
-  max-width: calc(100vw - var(--left) - var(--edge));
+  max-width: calc(100vw - var(--rail-right) - var(--edge));
   display: flex;
   flex-direction: column;
   border-radius: var(--r-card);
@@ -1129,10 +1134,37 @@ body[data-view="cities"] .legend-strip { display: none; }
 body:not([data-view="explore"]) .map-fabs { right: calc(var(--safe-r) + var(--edge)); top: calc(var(--safe-t) + var(--edge) + 64px); }
 body[data-view="cities"] .map-fabs { top: calc(var(--safe-t) + var(--edge)); }
 body:not([data-view="explore"]) .cell-card { right: calc(var(--safe-r) + var(--edge) + 48px + var(--edge)); }
-body[data-view="directions"] { --left: calc(var(--safe-l) + var(--edge) + var(--rail-w) + var(--edge) + 404px + var(--edge)); }
-body[data-view="near"] { --left: calc(var(--safe-l) + var(--edge) + var(--rail-w) + var(--edge) + 420px + var(--edge)); }
-body[data-view="cities"] { --left: calc(var(--safe-l) + var(--edge) + var(--rail-w) + var(--edge) + 560px + var(--edge)); }
-body:not([data-view="explore"]) .tip-float { left: calc(var(--left) + 16px); }
+/* Outside Explore the top row holds only the status pills: under the time
+   and track bar, from the panel to the round map buttons (not Explore's
+   card, which is not there). */
+body:not([data-view="explore"]) .top-row {
+  top: calc(var(--safe-t) + var(--edge) + 64px);
+  right: calc(var(--safe-r) + var(--edge) + 48px + var(--edge));
+  /* At least room for a pill when a wide panel leaves none. */
+  left: min(var(--left), calc(100vw - var(--safe-r) - var(--edge) - 48px - var(--edge) - 160px));
+}
+.status-pill { white-space: nowrap; }
+
+/* Past the open panel, so the card, the tip and the status pill sit beside
+   it rather than on it. Set on .app, where --left is read: set on <body>
+   it was overridden by .app's own value and never applied. */
+body[data-view="directions"] .app { --left: calc(var(--rail-right) + 404px + var(--edge)); }
+body[data-view="near"] .app { --left: calc(var(--rail-right) + 420px + var(--edge)); }
+body[data-view="cities"] .app { --left: calc(var(--rail-right) + 560px + var(--edge)); }
+body:not([data-view="explore"]) .tip-float {
+  /* Beside the panel, between it and the round map buttons on the right;
+     at least 280 px wide, overlapping the panel only when a narrow window
+     leaves no room beside it (as the card does). */
+  --tip-left: min(calc(var(--left) + 16px), calc(100vw - var(--safe-r) - var(--edge) - 48px - var(--edge) - 280px));
+  left: var(--tip-left);
+  max-width: min(460px, calc(100vw - var(--tip-left) - var(--safe-r) - var(--edge) - 48px - var(--edge)));
+}
+/* The card keeps at least 340 px: on a narrow desktop window there is no
+   room beside a wide panel (Cities is 560 px), and it then overlaps the
+   panel rather than collapsing to nothing. */
+body:not([data-view="explore"]) .cell-card {
+  left: min(var(--left), calc(100vw - var(--safe-r) - var(--edge) - 48px - var(--edge) - 340px));
+}
 body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
 
 /* -------------------------------------------------------------- the help --- */
@@ -1243,7 +1275,7 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
 @media (max-width: 767.98px) {
   :root { --edge: 12px; }
   html, body { font-size: 15px; }
-  .app { --left: calc(var(--safe-l) + var(--edge)); --tabbar: calc(var(--safe-b) + var(--edge) + 72px); }
+  .app, body[data-view] .app { --left: calc(var(--safe-l) + var(--edge)); --tabbar: calc(var(--safe-b) + var(--edge) + 72px); }
 
   .rail {
     left: calc(var(--safe-l) + var(--edge));
@@ -1355,6 +1387,9 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
   body[data-view="near"] .cell-card,
   body[data-view="cities"] .cell-card { display: none; }
   body[data-view="directions"] .cell-card { bottom: calc(var(--safe-b) + 8px); }
+  /* A sheet edge to edge in every section; the desktop rules that keep the
+     card beside a panel are more specific and would otherwise apply here. */
+  body[data-view] .cell-card { left: calc(var(--safe-l) + 8px); right: calc(var(--safe-r) + 8px); }
   body[data-view="directions"]:has(#cell-card:not([hidden])) .dir-sheet { display: none; }
 
   /* Directions: where from / to at the top, the routes in a sheet. */
@@ -1541,6 +1576,8 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
   /* In the top row's flow, under the search and any message it shows, on
      the right: never on top of either. */
   .status-pills { align-items: flex-end; }
+  /* Phones keep the top row at the top in every section. */
+  body[data-view] .top-row { top: calc(var(--safe-t) + var(--edge)); right: calc(var(--safe-r) + var(--edge)); left: calc(var(--safe-l) + var(--edge)); }
   body:not([data-view="explore"]) .load-pill { display: none; }
 
   .maplibregl-ctrl-bottom-right,
