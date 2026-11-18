@@ -925,8 +925,12 @@ svg { width: 22px; height: 22px; flex: none; }
 .route-detail { font-size: 13px; color: var(--muted); font-weight: 600; }
 .route-extra { color: var(--muted); font-weight: 700; font-size: 13px; }
 
-/* Let's go stays in reach under a long list of routes. */
+/* Let's go stays in reach: last in the column (order), and pinned to the
+   bottom while anything above it scrolls -- the routes, the steps once
+   opened, the fine print. Placed before the steps it would scroll away
+   with them. */
 .dir-actions {
+  order: 10;
   position: sticky;
   bottom: -22px;
   z-index: 1;
@@ -1415,7 +1419,7 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
   /* The button row bleeds to the sheet's edges: the sheet's own 16 px
      padding here, not the desktop panel's 22 px (6 px too wide, which let
      the sheet slide sideways). */
-  .dir-sheet .dir-actions { margin: 0 -16px; padding: 8px 16px 12px; }
+  .dir-sheet .dir-actions { margin: 0 -16px; padding: 8px 16px 12px; bottom: -16px; }
   /* The sheet scrolls up and down only, and stops at its ends. */
   .dir-sheet { overflow-x: hidden; touch-action: pan-y; overscroll-behavior: contain; }
   .route-card .route-main { grid-column: 1; grid-row: 1; }
@@ -1423,7 +1427,11 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
   .route-card .route-role { padding: 2px 9px; font-size: 12px; }
   .route-card .route-ratio { font-size: 12px; }
   .route-card :is(.route-legs, .route-stretches, .route-detail) { grid-column: 1 / -1; }
-  .route-card:not([aria-pressed="true"]) :is(.route-stretches, .route-detail) { display: none; }
+  .route-card:not([aria-pressed="true"]) :is(.route-stretches, .route-detail, .route-legs) { display: none; }
+  /* Transit rows: the time and when it leaves on one line -- what tells
+     the options apart. Distance and "+N min" stay on desktop's cards. */
+  .route-card[data-mode="transit"] :is(.route-dist, .route-extra) { display: none; }
+  .route-card[data-mode="transit"] .route-main { flex-wrap: nowrap; white-space: nowrap; }
   .route-detail {
     font-size: 12px;
     display: -webkit-box;

@@ -2609,16 +2609,16 @@ function renderDirections() {
     const restText = words.detail.split(" · ").slice(1).join(" · ");
     const rest = restText ? `${restText[0].toUpperCase()}${restText.slice(1)}.` : "";
     return html`<li>
-      <button type="button" class="route-card" data-index="${card.index}"
+      <button type="button" class="route-card" data-index="${card.index}" data-mode="${route.mode}"
               aria-pressed="${String(card.index === dir.selected)}">
         <span class="route-top">
           <span class="route-role"${card.role === "Safest" || card.role === "Fastest and safest" ? html` data-band="calm"` : ""}>${ROLE_WORDS[card.role] ?? card.role}</span>
           <span class="route-ratio" data-band="${b}">${ratio === null ? "Not rated" : `${formatRatio(ratio)} city avg`}</span>
         </span>
-        <span class="route-main"><strong>${card.duration}</strong><span>${card.distance}</span>${
+        <span class="route-main"><strong>${card.duration}</strong><span class="route-dist">${card.distance}</span>${
           card.extra ? html`<span class="route-extra">${card.extra}</span>` : ""}${
           route.mode === "transit" && route.start_time
-            ? html`<span>leaves ${clockIn(route.start_time, result.timezone)}</span>`
+            ? html`<span class="route-leaves">leaves ${clockIn(route.start_time, result.timezone)}</span>`
             : ""
         }</span>
         ${legs.length ? html`<span class="route-legs">${legs.map((leg) =>
@@ -3103,6 +3103,17 @@ function wireSearch() {
       const open = $(block).hidden;
       $(block).hidden = !open;
       $(toggle).setAttribute("aria-expanded", String(open));
+      // The list opens under the buttons, which on a phone is below the
+      // sheet's visible part: bring it into view, or the tap looks like it
+      // did nothing.
+      // Only the sheet (the panel on desktop) scrolls -- scrollIntoView could
+      // move the page behind it too.
+      if (open) {
+        const scroller = isNarrow() ? $(block).closest(".dir-sheet") : $("dir-panel");
+        const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        const top = scroller.scrollTop + $(block).getBoundingClientRect().top - scroller.getBoundingClientRect().top - 8;
+        scroller.scrollTo({ top, behavior: still ? "auto" : "smooth" });
+      }
     };
   }
   $("nav-end").onclick = () => {
