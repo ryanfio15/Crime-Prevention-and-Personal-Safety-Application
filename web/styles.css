@@ -565,7 +565,9 @@ svg { width: 22px; height: 22px; flex: none; }
 .compass-mini-text strong { font-size: 16px; font-weight: 900; }
 .compass-foot { font-size: 12px; color: var(--muted); }
 
-.search-card { position: relative; flex: 1 1 340px; max-width: 560px; margin-inline: auto; }
+/* min-width 0: as a flex item the card would otherwise refuse to be
+   narrower than its content, and push past the screen's edge on a phone. */
+.search-card { position: relative; flex: 1 1 340px; min-width: 0; max-width: 560px; margin-inline: auto; }
 .search-box {
   display: flex;
   align-items: center;
@@ -576,7 +578,11 @@ svg { width: 22px; height: 22px; flex: none; }
 }
 .search-icon { width: 22px; height: 22px; color: var(--primary); }
 #search-input {
+  /* width 0 + flex 1: the box takes whatever the clear button and city
+     chip leave, and a long address scrolls inside it instead of widening
+     the bar (its default width is about 200 px and never shrinks). */
   flex: 1;
+  width: 0;
   min-width: 0;
   min-height: var(--tap);
   border: 0;
@@ -651,7 +657,6 @@ svg { width: 22px; height: 22px; flex: none; }
 .opt-sub { font-size: 12.5px; color: var(--muted); }
 
 /* ---- Violent / Non-violent floating under the search (phone only) */
-.track-float { display: none; }
 
 /* ---- top right outside Explore (desktop) */
 .view-bar {
@@ -1263,16 +1268,6 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
   #search-input { font-size: 16px; }
   .city-chip { min-height: var(--tap); padding: 0 14px; }
 
-  .track-float {
-    display: block;
-    position: absolute;
-    z-index: 3;
-    top: calc(var(--safe-t) + var(--edge) + 54px + 10px);
-    left: calc(var(--safe-l) + var(--edge));
-  }
-  .track-float .seg { background: var(--panel); box-shadow: var(--shadow); }
-  body:not([data-view="explore"]) .track-float { display: none; }
-  body:has(.search-list:not([hidden])) .track-float { visibility: hidden; }
 
   .view-bar, .legend-strip { display: none !important; }
 
@@ -1516,8 +1511,7 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
   .city-head { flex-wrap: wrap; gap: 8px; }
   .hex { width: 24px; height: 24px; }
 
-  body:has(#locate-note:not([hidden])) .top-row,
-  body:has(#locate-note:not([hidden])) .track-float { visibility: hidden; }
+  body:has(#locate-note:not([hidden])) .top-row { visibility: hidden; }
   .tip-float {
     top: calc(var(--safe-t) + var(--edge));
     left: calc(var(--safe-l) + var(--edge));
@@ -1536,12 +1530,9 @@ body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: 56px; }
   }
   .tip-float .tip-close { background: var(--panel); box-shadow: var(--shadow); width: var(--tap); height: var(--tap); }
 
-  .status-pills {
-    position: absolute;
-    top: calc(54px + 10px);
-    right: 0;
-    align-items: flex-end;
-  }
+  /* In the top row's flow, under the search and any message it shows, on
+     the right: never on top of either. */
+  .status-pills { align-items: flex-end; }
   body:not([data-view="explore"]) .load-pill { display: none; }
 
   .maplibregl-ctrl-bottom-right,
