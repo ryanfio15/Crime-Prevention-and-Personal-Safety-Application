@@ -1383,13 +1383,45 @@ function showCellPopup(h3Index, detail) {
         <button type="button" class="btn btn-primary" data-card="to">Take me here</button>
         <button type="button" class="btn btn-ghost" data-card="from">${place?.dropped ? "Start from here" : "Start here"}</button>
       </div>
-      <button type="button" class="link-btn cell-expand" aria-expanded="false">See the week pattern</button>
+      <button type="button" class="link-btn cell-expand" aria-expanded="false">See today and the week</button>
     </section>${today}${week}`;
 
   const card = $("cell-card");
+  const opening = card.hidden;
   card.style.setProperty("--cell-color", colorForRatio(ratio));
   card.hidden = false;
   renderCityClock();
+  // Only when the card first opens: a track switch or the minute tick
+  // redraws it in place and should not move the map.
+  if (opening) keepCellInView(h3Index);
+}
+
+/**
+ * Bring the selected hexagon into the part of the map the card and the
+ * other floating controls leave free, if it is not already there. On a
+ * phone the card is a sheet over the bottom of the map, and a tapped
+ * hexagon below the sheet's top edge would otherwise sit behind its own
+ * card. Measured with clearOfControls, which counts the open card.
+ */
+function keepCellInView(h3Index) {
+  if (!map || nav.active) return;
+  const [lat, lng] = h3.cellToLatLng(h3Index);
+  const at = map.project([lng, lat]);
+  const pad = clearOfControls();
+  const width = map.getContainer().clientWidth;
+  const height = map.getContainer().clientHeight;
+  const margin = 24;
+  const inside =
+    at.x >= pad.left + margin && at.x <= width - pad.right - margin &&
+    at.y >= pad.top + margin && at.y <= height - pad.bottom - margin;
+  if (inside) return;
+  // easeTo's offset places the centre this far from the map's middle: the
+  // middle of the free area.
+  const offset = [
+    (pad.left + (width - pad.right)) / 2 - width / 2,
+    (pad.top + (height - pad.bottom)) / 2 - height / 2,
+  ];
+  map.easeTo({ center: [lng, lat], offset, duration: 450 });
 }
 
 /** The address a card stands for: its place when it has one, else the
@@ -1410,7 +1442,7 @@ function wireCellCard() {
     if (expand) {
       const open = card.classList.toggle("is-expanded");
       expand.setAttribute("aria-expanded", String(open));
-      expand.textContent = open ? "Show less" : "See the week pattern";
+      expand.textContent = open ? "Show less" : "See today and the week";
       return;
     }
     const action = event.target.closest("[data-card]");
@@ -1424,7 +1456,7 @@ function wireCellCard() {
   });
 
   // The sheet's handle on a phone: drag down to close, up to show more; a
-  // tap toggles. The close button and "See the week pattern" do the same
+  // tap toggles. The close button and "See today and the week" do the same
   // from a keyboard.
   let drag = null;
   card.addEventListener("pointerdown", (event) => {
@@ -2105,7 +2137,9 @@ async function showPlace(place) {
     nearest address -- a way to find an address by pointing at it. */
 async function pinClickedPoint(lngLat) {
   const point = { lat: lngLat.lat, lng: lngLat.lng };
-  if (dir.open) return pinClickedStart(point);
+  // With directions open it fills the trip: the destination while there is
+  // none (after "Start here", say), else the start, as it always has.
+  if (dir.open) return search.place ? pinClickedStart(point) : pinClickedDestination(point);
   const seq = ++search.seq;
   clearSearchPin();
   const problem = pointProblem(point, "That point");
@@ -2150,6 +2184,28 @@ async function pinClickedStart(point) {
     return;
   }
   setFrom(place);
+}
+
+/** Right-click / press-and-hold with directions open and no destination
+    yet: the same as pinClickedStart, for the destination. */
+async function pinClickedDestination(point) {
+  const seq = ++search.seq;
+  const problem = pointProblem(point, "That place");
+  if (problem) return setStatus("dir-status", problem, true);
+  closeDetail();
+  dir.markers.to?.remove();
+  dir.markers.to = endMarker("to").setLngLat([point.lng, point.lat]).addTo(map);
+  $("dir-to").value = "";
+  setStatus("dir-status", "Finding the nearest address…");
+  const { place } = await placeAt(point);
+  if (seq !== search.seq) return;
+  // Closed, or a destination typed, while the lookup ran: drop the answer.
+  if (!dir.open || $("dir-to").value) {
+    setStatus("dir-status", "");
+    placeMarkers();
+    return;
+  }
+  setTo(place);
 }
 
 /** Make `place` the searched address: its pin and its cell's card. It is
@@ -2245,7 +2301,7 @@ function routeTo(place) {
   closeDetail();
   setView("directions");
   setTo(place);
-  if (!dir.from) $("dir-from").focus();
+  if (!dir.from) askForEnd("from");
 }
 
 /** "Start here": the place becomes the start and Directions opens. */
@@ -2253,7 +2309,17 @@ function routeFrom(place) {
   closeDetail();
   setView("directions");
   setFrom(place);
-  if (!search.place) $("dir-to").focus();
+  if (!search.place) askForEnd("to");
+}
+
+/** Say how to pick the missing end of the trip. On a phone the map is the
+    quicker way, so the box is not focused (that would raise the keyboard
+    over it); on desktop the box gets the focus for typing. */
+function askForEnd(end) {
+  const what = end === "to" ? "where you're going" : "where you're starting";
+  const hold = isNarrow() ? "press and hold anywhere" : "right-click anywhere";
+  setStatus("dir-status", `Now pick ${what}: tap a hexagon on the map, ${hold}, or type it above.`);
+  if (!isNarrow()) $(end === "to" ? "dir-to" : "dir-from").focus();
 }
 
 /** Swap the two ends. */
@@ -2510,9 +2576,14 @@ function renderDirections() {
   const n = cards.length;
 
   $("dir-results").hidden = false;
-  $("dir-count").textContent = result.mode === "transit"
+  const count = result.mode === "transit"
     ? `${n} transit option${n === 1 ? "" : "s"}`
     : `${n} way${n === 1 ? "" : "s"} to ${MODE_VERBS[result.mode] ?? "go"} there`;
+  // The other routes are the dotted lines on the map, and tapping one picks
+  // it too -- easier than scrolling the list on a phone.
+  $("dir-count").innerHTML = n > 1
+    ? html`${count}<span class="dir-hint">Tap one here, or its dotted line on the map.</span>`
+    : html`${count}`;
   $("dir-track").textContent =
     `Compared on ${track} incidents, against ` +
     `${result.window?.label?.toLowerCase() ?? "the city"}` +
@@ -2935,6 +3006,14 @@ function addRouteLayers() {
     layout: { "line-cap": "round", "line-join": "round" },
     paint: { "line-color": themeColor("--route-alt", "#8a766b"), "line-width": 5, "line-opacity": 0.75, "line-dasharray": [0.3, 1.6] },
   }, before);
+  // The same lines, wide and invisible, as what a tap or click hits: a
+  // dotted 5 px line is too thin to pick with a finger. Opacity 0, not
+  // hidden -- MapLibre does not hit-test a layer that is not drawn.
+  map.addLayer({
+    id: "route-alt-hit", type: "line", source: "route-alt",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#000000", "line-width": 28, "line-opacity": 0 },
+  }, before);
   // A casing: the route sits on cells painted in the same ramp it is
   // coloured with, and only an edge keeps a green route off a green cell.
   map.addLayer({
@@ -2972,14 +3051,14 @@ function addRouteLayers() {
 }
 
 function wireRouteLayerEvents() {
-  map.on("click", "route-alt-line", (event) => {
+  map.on("click", "route-alt-hit", (event) => {
     const alt = event.features?.[0];
     if (alt && dir.open) selectRoute(alt.properties.index);
   });
-  map.on("mouseenter", "route-alt-line", () => {
+  map.on("mouseenter", "route-alt-hit", () => {
     map.getCanvas().style.cursor = "pointer";
   });
-  map.on("mouseleave", "route-alt-line", () => {
+  map.on("mouseleave", "route-alt-hit", () => {
     map.getCanvas().style.cursor = "";
   });
 }
@@ -3291,7 +3370,7 @@ async function initMap() {
   map.on("click", "cells-fill", (event) => {
     if (justLongPressed()) return;
     // A click on another route picks that route, not the cell under it.
-    if (dir.open && map.getLayer("route-alt-line") && map.queryRenderedFeatures(event.point, { layers: ["route-alt-line"] }).length) return;
+    if (dir.open && map.getLayer("route-alt-hit") && map.queryRenderedFeatures(event.point, { layers: ["route-alt-hit"] }).length) return;
     const feature = event.features?.[0];
     if (feature) selectCell(feature.properties.h3);
   });
