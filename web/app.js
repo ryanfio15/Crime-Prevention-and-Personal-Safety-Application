@@ -3143,6 +3143,14 @@ function wireSearch() {
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) holdScreenOn();
   });
+  // Near me and Cities close back to Explore; focus returns to the rail
+  // button that opened them, as Directions' close does.
+  for (const view of ["near", "cities"]) {
+    $(`${view}-close`).onclick = () => {
+      setView("explore");
+      document.querySelector(`.rail-btn[data-view="${view}"]`)?.focus();
+    };
+  }
   $("dir-close").onclick = () => {
     closeDirections();
     document.querySelector('.rail-btn[data-view="directions"]')?.focus();

@@ -285,6 +285,7 @@
   <!-- Near me: the lower-crime direction around the visitor (or the map
        centre), the full version of the small compass. -->
   <section class="panel near-panel" id="near-panel" aria-labelledby="near-title" hidden>
+    <button type="button" class="icon-btn panel-close" id="near-close" aria-label="Close Near me"><svg aria-hidden="true"><use href="#i-close"/></svg></button>
     <div class="panel-scroll">
       <p class="kicker">Want a calmer walk?</p>
       <h2 class="near-title" id="near-title" aria-live="polite">&mdash;</h2>
@@ -309,6 +310,7 @@
        that load has got (GET /api/v1/progress, web/progress.js). Picking one
        only moves the map. -->
   <section class="panel cities-panel" id="cities-panel" aria-labelledby="cities-title" hidden>
+    <button type="button" class="icon-btn panel-close" id="cities-close" aria-label="Close Cities"><svg aria-hidden="true"><use href="#i-close"/></svg></button>
     <div class="panel-scroll">
       <h2 id="cities-title">Cities</h2>
       <p class="lede">All of them are on one map. Picking one just flies you there.</p>
