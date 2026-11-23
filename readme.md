@@ -12,7 +12,7 @@ incident-level open data for six US cities: Philadelphia, Chicago, Seattle, Los 
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Routine deploys, promotion, rollback, migrations, from-zero server setup, branch protection, deploy internals, database roles, OS users, container image. Replaces the old `docs/DEPLOY.md` |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Schedules, logs, health checks, alerts, backups and restore, limits, runbook |
 | [docs/KUBERNETES.md](docs/KUBERNETES.md) | The horizontally scaled Kubernetes deployment (FABRIC, AWS, Azure): layout, sizing, first deploy and 12-month bootstrap, runbook. FABRIC walkthrough: [deploy/fabric/README.md](deploy/fabric/README.md) |
-| [docs/RAILWAY.md](docs/RAILWAY.md) | The Railway deployment: the whole site with one API from a one-click template (made once with `deploy/railway/make-template.sh`) or one command (`deploy/railway/up.sh`), kept current by an hourly worker |
+| [docs/RAILWAY.md](docs/RAILWAY.md) | The Railway deployment: the whole site with one API, deployed with one command (`deploy/railway/up.sh`) and kept current by an hourly worker |
 | [docs/DESIGN.md](docs/DESIGN.md) | The original system design document (target architecture, roadmap, contributors) |
 | [docs/PHASE1.md](docs/PHASE1.md), [docs/PHASE2.md](docs/PHASE2.md) | What each build phase delivered, per-city data notes |
 
@@ -297,8 +297,10 @@ There is no Python or JS linter or formatter configured. Only shell is linted, w
 
 ## 8. Deployment
 
-**Railway** (public URL, no server to run): one click on the Deploy on Railway button once the template is published,
-or `railway login` then `deploy/railway/up.sh`. See [docs/RAILWAY.md](docs/RAILWAY.md).
+**Railway** (public URL, no server to run): `railway login`, then
+`deploy/railway/up.sh --cities phl,chi,sea,lax,dc,aus`. On Windows that second line is
+`& "C:\Program Files\Git\bin\bash.exe" deploy/railway/up.sh --cities phl,chi,sea,lax,dc,aus`, typed into
+PowerShell. Full walkthrough: [docs/RAILWAY.md](docs/RAILWAY.md).
 
 **Home server.** Full guide: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. In short:
 

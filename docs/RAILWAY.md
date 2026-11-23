@@ -1,23 +1,29 @@
 # Railway deployment
 
-The whole site on [Railway](https://railway.com) with one API instance and a public HTTPS address. The data is kept
-current by a background worker until the project is deleted. The backend and frontend are the same as the Kubernetes
-deployment's (docs/KUBERNETES.md); only the hosting differs.
+The whole site on [Railway](https://railway.com) with one API instance and a public HTTPS address, deployed with one
+command from a checkout. The data is kept current by a background worker until the project is deleted. The backend
+and frontend are the same as the Kubernetes deployment's (docs/KUBERNETES.md); only the hosting differs.
 
-There are two ways in. Both build exactly the same project:
+Everything here goes through the Railway CLI and its login, so there is no token to create or paste. **Every command
+below is typed into PowerShell on Windows** — the ordinary blue terminal, no WSL, no Linux, no Git Bash window:
 
-| | For | What it takes |
-|---|---|---|
-| **[One-click template](#one-click-deploy)** | Anyone, no terminal | A Railway account and one **Deploy** button |
-| **[Command line](#command-line-deploy)** | Maintainers, CI | `railway login`, then `deploy/railway/up.sh` |
+```powershell
+$bash = "C:\Program Files\Git\bin\bash.exe"
 
-The template has to be made once, by a maintainer, before anyone can use the button:
-[Making the template](#making-the-template).
+railway login
+& $bash deploy/railway/up.sh --cities phl,chi,sea,lax,dc,aus
+```
 
-Contents: [What it builds](#what-it-builds) · [One-click deploy](#one-click-deploy) ·
-[Making the template](#making-the-template) · [Command-line deploy](#command-line-deploy) ·
-[Everyday tasks](#everyday-tasks) · [How it works](#how-it-works) · [What was tested](#what-was-tested) ·
-[Troubleshooting](#troubleshooting)
+[Deploying](#deploying) is those commands in full — prerequisites, what they print, and how to confirm the site is
+serving and the data is loading.
+
+The deploy itself is a shell script, which is why PowerShell hands it to `bash.exe`. That program comes with Git for
+Windows, which is already installed if you cloned this repository, so there is nothing extra to set up and nothing to
+learn about it — `& $bash <script>` is the whole trick ([why](#why-powershell-calls-bashexe)).
+
+Contents: [What it builds](#what-it-builds) · [Deploying](#deploying) · [Everyday tasks](#everyday-tasks) ·
+[Updating](#updating) · [Taking it down](#taking-it-down) · [`up.sh` options](#upsh-options) ·
+[How it works](#how-it-works) · [What was tested](#what-was-tested) · [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -51,138 +57,180 @@ if Hobby's limits get in the way.
 
 ---
 
-## One-click deploy
+## Deploying
 
-For anyone. No terminal, no settings.
+Start to finish: one command deploys, the rest is watching it come up. Steps 1–3 take about ten minutes of your
+time; steps 4–6 are waiting, and the site is live and loading data throughout. All six cities are the default, so
+nothing has to be passed to get them.
 
-1. Click **Deploy on Railway** (the button in the README, once the template is published).
-2. Sign in to Railway, or create an account, and add a payment method if asked.
-3. Click **Deploy**. Every password is generated for this deployment, and nothing else needs filling in.
-4. Wait 10–20 minutes while the four services build. The routing service downloads about 1.2 GB of map tiles, and
-   the database's first start takes a few minutes.
-5. Open the **api** service → **Settings** → **Networking**. The `….up.railway.app` address there is the site, ready
-   to share.
+### 1. Install what it needs
 
-The data then loads by itself. Open the site straight away: the map shows a progress bar with the time left, and
-each city appears as soon as its own load finishes. The whole first load takes one to a few hours. After that the
-worker checks every hour for new incidents and deletes anything older than a year, with no further action.
+Open **PowerShell** (Start menu → type `powershell` → Enter) and paste these four lines. Each one is a standard
+Windows installer; answer yes if Windows asks permission.
 
-**Choosing cities.** The `BOOTSTRAP_CITIES` variable on the **etl** service lists the cities the first start switches
-on (default `phl,chi,sea,lax,dc,aus`). Edit it on the deploy screen, or right after deploying, before the first load
-has started. docs/DEPLOYMENT.md asks for the City of Austin's reuse terms to be confirmed before `aus` is shown
-publicly; `phl,chi,sea,lax,dc` leaves it out.
-
-**Taking it down.** Project → **Settings** → **Danger** → **Delete project**. This deletes the site and its data, and
-billing stops.
-
----
-
-## Making the template
-
-For maintainers, once, and again only when the services or their variables change. Code changes need no new
-template, because deployed copies build from the branch.
-
-A Railway template can only be written in the dashboard's composer or generated from an existing project. There is
-no file format for one. `make-template.sh` therefore builds the project and generates the template from it:
-
-```bash
-railway login                              # once per machine
-git push origin railway-deployment         # the template builds from GitHub, not your checkout
-deploy/railway/make-template.sh            # --branch <name> for another branch
+```powershell
+winget install Git.Git                  # git, and the bash.exe that runs the deploy script
+winget install OpenJS.NodeJS.LTS        # node + npm, which the Railway CLI installs through
+winget install jqlang.jq                # the deploy script reads Railway's answers with it
+npm install -g @railway/cli             # the Railway CLI itself (tested with 5.74.0)
 ```
 
-It works in three steps:
+**Close PowerShell and open it again.** Installers add things to `PATH`, and a window that was already open does
+not see them — a "not recognized as the name of a cmdlet" error right after installing almost always means this
+step was skipped.
 
-1. **Reference project.** It runs `up.sh --github railway-deployment` to create a project named
-   `safety-map-template` whose four services build from this repository on GitHub. Its id is kept in
-   `deploy/railway/.template-project-id`, which git ignores.
-2. **Template draft.** Railway's `templateGenerate` copies that project into an unpublished draft.
-3. **Check.** It compares the draft with what a deployer needs and prints one line per item, `ok` or `FIX`, with
-   what to change:
+Now get the code and check that everything is there:
 
-   ```
-     ok   api start command
-     FIX  db POSTGRES_PASSWORD is generated per deployment
-          -> set it to ${{secret(48, "abcdef0123456789")}} -- otherwise every deployment shares this project's password
-   ```
+```powershell
+cd ~
+git clone https://github.com/ryanfio15/Crime-Prevention-and-Personal-Safety-Application.git
+cd Crime-Prevention-and-Personal-Safety-Application
 
-Then, in the dashboard (workspace → **Templates** → `safety-map-template`):
+$bash = "C:\Program Files\Git\bin\bash.exe"
 
-1. **Fix every `FIX` line** in the composer. Expect at least the two database passwords: a draft generated from a
-   project copies that project's values, and each deployment needs its own.
-   - Set `POSTGRES_PASSWORD` and `SAFETY_APP_PASSWORD` on **db** to `${{secret(48, "abcdef0123456789")}}`. Hex only,
-     because the password ends up inside a connection URL.
-2. **Optional:** add descriptions to `BOOTSTRAP_CITIES` and `SOCRATA_APP_TOKEN` (etl). These are what deployers see.
-3. **Publish.** This makes the template **public** on Railway's marketplace. Use the **Publish** button, or the
-   command `make-template.sh` prints, which uses `deploy/railway/TEMPLATE.md` as the marketplace page.
-4. **Add the button** that `make-template.sh` printed to the README:
-
-   ```markdown
-   [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/<code>?utm_medium=integration&utm_source=button&utm_campaign=safety-map)
-   ```
-
-The reference project can stay as the template's live demo (`--demo-project` on publish), or be deleted with
-`deploy/railway/down.sh --template`.
-
-### What a template carries, and why the services are built the way they are
-
-A template stores each service's source, variables, start command, health check, volumes and public domain. It does
-**not** store a cron schedule, a restart policy or the Dockerfile path setting. Railway's own cron template tells
-deployers to set the schedule by hand after deploying. So nothing here depends on those:
-
-- **No cron.** The `etl` service is an always-on worker that schedules its own hourly ticks
-  (`etl_tick.py --loop`).
-- **Dockerfile paths in variables.** Every service has its Dockerfile in the `RAILWAY_DOCKERFILE_PATH` variable,
-  which Railway reads at build time.
-- **No restart policy needed.** Railway's default (restart on failure) is right for all four services.
-
----
-
-## Command-line deploy
-
-The same project without the template: for maintainers, CI, or trying a change before it is pushed (it uploads the
-working tree rather than building from GitHub).
-
-**You need:**
-- the Railway CLI: `npm i -g @railway/cli` (tested with 5.74.0);
-- `curl`, `jq` and `openssl`;
-- this repository checked out.
-
-Log the CLI in once per machine with `railway login`; on a machine without a browser, use
-`railway login --browserless`. In CI, export `RAILWAY_API_TOKEN` (an account token from
-[railway.com/account/tokens](https://railway.com/account/tokens)) instead. Keep it private: it can create and
-delete projects.
-
-```bash
-export SOCRATA_APP_TOKEN=<optional>     # faster first load for the four Socrata cities
-deploy/railway/up.sh
+git --version
+railway --version
+jq --version
+Test-Path $bash          # must print True
 ```
 
-The script:
-1. creates a Railway project (`safety-map`) and keeps its id in `deploy/railway/.project-id`, which git ignores;
-2. creates the four services, both volumes and every variable, generating the database passwords;
-3. sets each service's start command and health check;
-4. uploads the checkout and builds and deploys `db`, `valhalla`, `api` and `etl` (10–20 minutes);
-5. gives `api` a public `https://….up.railway.app` address and prints it.
+Four version numbers and `True`: you are ready. If `Test-Path` printed `False`, Git went somewhere else — find it
+with `(Get-Command git).Source` and use that folder's `bash.exe`.
 
-The worker's first tick then starts the data load.
+`$bash` lasts only as long as this PowerShell window. If you close it, set it again before using it; everything
+else survives.
 
-**Updating:** run the same command again. It updates the same project in place: settings and variables are
-re-applied and every service is rebuilt from the working tree. Passwords and data are kept. Rerunning also picks up
-each month's new routing tiles.
+Run every command below **from the repository root** — the `Crime-Prevention-and-Personal-Safety-Application`
+folder you just `cd`'d into. `railway logs` and friends want the linked project, which `up.sh` leaves set in this
+directory.
 
-**Taking it down:** `deploy/railway/down.sh` asks you to type the project name, then deletes the whole project and
-its data. Billing stops with it. Accounts with two-factor authentication:
-`RAILWAY_2FA_CODE=123456 deploy/railway/down.sh`.
+### 2. Log in and check the account
 
-| Option | Effect |
+```powershell
+railway login            # opens your browser; --browserless on a machine without one
+railway whoami           # confirm it is the account that should own the project
+```
+
+**That is the whole credential.** There is no token to create, paste or set: `up.sh` uses this login for everything,
+including the GraphQL calls Railway has no CLI command for. The two token variables below exist only for the cases
+that are not this one.
+
+| Variable | What it is | When to set it |
+|---|---|---|
+| — | The `railway login` session | **Deploying from your own machine. This is you.** |
+| `RAILWAY_API_TOKEN` | An *account* token, from [railway.com/account/tokens](https://railway.com/account/tokens) | CI, or a machine with no browser, instead of logging in. Keep it private: it can create and delete projects |
+| `RAILWAY_TOKEN` | A *project* token, scoped to one project | Never, here. It can deploy to a service that exists but cannot create projects or services |
+
+If `RAILWAY_TOKEN` is already set — from a Railway CI snippet, an earlier experiment — `up.sh` stops before it
+changes anything and says so, because the deploy would otherwise fail partway through with an authorization error.
+Check, and clear it only if something is there:
+
+```powershell
+$env:RAILWAY_TOKEN                      # prints nothing at all = nothing to do
+Remove-Item Env:RAILWAY_TOKEN           # only if the line above printed a token
+```
+
+(`unset` is the equivalent in bash and does not exist in PowerShell; `Remove-Item Env:…` is how PowerShell spells
+it.)
+
+The account needs a payment method on file, and enough plan headroom for an always-on database of several GB
+(see [What it builds](#what-it-builds)). Railway refuses the deploy otherwise, usually with a quota error on the
+first build.
+
+### 3. Deploy
+
+```powershell
+$env:SOCRATA_APP_TOKEN = "<optional>"   # faster first load for the four Socrata cities; skip this line if you have none
+& $bash deploy/railway/up.sh --cities phl,chi,sea,lax,dc,aus
+```
+
+The `&` is PowerShell's "run this program" symbol, and `$bash` is the path you set in step 1. Everything after it
+is passed to the script untouched. Any variable you set with `$env:` — like the Socrata token above — is passed
+down to it too.
+
+`--cities` is the default, written out: all six cities, switched on by the worker's first tick. Drop `aus` if the
+City of Austin's reuse terms have not been confirmed for a public deployment (docs/DEPLOYMENT.md).
+
+The script runs for 10–20 minutes and prints a `==>` heading per stage:
+
+| Stage | What happens |
 |---|---|
-| `--name <name>` | Project name for a new project (default `safety-map`) |
-| `--workspace <id or name>` | Railway workspace for a new project |
-| `--cities phl,chi,...` | Which cities the first start switches on (default all six) |
-| `--no-routing` | No `valhalla` service: drive, walk and bike directions show as unavailable; the map, transit and search keep working |
-| `--config-only` | Re-apply settings and variables without rebuilding anything |
-| `--github <branch>` | Build from this repository on GitHub instead of uploading (what `make-template.sh` uses) |
+| `creating Railway project 'safety-map'` | Creates the project, saves its id in `deploy/railway/.project-id` (git-ignored), and links this directory to it |
+| `services` | Creates `db`, `api`, `valhalla`, `etl` and the two volumes |
+| `variables` | Generates the two database passwords, sets every service's variables including `BOOTSTRAP_CITIES` |
+| `service settings` | Start commands, health check, Dockerfile paths, restart policy |
+| `building and deploying db / valhalla / api / etl` | Uploads the working tree and builds each one, in that order |
+| `public URL` | Gives `api` its `https://….up.railway.app` address |
+
+It ends with `Done.` and the site's address. **If it stops before `Done.`, nothing further runs on its own** —
+fix what it reported ([Troubleshooting](#troubleshooting)) and run the same command again; it picks up the same
+project and skips what already exists.
+
+### 4. Watch the four services come up
+
+`up.sh` returns as soon as each build is handed to Railway; the builds themselves finish afterwards. Watch them:
+
+```powershell
+railway logs --service db          # "database system is ready to accept connections"
+railway logs --service valhalla    # downloads ~1.2 GB of tiles into the image: slowest build
+railway logs --service api         # waits for db, applies migrations, then uvicorn
+railway logs --service etl         # the worker
+```
+
+Each one keeps printing until you stop it with **Ctrl+C**, which only closes the log view — it never stops the
+service. Or open the project (`https://railway.com/project/<id>`, printed at the end) and watch all four tiles turn green.
+Expect in this order, over roughly 10–25 minutes:
+
+1. **db** — the first start runs `initdb` on the empty volume: several minutes, then `safety_app` is created.
+2. **valhalla** — the long build. The map, transit and search do not wait on it; only directions do.
+3. **api** — logs `database not ready (attempt N/600)` until `db` is up, then applies all migrations, then serves.
+   Its health check allows 25 minutes for exactly this.
+4. **etl** — logs `worker started: a tick now, then hourly at :20 UTC`, then `safety.schemawait`, which waits for
+   `api`'s migrations before anything else.
+
+### 5. Confirm the site is up
+
+```powershell
+railway domain --service api                           # the address, if you lost it
+Invoke-RestMethod https://<address>/api/v1/health      # status : ok
+Start-Process https://<address>                        # opens the site in your browser
+```
+
+(Use `Invoke-RestMethod`, not `curl`: in PowerShell `curl` is a different command that does not take `-s`.)
+
+The map loads immediately and shows a progress bar: there is no data yet.
+
+### 6. Confirm the ETL started with all six cities
+
+The first tick is what enables the cities. In `railway logs --service etl`, look for this sequence:
+
+```
+etl_tick: worker started: a tick now, then hourly at :20 UTC
+etl_tick: 2026-11-16 14:03 UTC: bootstrap=yes, ops=yes, incremental=yes (due cities only), hourly=yes
+etl_tick: running safety.schemawait --timeout 1800
+etl_tick: running safety.bootstrap --skip-migrate --skip-converge    <- enables the six cities
+etl_tick: running safety.ops                                          <- the one-year load begins
+```
+
+`bootstrap=yes` only ever appears on the first tick: it writes a marker on the volume, so a city switched off later
+is not switched back on. Then check the registry:
+
+```powershell
+railway ssh --service api -- python -m safety.etl.run status
+```
+
+All six — `phl`, `chi`, `sea`, `lax`, `dc`, `aus` — should be listed as enabled. If `railway ssh` is unavailable,
+the **api** service's dashboard shell does the same. A city that fails its readiness check (usually a missing
+crosswalk) is reported and left off rather than forced on; switch it on once that is fixed:
+
+```powershell
+railway ssh --service api -- python -m safety.etl.run enable --city aus
+```
+
+The next hourly tick picks it up. Nothing else has to be started: `safety.ops` is already loading, and each city
+appears on the map as soon as its own year of data lands. The whole first load takes one to a few hours, mostly
+waiting on the city portals. After that the worker ticks hourly at :20 UTC, pulling what is due and deleting
+anything older than a year, with no further action.
 
 ---
 
@@ -197,19 +245,85 @@ its data. Billing stops with it. Accounts with two-factor authentication:
 | City status, data quality | — | `railway ssh --service api -- python -m safety.etl.run status` |
 | Turn a city off | — | `railway ssh --service api -- python -m safety.etl.run enable --city <id> --off` |
 | Turn a city on | — | `railway ssh --service api -- python -m safety.etl.run enable --city <id>` (the next tick loads it) |
-| Health | open `https://<address>/api/v1/health` | `curl -s https://<address>/api/v1/health` |
+| Health | open `https://<address>/api/v1/health` | `Invoke-RestMethod https://<address>/api/v1/health` |
 
 Restarting `etl` in the middle of a load is safe. It stops the running step cleanly, and the next tick picks up from
 what the data says is still missing.
 
 ---
 
+## Updating
+
+Run the same command again, from the repository root:
+
+```powershell
+$bash = "C:\Program Files\Git\bin\bash.exe"     # only if this is a new PowerShell window
+& $bash deploy/railway/up.sh
+```
+
+It updates the same project in place — `deploy/railway/.project-id` is how it finds it — re-applying settings and
+variables and rebuilding every service from the working tree. Passwords and data are kept, and the cities stay as
+they are: the bootstrap marker means `BOOTSTRAP_CITIES` is not re-applied, so a city switched off by hand stays off.
+Rerunning also picks up each month's new routing tiles.
+
+`--config-only` re-applies settings and variables without rebuilding anything, for changing a variable alone.
+
+---
+
+## Taking it down
+
+```powershell
+$bash = "C:\Program Files\Git\bin\bash.exe"     # only if this is a new PowerShell window
+& $bash deploy/railway/down.sh
+```
+
+It asks you to type the project name, then deletes the whole project and its data. Billing stops with it. Accounts
+with two-factor authentication:
+
+```powershell
+$env:RAILWAY_2FA_CODE = "123456"
+& $bash deploy/railway/down.sh
+```
+
+---
+
+## `up.sh` options
+
+| Option | Effect |
+|---|---|
+| `--name <name>` | Project name for a new project (default `safety-map`) |
+| `--workspace <id or name>` | Railway workspace for a new project |
+| `--cities phl,chi,...` | Which cities the first start switches on (default all six) |
+| `--no-routing` | No `valhalla` service: drive, walk and bike directions show as unavailable; the map, transit and search keep working |
+| `--config-only` | Re-apply settings and variables without rebuilding anything |
+| `--github <branch>` | Build every service from this repository on GitHub instead of uploading the working tree. Keeps its project id in `deploy/railway/.template-project-id`, separate from the uploaded one, so both can exist at once |
+
+---
+
 ## How it works
 
-**The worker, not a cron job.** Kubernetes runs three CronJobs and a bootstrap Job. On Railway they are one always-on
-service, for two reasons:
+### Why PowerShell calls `bash.exe`
+
+`up.sh` and `down.sh` are shell scripts, and PowerShell cannot run one itself. The options were a second,
+PowerShell copy of each script, or one copy called from PowerShell. Two copies of 400 lines of deploy logic drift
+apart — the copy nobody runs stops matching Railway's API first, and finds out during someone's deploy — so there
+is one copy, and PowerShell hands it to the `bash.exe` that Git for Windows installs.
+
+Nothing about this needs WSL, a Linux machine, or a Git Bash window. `bash.exe` is an ordinary program; `& $bash
+deploy/railway/up.sh` runs it the way `& $bash` would run any other. The script's own output appears in PowerShell
+exactly as it would anywhere else, and the Railway CLI, `git`, and everything else in this document are native
+Windows programs that PowerShell runs directly.
+
+If you prefer bash — on macOS, Linux, or in a Git Bash window on Windows — every command here works unchanged
+without the `& $bash` prefix: `deploy/railway/up.sh --cities …`.
+
+### The rest
+
+**The worker, not a cron job.** Kubernetes runs three CronJobs and a bootstrap Job. On Railway they are one
+always-on service, for two reasons:
 - a volume attaches to one service only, so separate jobs would mean separate bronze archives;
-- a template cannot carry a cron schedule.
+- the schedule then lives in this repository, next to the steps it runs and covered by its tests, rather than in a
+  Railway setting that has to be kept in step with it by hand.
 
 `etl_tick.py --loop` runs a tick as soon as it starts, then one every hour at :20 UTC, sleeping in between. Each
 step runs as its own subprocess, so the memory a census load needs is returned when it finishes. The Kubernetes
@@ -251,9 +365,8 @@ shape"). Every setting already supports more replicas.
 
 **Routing tiles in the image.** Kubernetes downloads the tiles in an init container. Railway has none, so
 `valhalla.Dockerfile` runs the same verified download (`scripts/fetch_valhalla_tiles.py`) in a build stage, for the
-release named by `VALHALLA_TILES_TAG`:
-- `up.sh` sets it to the newest release;
-- a template deployment uses the newest one at build time.
+release named by `VALHALLA_TILES_TAG`. `up.sh` sets it to the newest release each run, which also busts the image's
+build cache.
 
 **Rate limiting.** There is no Traefik or nginx in front, so the app's own limiter (`safety/api/ratelimit.py`) does
 the work, keyed on the client address uvicorn takes from Railway's proxy headers. `FORWARDED_ALLOW_IPS` stays `*`,
@@ -263,7 +376,12 @@ because Railway's proxy address range is not published (see the `Dockerfile` com
 - Railway's config-as-code files (`railway.toml`/`railway.json`) are deprecated and stop working on 2026-12-01.
 - Their successor (`.railway/railway.ts`) has no start command, Dockerfile path or restart policy.
 - `up.sh` sets those through Railway's public GraphQL API, by way of `railway api`, so the CLI's login is the only
-  credential.
+  credential. That is also what makes a rerun idempotent: every service, volume, variable and domain is looked up
+  before it is created.
+
+**Dockerfile paths twice.** Each service has its Dockerfile both in the `dockerfilePath` setting and in the
+`RAILWAY_DOCKERFILE_PATH` variable. Railway reads the variable at build time, and keeping the two equal means a
+service redeployed from the dashboard builds the same image as one deployed by the script.
 
 ---
 
@@ -285,24 +403,27 @@ Verified on 2026-11-14:
 - **Against a stand-in Railway CLI and API:**
   - `up.sh`, in both upload and `--github` modes, creates, then reruns with no duplicate services, volumes or
     domains, and keeps its passwords.
-  - `make-template.sh` builds the reference project from GitHub and generates the draft. Its checker passes a
-    faithful copy except for the two passwords, and flags each item a lossy copy drops.
-  - `down.sh`, including `--template`, refuses without the exact project name.
+  - `down.sh` refuses without the exact project name.
 - **Against Railway itself:**
   - Every CLI flag used matches Railway CLI 5.74.0.
   - Every GraphQL query, mutation, argument and input field used exists in the live schema.
   - `railway api` works with only a browser login.
-  - Published templates' stored configuration confirms what a template carries: start command, health check,
-    volumes, variables with descriptions and `${{secret()}}` defaults, and no cron schedule.
+- **From PowerShell on Windows 11** (2026-11-16), since that is what this document now tells you to type:
+  - `& $bash deploy/railway/up.sh --help` runs the script and exits 0, with `$bash` as written here.
+  - A variable set with `$env:` reaches the script (`SOCRATA_APP_TOKEN` arrives set).
+  - PowerShell passes a bare `--` through to a program untouched, which is what
+    `railway ssh --service api -- python -m …` needs.
+  - `winget` has `Git.Git`, `OpenJS.NodeJS.LTS` and `jqlang.jq`, but no Railway CLI, which is why that one is
+    installed through npm.
+  - `jq` is **not** part of Git for Windows and has to be installed separately; `curl` and `openssl` are.
 
 Not yet verified against a live Railway project:
-- exactly what `templateGenerate` copies (`make-template.sh` checks the draft and says what to fix);
 - the exact JSON `railway init --json` prints (the script falls back to `railway status --json`);
-- whether a deployed template copy redeploys by itself when the branch changes, or needs **Redeploy** in its
+- in `--github` mode, whether a service redeploys by itself when the branch changes, or needs **Redeploy** in the
   dashboard;
 - `railway ssh` running a one-off command as written above.
 
-The first `make-template.sh` run is the remaining test.
+A first end-to-end run against a real Railway account is the remaining test.
 
 ---
 
@@ -311,12 +432,18 @@ The first `make-template.sh` run is the remaining test.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `not logged in to Railway` | The CLI has no login on this machine | `railway login`, then rerun |
-| `unset RAILWAY_TOKEN` | A project token is set in the shell; it cannot create projects | `unset RAILWAY_TOKEN` and rerun |
+| `unset RAILWAY_TOKEN` | A project token is set; it cannot create projects | `Remove-Item Env:RAILWAY_TOKEN` and rerun |
 | `Railway API: Not Authorized` | Logged in to a different account, or the project is in a workspace you can't manage | `railway whoami`; `railway logout` and `railway login` as the right account |
-| `make-template.sh: branch … is not on origin` | The template builds from GitHub | `git push origin <branch>` first |
+| `The term 'railway' is not recognized…` | Installed, but this PowerShell window predates the install | Close PowerShell, open it again, retry. Still missing: `npm install -g @railway/cli` |
+| `unset : The term 'unset' is not recognized…` | `unset` is a bash command, and you are in PowerShell | `Remove-Item Env:RAILWAY_TOKEN` is PowerShell's spelling |
+| `& : The term 'C:\Program Files\Git\bin\bash.exe' is not recognized…` | `$bash` is unset (a new window) or Git is installed elsewhere | Set `$bash` again; check with `Test-Path $bash`, and find Git with `(Get-Command git).Source` |
+| `up.sh: jq is not installed` | `jq` does not come with Git for Windows | `winget install jqlang.jq`, then reopen PowerShell |
+| `deploy/railway/up.sh: No such file or directory` | PowerShell is not in the repository root | `cd` to the `Crime-Prevention-and-Personal-Safety-Application` folder and retry |
+| `up.sh` stops during a build | A build failed, or the account's plan ran out of room | The service's build log in the dashboard; fix, then rerun the same command |
 | `api` logs `database not ready (attempt N/600)` for minutes | The database's first start (initdb) | Wait; the API waits up to 20 minutes and its health check allows 25 |
 | `api` crash-loops with `password authentication failed` | The `db` volume was initialised with other passwords | Don't change the passwords by hand after the first deploy; on a brand-new project, delete it and deploy again |
 | Map empty, no progress bar after 30 minutes | The worker's first tick is waiting or failing | **etl** logs; `schemawait: waiting` means the API hasn't migrated yet, so check the **api** logs |
+| A city missing from `status` after the first tick | Its readiness check failed, so the bootstrap left it off | **etl** logs for the reason; fix it, then `enable --city <id>` |
 | A worker tick reports failures | One step failed, often a city portal's bad day | **etl** logs; the next hourly tick retries |
 | Directions say drive/walk/bike unavailable | `valhalla` is down or was left out (`--no-routing`) | **valhalla** logs |
 | `429 Too Many Requests` | The per-client rate limit, working as intended | Nothing; normal use never reaches it |

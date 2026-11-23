@@ -1,45 +1,113 @@
 /* ---------------------------------------------------------------------------
-   Design tokens.
+   UI 5 ("Friendly"): fonts and design tokens (docs/ui5/UI5_SPEC.md).
 
-   Light is a *selected* mode, not a flipped one: the sequential ramp steps below
-   are the same documented blue family, re-ordered so the light end recedes
-   toward the page and the dark end carries the high values, and the ink and
-   surface tokens are the light-surface pair rather than inverted dark ones.
-   Text always wears ink tokens -- never a series colour.
+   Nunito is self-hosted from web/fonts/ (SIL OFL, web/fonts/OFL-LICENSE.txt):
+   the CSP in safety/api/security.py allows same-origin fonts only.
+
+   ONE breakpoint: 768 px. Phones are `(max-width: 767.98px)`, written out the
+   same in every media query here and as NARROW_QUERY in app.js;
+   tests/js/breakpoint.test.mjs fails on any other width query. Everything
+   else is fluid (wrapping rows, clamp(), min()).
    --------------------------------------------------------------------------- */
+
+@font-face { font-family: "Nunito"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/nunito-latin-500-normal.woff2") format("woff2"); }
+@font-face { font-family: "Nunito"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/nunito-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "Nunito"; font-style: normal; font-weight: 700; font-display: swap; src: url("fonts/nunito-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Nunito"; font-style: normal; font-weight: 800; font-display: swap; src: url("fonts/nunito-latin-800-normal.woff2") format("woff2"); }
+@font-face { font-family: "Nunito"; font-style: normal; font-weight: 900; font-display: swap; src: url("fonts/nunito-latin-900-normal.woff2") format("woff2"); }
+
+/* Light and dark are two sets of the same tokens. web/theme.js sets
+   html[data-theme] before first paint: the visitor's saved choice, else the
+   system's. The media block covers a page whose script has not run. Map
+   colours that MapLibre paints are read from these tokens in app.js
+   (themeColor), so the map and the page cannot drift apart. */
 :root {
   color-scheme: light;
 
-  --surface-1:      #fcfcfb;   /* chart / panel surface */
-  --page:           #f9f9f7;   /* page plane */
-  --text-primary:   #0b0b0b;
-  --text-secondary: #52514e;
-  --text-muted:     #898781;
-  --danger:         #b91c1c;   /* errors; 6.1:1 on --page, 6.3:1 on --surface-1 */
-  --gridline:       #e1e0d9;
-  --baseline:       #c3c2b7;
-  --border:         rgba(11, 11, 11, 0.10);
+  --land:     #fbf4ea;   /* page / map background */
+  --panel:    #ffffff;
+  --soft:     #fdf0e3;   /* inputs, chips, idle buttons */
+  --border:   #f0dfcd;
+  --text:     #3a2b26;
+  --muted:    #8a766b;
+  --primary:  #f06a3f;   /* actions, selection */
+  --on-primary: #ffffff;
+  --calm-bg:  #e4f5ec;  --calm-text: #23845f;
+  --typ-bg:   #fff3d1;  --typ-text:  #94690a;
+  --busy-bg:  #fde2e6;  --busy-text: #b93850;
+  --shadow:   0 10px 30px rgba(120, 70, 40, 0.14);
+  --me:       #4b7be5;   /* my-location blue */
+  --danger:   #b93850;
+  --scrim:    rgba(58, 43, 38, 0.32);
 
-  /* Slot 1, light step. Single-series bars and the sparkline use this. */
-  --series-1:       #2a78d6;
+  /* The map ramp, low -> high, the same in both themes (app.js RAMP_ANCHORS
+     places them on RAMP_HINGES: 0, 0.75x, 1.5x, 2x, 3x). */
+  --ramp-0: #3fae86;
+  --ramp-1: #a8d47e;
+  --ramp-2: #ffd166;
+  --ramp-3: #ff9a6b;
+  --ramp-4: #e85a72;
+  /* "Nothing was reported here": its own state, not the low end of the ramp. */
+  --zero-fill: #e1e0d9;
+  --cell-opacity: 0.5;
+  --route-casing: #ffffff;
+  --route-alt: #a8968a;
 
-  /* Sequential blue, low -> high on a light surface. */
-  --seq-1: #cde2fb;
-  --seq-2: #9ec5f4;
-  --seq-3: #6da7ec;
-  --seq-4: #3987e5;
-  --seq-5: #256abf;
-  --seq-6: #184f95;
+  --r-card: 30px;
+  --r-inner: 20px;
+  --pill: 999px;
+  --tap: 44px;
+  --edge: 16px;          /* gap from the window's edge */
+  --rail-w: 84px;
 
-  /* "Nothing was reported here" recedes toward the surface. It is a distinct
-     state from "the quietest fifth of the city", so it gets its own colour. */
-  --seq-zero: #e1e0d9;
+  /* Safe areas (notch, home bar), folded into each edge once. */
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
 
-  --radius: 10px;
-  --pad: 16px;
-
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: "Nunito", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-weight: 600;
 }
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --land:     #221c22;
+  --panel:    #2c242b;
+  --soft:     #3a3038;
+  --border:   #4a3e47;
+  --text:     #fbeee4;
+  --muted:    #bba79c;
+  --primary:  #ff8a5c;
+  --on-primary: #2c1a14;
+  --calm-bg:  rgba(76, 196, 149, 0.16);  --calm-text: #7fdcb5;
+  --typ-bg:   rgba(255, 209, 102, 0.16); --typ-text:  #ffd166;
+  --busy-bg:  rgba(232, 90, 114, 0.18);  --busy-text: #ff9aab;
+  --shadow:   0 10px 30px rgba(0, 0, 0, 0.45);
+  --me:       #8fb0ff;
+  --danger:   #ff9aab;
+  --scrim:    rgba(0, 0, 0, 0.5);
+  --zero-fill: #5a5058;
+  --cell-opacity: 0.46;
+  --route-casing: #120e12;
+  --route-alt: #bba79c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --land: #221c22; --panel: #2c242b; --soft: #3a3038; --border: #4a3e47;
+    --text: #fbeee4; --muted: #bba79c; --primary: #ff8a5c; --on-primary: #2c1a14;
+    --calm-bg: rgba(76, 196, 149, 0.16); --calm-text: #7fdcb5;
+    --typ-bg: rgba(255, 209, 102, 0.16); --typ-text: #ffd166;
+    --busy-bg: rgba(232, 90, 114, 0.18); --busy-text: #ff9aab;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.45); --me: #8fb0ff; --danger: #ff9aab;
+    --scrim: rgba(0, 0, 0, 0.5); --zero-fill: #5a5058; --cell-opacity: 0.46;
+    --route-casing: #120e12; --route-alt: #bba79c;
+  }
+}
+
+/* ------------------------------------------------------------------ base --- */
 
 * { box-sizing: border-box; }
 
@@ -48,719 +116,1524 @@
 [hidden] { display: none !important; }
 
 html, body {
+  /* The app is one fixed screen: it never rubber-bands as a whole (iOS).
+     The map's own pan and zoom are touch handlers, not page scrolling. */
+  overscroll-behavior: none;
   margin: 0;
   height: 100%;
-  background: var(--page);
-  color: var(--text-primary);
-  font-size: 14px;
-  line-height: 1.5;
+  background: var(--land);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
+  /* A press-and-hold on the map must not select text or raise the iOS
+     callout; text inputs opt back in. */
+  -webkit-tap-highlight-color: transparent;
 }
 
-/* -------------------------------------------------------------- controls --- */
+h1, h2, h3 { margin: 0; font-weight: 900; letter-spacing: -0.01em; }
+h2 { font-size: 22px; line-height: 1.2; }
+h3 { font-size: 15px; font-weight: 800; }
+p { margin: 0; }
+button, input { font: inherit; color: inherit; }
+svg { width: 22px; height: 22px; flex: none; }
 
-.field { display: flex; flex-direction: column; gap: 5px; }
+.icon-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
 
-.field-label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
-}
-
-select, .btn {
-  appearance: none;
-  min-height: 32px;
-  padding: 6px 11px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--page);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
-}
-select:hover, .btn:hover { border-color: rgba(11, 11, 11, 0.28); }
-select:focus-visible, .btn:focus-visible {
-  outline: 2px solid var(--series-1);
-  outline-offset: 1px;
-}
-select:disabled { opacity: 0.55; cursor: not-allowed; }
-.btn[aria-pressed="true"] { border-color: var(--series-1); color: var(--series-1); }
-
-/* Track tabs. One control, two segments, so the pair reads as a single choice
-   rather than as two independent buttons. */
-.tabs {
-  display: flex;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+.sr-only {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
   overflow: hidden;
-  background: var(--page);
-}
-
-.tab {
-  appearance: none;
-  min-height: 32px;
-  padding: 6px 13px;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
   border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
+}
+
+:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+
+.kicker { font-size: 13px; font-weight: 700; color: var(--muted); }
+.lede { color: var(--muted); font-weight: 600; }
+.fineprint { font-size: 12px; color: var(--muted); font-weight: 600; }
+.fineprint:empty { display: none; }
+.honest { text-align: center; }
+
+/* --------------------------------------------------------------- controls --- */
+
+/* Every button, chip and input is a full pill, at least 44 px tall. */
+.btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 50px;
+  padding: 0 24px;
+  border: 2px solid transparent;
+  border-radius: var(--pill);
+  background: var(--soft);
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn-primary { background: var(--primary); color: var(--on-primary); }
+.btn-primary:hover:not(:disabled) { filter: brightness(1.05); }
+.btn-ghost { background: var(--panel); border-color: var(--border); }
+.btn-soft { background: var(--soft); }
+.btn-danger { background: var(--busy-bg); color: var(--busy-text); }
+
+.mini-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--pill);
+  background: var(--soft);
+  color: var(--text);
   font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mini-btn:disabled { opacity: 0.6; }
+
+.icon-btn {
+  appearance: none;
+  display: inline-grid;
+  place-items: center;
+  width: var(--tap);
+  height: var(--tap);
+  flex: none;
+  border: 0;
+  border-radius: 50%;
+  background: var(--soft);
+  color: var(--text);
   cursor: pointer;
 }
-.tab + .tab { border-left: 1px solid var(--border); }
-.tab:hover { color: var(--text-primary); }
-.tab[aria-selected="true"],
-.tab[aria-checked="true"] {
-  background: rgba(11, 11, 11, 0.06);
-  color: var(--text-primary);
-}
-.tab:focus-visible { outline: 2px solid var(--series-1); outline-offset: -2px; }
+.icon-btn svg { width: 18px; height: 18px; }
 
-
-/* ---------------------------------------------------------------- layout --- */
-
-.layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
-  min-height: 0;
-}
-
-.map-pane { position: relative; min-height: 0; }
-#map { position: absolute; inset: 0; background: var(--page); }
-
-/* No skeleton flash on refetch: hold the previous render, dimmed. */
-#map.is-refetching { opacity: 0.55; transition: opacity 120ms ease; }
-
-.loading {
-  position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 5px 12px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface-1);
-  color: var(--text-secondary);
-  font-size: 12px;
-  z-index: 3;
+.link-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--primary);
+  font-weight: 800;
+  font-size: 14px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
 }
 
-/* A failed load stays on screen (app.js refreshLayers) and must read as an error,
-   not as a stuck "Loading". */
-.loading.is-error {
-  color: var(--danger);
-  border-color: var(--danger);
+/* A segmented pill: one choice of two or four. Selected is orange. */
+.seg {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--pill);
+  background: var(--soft);
 }
+.seg-wide { display: flex; }
+.seg-wide .seg-btn { flex: 1 1 0; }
+.seg-btn {
+  appearance: none;
+  min-height: var(--tap);
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--pill);
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.seg-btn[aria-selected="true"] { background: var(--primary); color: var(--on-primary); }
+.seg-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+/* The separate mode tabs in the directions panel are pills of their own. */
+.dir-modes { background: none; padding: 0; gap: 8px; }
+.dir-modes .seg-btn { background: var(--soft); }
+.dir-modes .seg-btn[aria-selected="true"] { background: var(--primary); }
 
-/* ----------------------------------------------------------- locate note --- */
-
-.locate-note {
-  position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 3;
+/* On/off switch: "Color the map". The button is the 44 px target; the track
+   is drawn inside it. */
+.switch-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  width: max-content;
-  max-width: min(460px, calc(100% - 32px));
-  padding: 8px 8px 8px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-1);
-  box-shadow: 0 2px 10px rgba(11, 11, 11, 0.08);
-  font-size: 12.5px;
-  color: var(--text-primary);
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 800;
 }
-.locate-note .btn { flex: none; white-space: nowrap; }
-.locate-note-close {
+.switch {
+  appearance: none;
+  position: relative;
+  width: 56px;
+  height: var(--tap);
   flex: none;
   border: 0;
   background: none;
-  font-size: 18px;
-  line-height: 1;
-  color: var(--text-muted);
   cursor: pointer;
 }
-
-/* --------------------------------------------------------------- compass --- */
-
-/* Under MapLibre's zoom buttons (top-right). */
-.compass {
+.switch::before {
+  content: "";
   position: absolute;
-  right: 10px;
-  top: 82px;
-  z-index: 2;
-  width: 168px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: rgba(252, 252, 251, 0.94);
-  backdrop-filter: blur(6px);
-  text-align: center;
+  left: 4px; right: 4px; top: 8px; bottom: 8px;
+  border-radius: var(--pill);
+  background: var(--border);
+  transition: background 150ms ease;
 }
-
-.compass-title {
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-
-.compass-dial {
-  width: 104px;
-  height: 104px;
-  margin: 0 auto;
-}
-
-/* Turned by -bearing in app.js, so the letters stay on real north. */
-.compass-rose {
-  position: relative;
-  width: 100%;
-  height: 100%;
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 11px;
+  left: 7px;
+  width: 22px; height: 22px;
   border-radius: 50%;
-  border: 1px solid var(--baseline);
-  background: var(--surface-1);
-  transition: transform 120ms linear;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 150ms ease;
+}
+.switch[aria-checked="true"]::before { background: var(--primary); }
+.switch[aria-checked="true"]::after { transform: translateX(20px); }
+
+.time-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--tap);
+  padding: 0 18px;
+  border-radius: var(--pill);
+  background: var(--panel);
+  font-weight: 800;
+  white-space: nowrap;
+}
+.time-chip svg { width: 20px; height: 20px; color: var(--primary); }
+.time-chip-wide { white-space: normal; display: flex; background: var(--soft); border-radius: 16px; padding: 0 16px; }
+
+/* Bands: the same four the legend lists, from RAMP_HINGES (app.js bandOf). */
+[data-band="calm"]  { --band-bg: var(--calm-bg); --band-text: var(--calm-text); --band-ramp: var(--ramp-0); }
+[data-band="busier"] { --band-bg: var(--typ-bg); --band-text: var(--typ-text); --band-ramp: var(--ramp-2); }
+[data-band="busy"]  { --band-bg: var(--busy-bg); --band-text: var(--busy-text); --band-ramp: var(--ramp-3); }
+[data-band="very"]  { --band-bg: var(--busy-bg); --band-text: var(--busy-text); --band-ramp: var(--ramp-4); }
+[data-band="none"]  { --band-bg: var(--soft); --band-text: var(--muted); --band-ramp: var(--zero-fill); }
+.band-text { color: var(--band-text); font-weight: 800; }
+
+.band-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-radius: var(--pill);
+  background: var(--band-bg, var(--soft));
+  color: var(--band-text, var(--muted));
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.band-chip::before {
+  content: "";
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--band-ramp, var(--muted));
+}
+.band-chip.plain::before { display: none; }
+
+/* A face on a coloured disc, in the band's colour: smile, flat or frown
+   (faceSvg in app.js draws it on a symmetric grid). */
+.face {
+  display: inline-block;
+  width: 46px; height: 46px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--band-ramp, var(--soft));
+  color: #ffffff;
+}
+.face[data-band="busier"], .face[data-band="busy"] { color: #3a2b26; }
+.face[data-band="none"] { color: var(--muted); }
+.face svg { display: block; width: 100%; height: 100%; }
+.face circle { fill: currentColor; }
+.face path { fill: none; stroke: currentColor; stroke-width: 3.2; stroke-linecap: round; }
+
+/* Card surface. */
+.card, .see-card, .cell-card, .panel, .search-card .search-box, .compass-mini,
+.view-bar .time-chip, .view-bar .seg, .zoom-pill, .fab, .legend-strip, .tip-float {
+  background: var(--panel);
+  box-shadow: var(--shadow);
 }
 
-.compass-wedges { position: absolute; inset: 0; width: 100%; height: 100%; }
-
-.compass-cardinal {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 16px;
-  margin: -8px 0 0 -8px;
-  line-height: 16px;
-  font-size: 11px;
+/* The bubble the buddy (the small smiling shield) talks in. It only ever
+   restates something the page already worked out. */
+.tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  font-size: 14px;
   font-weight: 700;
-  color: var(--text-secondary);
-  transform: rotate(var(--a)) translateY(-41px) rotate(calc(-1 * var(--a)));
 }
-
-/* Points at the lowest sector; rotated in app.js relative to the rose. */
-.compass-needle {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 0;
-  height: 0;
-  transition: transform 200ms ease;
-}
-.compass-needle::before {
-  content: "";
-  position: absolute;
-  left: -6px;
-  top: -30px;
-  border-left: 6px solid transparent;
-  border-right: 6px solid transparent;
-  border-bottom: 30px solid var(--text-primary);
-}
-.compass-needle::after {
-  content: "";
-  position: absolute;
-  left: -4px;
-  top: -4px;
-  width: 8px;
-  height: 8px;
+.tip-inline { padding: 12px 14px; border-radius: 18px; background: var(--soft); }
+.buddy {
+  display: inline-grid;
+  place-items: center;
+  width: 34px; height: 34px;
+  flex: none;
   border-radius: 50%;
-  background: var(--text-primary);
+  background: var(--panel);
+  color: var(--primary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
 }
-.compass[data-state="none"] .compass-needle { display: none; }
+.buddy svg { width: 22px; height: 22px; }
+.buddy-big { width: 54px; height: 54px; background: var(--primary); color: #ffffff; box-shadow: none; }
+.buddy-big svg { width: 32px; height: 32px; --on-primary: var(--primary); }
 
-.compass-readout {
-  margin-top: 6px;
+.note {
+  display: flex;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 13px;
+}
+.note svg { width: 18px; height: 18px; color: var(--primary); margin-top: 1px; }
+
+.bar {
+  height: 8px;
+  border-radius: var(--pill);
+  background: var(--soft);
+  overflow: hidden;
+}
+.bar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: var(--pill);
+  background: var(--primary);
+  transition: width 600ms ease;
+}
+
+.sheet-handle {
+  display: none;
+  width: 44px; height: 5px;
+  margin: -4px auto 10px;
+  border-radius: var(--pill);
+  background: var(--border);
+}
+
+/* ---------------------------------------------------------------- layout --- */
+
+.app { position: fixed; inset: 0; }
+#map {
+  position: absolute;
+  inset: 0;
+  background: var(--land);
+  /* Press-and-hold drops a pin: no text selection or iOS callout. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* No skeleton flash on refetch: hold the previous render, dimmed. */
+#map.is-refetching { opacity: 0.6; transition: opacity 120ms ease; }
+
+/* MapLibre's own controls (scale, attribution) in the page's type. */
+.maplibregl-ctrl, .maplibregl-ctrl-attrib { font-family: inherit; }
+.maplibregl-ctrl-attrib.maplibregl-compact { background: var(--panel); color: var(--text); }
+/* MapLibre's attribution button keeps its own 24 px look; an invisible
+   margin around it makes the tap target the page's 44 px minimum. */
+.maplibregl-ctrl-attrib-button::after { content: ""; position: absolute; inset: -10px; }
+.maplibregl-ctrl-attrib a { color: var(--text); }
+/* The credit line stays on the free map: no wider than it (it wraps rather
+   than running under a side panel), and lifted above the hexagon card when
+   the two would meet (--ctrl-lift, placeAboveSheets in app.js). */
+.maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib { max-width: max(200px, calc(100vw - var(--left) - 2 * var(--edge))); }
+.maplibregl-ctrl-bottom-right { bottom: var(--ctrl-lift, 0px); }
+.maplibregl-ctrl-scale { background: color-mix(in srgb, var(--panel) 80%, transparent); border-color: var(--muted); color: var(--text); }
+
+/* Where floating things start, past the rail: the left edge of the free map. */
+.app {
+  /* The Explore card's width: 304 px, narrowing to 260 on smaller desktop
+     windows so the top row keeps room for the search. */
+  --see-w: clamp(260px, 28vw, 304px);
+  /* Where the free map starts: past the rail, and past the open panel in
+     the sections that have one (below). */
+  --rail-right: calc(var(--safe-l) + var(--edge) + var(--rail-w) + var(--edge));
+  --left: var(--rail-right);
+}
+
+/* ---- the rail (desktop) / tab bar (phone) */
+.rail {
+  position: absolute;
+  z-index: 6;
+  left: calc(var(--safe-l) + var(--edge));
+  top: calc(var(--safe-t) + var(--edge));
+  bottom: calc(var(--safe-b) + var(--edge));
+  width: var(--rail-w);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 0;
+  border-radius: var(--r-card);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  overflow-y: auto;
+}
+.rail-logo {
+  display: grid;
+  place-items: center;
+  width: 50px; height: 50px;
+  margin-bottom: 14px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #ffffff;
+}
+.rail-logo svg { width: 30px; height: 30px; --on-primary: var(--primary); }
+.rail-btn {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 70px;
+  min-height: 62px;
+  flex: none;
+  border: 0;
+  border-radius: 20px;
+  background: none;
+  color: var(--text);
   font-size: 12px;
-  color: var(--text-primary);
+  font-weight: 800;
+  cursor: pointer;
 }
-.compass-readout b { font-size: 14px; }
-.compass-detail { display: block; }
-
-.compass-foot {
-  margin-top: 3px;
-  font-size: 10.5px;
-  color: var(--text-muted);
+.rail-btn[aria-current="page"], .rail-btn[aria-expanded="true"] { background: var(--soft); color: var(--primary); }
+.theme-switch {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: auto;
+  padding: 5px;
+  flex: none;
+  border-radius: var(--pill);
+  background: var(--soft);
 }
+.theme-switch button {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: var(--tap); height: var(--tap);
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.theme-switch button[aria-pressed="true"] { background: var(--panel); color: var(--primary); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12); }
 
-/* Hourly profile: 24 columns, one per block.
-   A column chart, because the x axis here is ordered and cyclic -- the shape
-   across the day is the point. One hue throughout: height already
-   carries the value, so colour is spent only on marking the selected block. */
+/* ---- the top row: small compass + search */
+.top-row {
+  position: absolute;
+  z-index: 4;
+  top: calc(var(--safe-t) + var(--edge));
+  left: var(--left);
+  right: calc(var(--safe-r) + var(--edge) + var(--see-w) + var(--edge) + 48px + var(--edge));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--edge);
+  pointer-events: none;
+}
+.top-row > * { pointer-events: auto; }
+
+.compass-mini {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 0 1 auto;
+  min-width: 0;
+  min-height: 78px;
+  padding: 10px 20px 10px 12px;
+  border: 0;
+  border-radius: var(--r-card);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.compass-mini .rose-mini { width: 56px; height: 56px; }
+.compass-mini-text { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+.compass-mini-text > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compass-mini-text strong { font-size: 16px; font-weight: 900; }
+.compass-foot { font-size: 12px; color: var(--muted); }
+
+/* min-width 0: as a flex item the card would otherwise refuse to be
+   narrower than its content, and push past the screen's edge on a phone. */
+.search-card { position: relative; flex: 1 1 340px; min-width: 0; max-width: 560px; margin-inline: auto; }
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 62px;
+  padding: 0 8px 0 22px;
+  border-radius: var(--r-card);
+}
+.search-icon { width: 22px; height: 22px; color: var(--primary); }
+#search-input {
+  /* width 0 + flex 1: the box takes whatever the clear button and city
+     chip leave, and a long address scrolls inside it instead of widening
+     the bar (its default width is about 200 px and never shrinks). */
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  min-height: var(--tap);
+  border: 0;
+  background: none;
+  font-size: 18px;
+  font-weight: 700;
+  outline: none;
+}
+#search-input::placeholder { color: var(--muted); font-weight: 600; }
+.search-box:focus-within { outline: 3px solid var(--primary); outline-offset: 2px; }
+.city-chip {
+  appearance: none;
+  min-height: 46px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--pill);
+  background: var(--soft);
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.search-status { margin: 8px 6px 0; padding: 8px 14px; border-radius: 16px; background: var(--panel); box-shadow: var(--shadow); font-size: 13px; font-weight: 700; }
+.search-status:empty { display: none; }
+.search-status.is-error { color: var(--danger); }
+
+/* Suggestions: numbered, each with how its hexagon compares now. */
+.combo { position: relative; }
+.combo-list {
+  position: absolute;
+  z-index: 8;
+  top: calc(100% + 10px);
+  left: 0; right: 0;
+  margin: 0;
+  padding: 8px;
+  list-style: none;
+  max-height: min(340px, 50dvh);
+  overflow-y: auto;
+  border-radius: 26px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.combo-list [role="option"] {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 8px 12px;
+  border-radius: 18px;
+  cursor: pointer;
+}
+.combo-list [role="option"]:hover,
+.combo-list [role="option"][aria-selected="true"] { background: var(--soft); }
+.opt-num {
+  display: grid;
+  place-items: center;
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  background: var(--band-ramp, var(--soft));
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 900;
+}
+.opt-num[data-band="busier"], .opt-num[data-band="busy"] { color: #3a2b26; }
+.opt-num[data-band="none"] { color: var(--text); }
+.opt-text { display: flex; flex-direction: column; min-width: 0; }
+.opt-title { font-size: 16px; font-weight: 800; overflow-wrap: anywhere; }
+.opt-sub { font-size: 12.5px; color: var(--muted); }
+
+/* ---- Violent / Non-violent floating under the search (phone only) */
+
+/* ---- top right outside Explore (desktop) */
+.view-bar {
+  position: absolute;
+  z-index: 4;
+  top: calc(var(--safe-t) + var(--edge));
+  right: calc(var(--safe-r) + var(--edge));
+  display: none;
+  gap: 10px;
+  align-items: center;
+}
+.view-bar .seg { background: var(--panel); padding: 4px; }
+/* Too little room beside a side panel (fitDesktopBars in app.js): the
+   track toggle stays, the time chip goes, the toggle gets compact. */
+.view-bar.is-tight .time-chip { display: none; }
+.view-bar.is-tight .seg-btn { padding: 0 12px; font-size: 14px; }
+
+/* ---- round map buttons */
+.map-fabs {
+  position: absolute;
+  z-index: 4;
+  top: calc(var(--safe-t) + var(--edge));
+  right: calc(var(--safe-r) + var(--edge) + var(--see-w) + var(--edge));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.zoom-pill { display: flex; flex-direction: column; border-radius: var(--pill); overflow: hidden; }
+.fab-btn, .fab {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 48px; height: 48px;
+  border: 0;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+.fab { border-radius: 50%; color: var(--primary); }
+.fab-btn svg { width: 18px; height: 18px; }
+#btn-key, #theme-fab { display: none; }
+.fab.is-busy { opacity: 0.6; }
+
+/* ---- Explore right: what would you like to see? */
+.see-card {
+  position: absolute;
+  z-index: 5;
+  top: calc(var(--safe-t) + var(--edge));
+  right: calc(var(--safe-r) + var(--edge));
+  width: var(--see-w);
+  max-height: calc(100dvh - var(--safe-t) - var(--safe-b) - 2 * var(--edge));
+  display: flex;
+  flex-direction: column;
+  padding: 24px 22px 18px;
+  border-radius: var(--r-card);
+}
+/* The card is a frame; its body scrolls (see index.html). */
+.see-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.see-card h2 { font-size: 20px; }
+.see-card h3 { margin-bottom: -4px; }
+.see-close { display: none; }
+
+.legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
+.legend li { display: flex; align-items: center; gap: 12px; font-weight: 800; }
+.legend .sw {
+  width: 22px; height: 22px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--sw);
+}
+.legend .range { margin-left: auto; color: var(--muted); font-size: 13px; font-weight: 600; white-space: nowrap; }
+
+.see-progress { display: grid; gap: 8px; font-size: 13px; color: var(--muted); }
+
+.legend-strip {
+  position: absolute;
+  z-index: 3;
+  right: calc(var(--safe-r) + var(--edge));
+  bottom: calc(var(--safe-b) + var(--edge));
+  display: none;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 10px 18px;
+  border-radius: var(--pill);
+  font-size: 13px;
+}
+.legend-strip { flex-wrap: nowrap; white-space: nowrap; }
+/* Hidden when it would run under a side panel (fitDesktopBars), and while
+   a hexagon card is open along the bottom. The full legend is on Explore. */
+.legend-strip.is-hidden,
+body:has(#cell-card:not([hidden])) .legend-strip { display: none !important; }
+.legend-strip li { gap: 6px; }
+.legend-strip .sw { width: 14px; height: 14px; }
+.legend-strip .range { display: none; }
+
+/* ---- the selected area: a card along the bottom */
+.cell-card {
+  position: absolute;
+  z-index: 5;
+  /* Between the rail (or open panel) and the right column, at most 1100 px
+     wide -- its three sections -- and centred on the screen when there is
+     room for that, else as near the centre as the two edges allow. */
+  --card-l: var(--left);
+  --card-r: calc(100vw - var(--safe-r) - var(--edge) - var(--see-w) - var(--edge));
+  --card-w: min(1100px, calc(var(--card-r) - var(--card-l)));
+  left: clamp(var(--card-l), calc(50vw - var(--card-w) / 2), calc(var(--card-r) - var(--card-w)));
+  width: var(--card-w);
+  bottom: calc(var(--safe-b) + var(--edge));
+  max-height: min(46dvh, 420px);
+  /* The card does not scroll; its body does. A rounded, shadowed scroll box
+     over the WebGL map makes Chrome skip painting part of the map canvas
+     behind it (a blank cream rectangle in shorter windows, where the card
+     overflows). Scrolling one level down keeps the look and avoids that. */
+  display: flex;
+  flex-direction: column;
+  padding: 22px 24px;
+  border-radius: 34px;
+}
+.cell-card > .cell-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.card-close { position: absolute; top: 14px; right: 14px; }
+
+.cell-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 22px 32px;
+}
+.cell-body > section { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.cell-body h3 { font-size: 16px; padding-right: 48px; }
+.cell-kicker { font-size: 12px; font-weight: 900; letter-spacing: 0.06em; text-transform: uppercase; color: var(--primary); margin-bottom: -6px; }
+.cell-title { font-size: 20px; font-weight: 900; padding-right: 52px; overflow-wrap: anywhere; }
+.cell-sub { font-size: 13px; color: var(--muted); }
+.rating {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 22px;
+  background: var(--band-bg, var(--soft));
+}
+.rating-value { display: block; font-size: 28px; font-weight: 900; line-height: 1.05; }
+.rating-words { display: block; font-size: 14px; font-weight: 800; color: var(--band-text, var(--muted)); }
+.cell-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
+.cell-expand { display: none; align-self: flex-start; }
+.cell-actions .btn { flex: 1 1 auto; }
+.cell-foot { font-size: 12px; color: var(--muted); }
+
+/* Hour (24 bars) and week (7 bars) charts. Height carries the count; colour
+   marks only now (orange) and the quieter stretch the outlook names (green). */
 .hours {
   display: grid;
   grid-template-columns: repeat(24, 1fr);
   align-items: end;
-  gap: 2px;
-  height: 56px;
-  margin-top: 4px;
+  gap: 3px;
+  height: 76px;
 }
-
 .hours i {
   display: block;
-  min-height: 1px;
-  border-radius: 2px 2px 0 0;
-  background: var(--gridline);
+  min-height: 4px;
+  border-radius: 6px;
+  background: var(--border);
 }
-.hours i[data-on] { background: var(--series-1); }
-/* The lower-risk window the outlook names, lighter so the stretch reads apart. */
-.hours i[data-quiet] { background: var(--seq-2); }
-.hours i[data-selected] { background: var(--text-primary); }
-
-.hours-axis {
+.hours i[data-safer] { background: var(--ramp-0); }
+.hours i[data-selected] { background: var(--primary); }
+.hours.days { grid-template-columns: repeat(7, 1fr); gap: 7px; }
+.hours.days i { border-radius: 10px; }
+.hours-axis, .days-axis {
   display: flex;
   justify-content: space-between;
-  margin-top: 4px;
-  font-size: 10.5px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
-  color: var(--text-muted);
 }
+.days-axis { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; }
+.days-axis .is-today { color: var(--primary); font-weight: 900; }
+.cell-time { font-size: 12px; color: var(--muted); }
 
-/* ---------------------------------------------------------------- mobile --- */
-
-@media (max-width: 900px) {
-  .compass { width: 132px; padding: 8px; }
-  .compass-dial { width: 80px; height: 80px; }
-  .compass-cardinal { transform: rotate(var(--a)) translateY(-30px) rotate(calc(-1 * var(--a))); }
-  .compass-needle::before { top: -22px; border-bottom-width: 22px; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; animation: none !important; }
-}
-
-
-/* ------------------------------------------------------------ directions ---
-   Ported from web/styles.css: the suggestion list, mode tabs, route cards,
-   steps and the trip's end pins. The testing UI lays them out in its own
-   floating panel (the overrides below). */
-
-.combo { position: relative; }
-.dir-input,
-.dir-when input[type="datetime-local"] {
-  width: 100%;
-  min-height: 36px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--page);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 13px;
-}
-.dir-input:hover { border-color: rgba(11, 11, 11, 0.28); }
-.dir-input:focus-visible,
-.dir-when input:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
-
-.combo-list {
+/* ---- left panels (directions, near me, cities) */
+.panel {
   position: absolute;
   z-index: 5;
-  top: calc(100% + 4px);
-  left: 0; right: 0;
-  margin: 0;
-  padding: 4px;
-  list-style: none;
-  max-height: 260px;
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-1);
-  box-shadow: 0 6px 20px rgba(11, 11, 11, 0.12);
-}
-.combo-list [role="option"] {
+  left: calc(var(--safe-l) + var(--edge) + var(--rail-w) + var(--edge));
+  top: calc(var(--safe-t) + var(--edge));
+  bottom: calc(var(--safe-b) + var(--edge));
+  width: 404px;
+  max-width: calc(100vw - var(--rail-right) - var(--edge));
   display: flex;
   flex-direction: column;
-  padding: 7px 9px;
-  border-radius: 6px;
-  cursor: pointer;
-  min-height: 44px;
-  justify-content: center;
+  border-radius: var(--r-card);
+  overflow: hidden;
 }
-.combo-list [role="option"]:hover,
-.combo-list [role="option"][aria-selected="true"] { background: rgba(11, 11, 11, 0.06); }
-.opt-title { font-size: 13px; }
-.opt-sub { font-size: 11.5px; color: var(--text-muted); }
+.panel-scroll { flex: 1; overflow-y: auto; padding: 26px 24px 22px; display: flex; flex-direction: column; gap: 16px; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.panel h2 { font-size: 30px; }
 
-.dir-modes { margin-bottom: 10px; }
-.dir-modes .tab { flex: 1 1 0; }
-.dir-modes .tab:disabled { opacity: 0.45; cursor: not-allowed; }
-
-.dir-when { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
-.dir-when input[type="datetime-local"] { width: auto; flex: 1 1 170px; }
-.btn-primary {
-  background: var(--series-1);
-  border-color: var(--series-1);
-  color: #ffffff;
-  margin-left: auto;
+/* Directions */
+.dir-panel { overflow-y: auto; }
+.dir-top { display: flex; flex-direction: column; gap: 14px; padding: 24px 22px 6px; }
+.dir-ends { display: flex; align-items: center; gap: 10px; }
+.dir-fields { flex: 1; min-width: 0; display: grid; gap: 10px; }
+.dir-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 8px 0 16px;
+  border: 2px solid transparent;
+  border-radius: var(--pill);
+  background: var(--soft);
 }
-.btn-primary:hover { border-color: var(--seq-5); background: var(--seq-5); }
-.btn-primary:disabled { opacity: 0.6; cursor: progress; }
-
-.dir-status { min-height: 1.5em; margin: 0 0 8px; font-size: 12.5px; color: var(--text-secondary); }
+.dir-field:focus-within { border-color: var(--primary); }
+.here-btn { width: var(--tap); height: var(--tap); background: var(--panel); color: var(--me); }
+.dir-field-to.is-set { border-color: var(--primary); }
+.dir-input {
+  /* width 0 + flex 1, as the search box: a long address scrolls inside the
+     box instead of pushing the field past the card's edge. */
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  min-height: var(--tap);
+  border: 0;
+  background: none;
+  font-size: 16px;
+  font-weight: 800;
+  outline: none;
+}
+.dir-input::placeholder { color: var(--muted); font-weight: 600; }
+.end-dot { width: 14px; height: 14px; flex: none; border-radius: 50%; }
+.end-from { background: var(--me); box-shadow: 0 0 0 3px color-mix(in srgb, var(--me) 30%, transparent); }
+.end-to { background: var(--primary); }
+.swap-btn { width: 46px; height: 46px; }
+.dir-sheet { display: flex; flex-direction: column; gap: 14px; padding: 6px 22px 22px; }
+.dir-status { font-size: 14px; font-weight: 700; color: var(--muted); }
+.dir-status:empty { display: none; }
 .dir-status.is-error { color: var(--danger); }
-.dir-hint { margin: 0 0 12px; font-size: 12px; color: var(--text-muted); }
+.dir-results { display: flex; flex-direction: column; gap: 14px; }
+.dir-count { font-size: 15px; }
+.dir-hint { display: block; margin-top: 2px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
 
-.dir-track { margin: 0 0 10px; font-size: 12px; color: var(--text-secondary); }
-
-.route-cards { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 8px; }
+.route-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
 .route-card {
+  appearance: none;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 8px;
   width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--page);
-  color: var(--text-primary);
-  font: inherit;
+  padding: 14px 16px 16px;
+  border: 2px solid var(--border);
+  border-radius: 24px;
+  background: var(--panel);
+  color: var(--text);
   text-align: left;
   cursor: pointer;
 }
-.route-card:hover { border-color: rgba(11, 11, 11, 0.28); }
-.route-card:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
-.route-card[aria-pressed="true"] { border-color: var(--series-1); box-shadow: inset 3px 0 0 var(--series-1); }
-.route-role {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
-}
-.route-extra { text-transform: none; letter-spacing: 0; color: var(--text-secondary); }
-.route-main { font-size: 13.5px; }
-.route-main strong { font-size: 16px; font-weight: 650; }
+.route-card[aria-pressed="true"] { border-color: var(--primary); background: var(--soft); }
+.route-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.route-role { padding: 3px 10px; border-radius: var(--pill); background: var(--soft); font-size: 12.5px; font-weight: 800; }
+.route-card[aria-pressed="true"] .route-role { background: var(--panel); }
+.route-role[data-band="calm"] { background: var(--calm-bg); color: var(--calm-text); }
+.route-ratio { font-size: 13px; font-weight: 800; color: var(--band-text, var(--muted)); }
+.route-main { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.route-main strong { font-size: 28px; font-weight: 900; line-height: 1; }
+.route-main span { color: var(--muted); font-weight: 700; }
+/* The stretches of a route, each in its colour, as long as it is. */
+.route-stretches { display: flex; gap: 4px; height: 8px; }
+.route-stretches i { display: block; min-width: 4px; border-radius: var(--pill); }
 .route-legs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .leg-chip {
   display: inline-block;
-  padding: 1px 7px;
-  border-radius: 4px;
-  background: var(--text-secondary);
-  color: #ffffff;
-  font-size: 11.5px;
-  font-weight: 600;
-}
-.leg-walk { font-size: 11.5px; color: var(--text-muted); }
-.route-activity { display: flex; align-items: center; gap: 7px; font-size: 12.5px; }
-.swatch {
-  flex: none;
-  width: 12px; height: 12px;
-  border-radius: 3px;
-  border: 1px solid rgba(11, 11, 11, 0.15);
-}
-.route-detail { font-size: 11.5px; color: var(--text-muted); }
-
-.dir-why { margin: 0 0 10px; font-size: 12px; color: var(--text-secondary); }
-.dir-why:empty { display: none; }
-.dir-toggle { display: flex; gap: 8px; align-items: center; font-size: 12.5px; margin-bottom: 14px; min-height: 32px; }
-
-.dir-steps { margin: 0; padding: 0 0 0 18px; display: grid; gap: 6px; font-size: 12.5px; }
-.dir-steps .step { padding-left: 2px; }
-.dir-steps .step-sub { display: block; font-size: 11.5px; color: var(--text-muted); }
-.dir-steps .step-time {
-  display: inline-block;
-  min-width: 64px;
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-}
-.dir-steps .step-walk, .dir-steps .step-ride { list-style: none; margin-left: -18px; display: flex; gap: 6px; }
-
-.dir-caveats {
-  margin: 0 0 12px;
-  padding: 10px 12px 10px 28px;
-  border: 1px solid var(--border);
+  padding: 1px 8px;
   border-radius: 8px;
-  background: var(--page);
+  background: var(--muted);
+  color: #ffffff;
   font-size: 12px;
-  color: var(--text-secondary);
+  font-weight: 800;
 }
-.dir-attribution { margin: 0; font-size: 11px; color: var(--text-muted); }
+.leg-walk { font-size: 12px; color: var(--muted); }
+.route-detail { font-size: 13px; color: var(--muted); font-weight: 600; }
+.route-extra { color: var(--muted); font-weight: 700; font-size: 13px; }
+
+/* Let's go stays in reach: last in the column (order), and pinned to the
+   bottom while anything above it scrolls -- the routes, the steps once
+   opened, the fine print. Placed before the steps it would scroll away
+   with them. */
+.dir-actions {
+  order: 10;
+  position: sticky;
+  bottom: -22px;
+  z-index: 1;
+  display: flex;
+  gap: 10px;
+  margin: 0 -22px;
+  padding: 10px 22px 16px;
+  background: linear-gradient(to bottom, transparent, var(--panel) 14px);
+}
+.dir-actions .btn-primary { flex: 1; }
+.dir-steps-block h3 { margin-bottom: 8px; }
+.dir-steps { margin: 0; padding: 0 0 0 20px; display: grid; gap: 8px; font-size: 14px; }
+.dir-steps .step-sub { display: block; font-size: 12px; color: var(--muted); }
+.dir-steps .step-time { display: inline-block; min-width: 64px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.dir-steps .step-walk, .dir-steps .step-ride { list-style: none; margin-left: -20px; display: flex; gap: 6px; }
+.dir-caveats { margin: 0; padding: 12px 14px 12px 30px; border-radius: 18px; background: var(--soft); font-size: 12.5px; color: var(--muted); }
+.dir-caveats:empty { display: none; }
 .dir-attribution a { color: inherit; }
 
-/* The two ends of a trip on the map. */
-.route-pin-marker { width: 26px; height: 26px; }
-.route-pin {
-  width: 26px; height: 26px;
-  border-radius: 50% 50% 50% 0;
-  transform: rotate(-45deg);
+/* Turn-by-turn. While it runs the panel is only this (and the attribution). */
+.dir-panel.is-navigating .dir-top,
+.dir-panel.is-navigating .dir-results,
+.dir-panel.is-navigating .dir-status { display: none; }
+.dir-nav { display: flex; flex-direction: column; gap: 14px; }
+.nav-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 18px;
+  border-radius: 26px;
+  background: var(--primary);
+  color: var(--on-primary);
+}
+.nav-banner-icon {
   display: grid;
   place-items: center;
-  border: 2px solid #ffffff;
-  box-shadow: 0 1px 4px rgba(11, 11, 11, 0.35);
-  color: #ffffff;
-  font-size: 12px;
-  font-weight: 700;
+  width: 54px; height: 54px;
+  flex: none;
+  border-radius: 50%;
+  background: color-mix(in srgb, #ffffff 22%, transparent);
 }
-.route-pin-from { background: #1f7a3a; }
-.route-pin-to   { background: var(--danger); }
-/* The letter stays upright inside the turned pin. */
-.route-pin span { display: block; transform: rotate(45deg); }
-
-/* ======================================================= map controls
-   Map-only layout: the floating controls, the compass, and a popup per cell. */
-
-.map-controls {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  z-index: 3;
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-}
-.map-control {
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: rgba(252, 252, 251, 0.94);
-  backdrop-filter: blur(6px);
-}
-.map-control[hidden] { display: none; }
-
-/* The cell popup. Outlined in the colour of the cell it belongs to; the tip is
-   dropped rather than recoloured per anchor side. */
-.cell-popup .maplibregl-popup-tip { display: none; }
-.cell-popup .maplibregl-popup-content {
-  padding: 10px 12px 9px;
-  border: 3px solid var(--cell-color, var(--border));
-  border-radius: var(--radius);
-  background: var(--surface-1);
-  color: var(--text-primary);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
-}
-.cell-popup .maplibregl-popup-close-button {
-  font-size: 16px;
-  color: var(--text-muted);
-  padding: 0 6px;
-}
-.cp { width: 200px; }
-.cp-value { font-size: 22px; font-weight: 700; line-height: 1.1; padding-right: 14px; }
-.cp-label { font-size: 11.5px; color: var(--text-secondary); margin-top: 2px; }
-.cp-sub {
-  margin-top: 9px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-}
-.cp .hours { height: 44px; }
-/* The lower-risk window, in the map ramp's green; "now" (data-selected) still
-   wins where the two overlap, being declared after it in the base styles. */
-.cp .hours i[data-safer] { background: #39c631; }
-.cp .hours i[data-selected] { background: var(--text-primary); }
-/* The week chart: seven wider bars under the hour chart, Monday first. */
-.cp .hours.days { grid-template-columns: repeat(7, 1fr); gap: 4px; height: 36px; }
-.days-axis {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  margin-top: 4px;
-  font-size: 10.5px;
-  text-align: center;
-  color: var(--text-muted);
-}
-.cp-outlook { margin-top: 7px; font-size: 12px; line-height: 1.35; color: var(--text-primary); }
-.cp-foot { margin-top: 5px; font-size: 10.5px; color: var(--text-muted); }
-
-/* One row across the top -- address search, Show tiles, the track
-   toggle -- and the directions panel that opens under it. Clear of the zoom
-   buttons and the compass on the right; a row too wide for the window wraps. */
-.map-controls { flex-direction: column; align-items: flex-start; max-width: calc(100% - 200px); max-height: calc(100% - 24px); }
-.map-controls-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
-.map-search { width: 300px; }
-.map-search .combo-list { max-height: 240px; }
-.map-search-status { margin: 6px 2px 0; font-size: 12px; color: var(--text-secondary); }
-.map-search-status:empty { display: none; }
-.map-search-status.is-error { color: var(--danger); }
-.map-search-actions { display: flex; gap: 8px; margin-top: 8px; }
-.map-search-actions[hidden] { display: none; }
-.search-clear {
-  appearance: none;
-  border: 0;
-  background: none;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 12px;
-  text-decoration: underline;
-  cursor: pointer;
-}
-
-.dir-panel {
-  width: 340px;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 10px 12px 12px;
-}
-.dir-panel[hidden] { display: none; }
-.dir-panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.dir-panel h2 { margin: 0 0 8px; font-size: 14px; }
-.dir-close {
-  appearance: none;
-  border: 0;
-  background: none;
-  font-size: 18px;
-  line-height: 1;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-.dir-row { margin-bottom: 10px; }
-.dir-to-label { font-size: 13px; color: var(--text-primary); overflow-wrap: anywhere; }
-.dir-from-actions { display: flex; gap: 8px; align-items: center; margin-top: 6px; font-size: 12px; color: var(--text-muted); }
-.dir-steps-block > summary { cursor: pointer; font-size: 12.5px; font-weight: 600; margin-bottom: 6px; }
-
-/* Start: under the route cards, the width of the panel. */
-.dir-start { width: 100%; margin: 4px 0 8px; }
-
-/* Turn-by-turn. While it runs the panel is only this (and the routing
-   attribution, which stays). */
-.dir-panel.is-navigating > :not(.dir-nav):not(.dir-attribution) { display: none; }
-.dir-nav[hidden] { display: none; }
-.nav-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.nav-summary { margin: 0; font-size: 15px; color: var(--text-primary); }
-.nav-summary span { color: var(--text-secondary); font-size: 13px; }
-.nav-note { margin: 6px 0 0; font-size: 13px; color: var(--text-secondary); }
+.nav-banner-icon svg { width: 26px; height: 26px; }
+.nav-banner-text { display: flex; flex-direction: column; min-width: 0; }
+.nav-banner-text strong { font-size: 21px; font-weight: 900; line-height: 1.2; }
+.nav-lead { font-size: 14px; font-weight: 700; }
+.nav-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.nav-summary { font-size: 14px; color: var(--muted); font-weight: 700; display: flex; flex-direction: column; }
+.nav-summary strong { font-size: 30px; font-weight: 900; color: var(--text); line-height: 1.1; }
+.nav-note { font-size: 14px; font-weight: 700; color: var(--muted); }
 .nav-note:empty { display: none; }
-.nav-actions { display: flex; gap: 8px; margin-top: 6px; }
-.nav-actions:not(:has(.btn:not([hidden]))) { display: none; }
-.nav-on { margin: 10px 0 2px; font-size: 12.5px; color: var(--text-muted); }
+.nav-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.nav-actions .btn { flex: 1 1 auto; min-height: 48px; font-size: 15px; }
+.nav-on { margin-bottom: 4px; font-size: 13px; color: var(--muted); }
 .nav-on:empty { display: none; }
-.nav-steps { list-style: none; margin: 6px 0 0; padding: 0; }
-.nav-step {
+.nav-steps { list-style: none; margin: 0; padding: 0; }
+.nav-step { display: flex; flex-direction: column; gap: 2px; padding: 9px 0; border-top: 1px solid var(--border); font-size: 14px; color: var(--muted); }
+.nav-step:first-child { border-top: 0; }
+.nav-step.is-next { font-size: 16px; font-weight: 800; color: var(--text); }
+.nav-step .nav-lead { color: var(--primary); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* Near me */
+.near-panel { width: 420px; }
+.near-title { font-size: 34px; line-height: 1.1; }
+.near-lede { color: var(--muted); font-size: 15px; }
+.near-dial { display: grid; place-items: center; padding: 6px 0; }
+.rose { overflow: visible; }
+.rose-big { width: min(250px, 70vw, 32dvh); height: auto; aspect-ratio: 1; transition: transform 160ms linear; }
+.rose-mini { transition: transform 160ms linear; }
+.rose .wedge { stroke: var(--panel); stroke-width: 2.4; }
+.rose .wedge.is-best { stroke: var(--text); stroke-width: 2.6; }
+.rose .hub { fill: var(--panel); }
+.rose .me { fill: var(--me); }
+.rose .needle { stroke: var(--text); stroke-width: 3.2; stroke-linecap: round; }
+.rose text { font-size: 8.5px; font-weight: 900; fill: #3a2b26; text-anchor: middle; dominant-baseline: central; }
+.near-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.near-list li {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 54px;
+  padding: 6px 14px 6px 8px;
+  border-radius: 20px;
+  background: var(--soft);
+  font-weight: 800;
+}
+.near-badge {
+  display: grid;
+  place-items: center;
+  width: 38px; height: 38px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--band-ramp);
+  color: #3a2b26;
+  font-size: 12px;
+  font-weight: 900;
+}
+.near-badge[data-band="calm"], .near-badge[data-band="very"] { color: #ffffff; }
+.near-list .near-num { margin-left: auto; font-size: 13px; color: var(--muted); font-weight: 700; text-align: right; }
+.near-num strong { font-weight: 800; }
+.near-words::before { content: " · "; }
+.near-phone-row { display: none; }
+.near-origin { margin-top: auto; }
+
+/* Cities */
+.cities-panel { width: 560px; }
+.city-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+.city-card {
+  appearance: none;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 8px 0;
-  border-top: 1px solid var(--border);
-  font-size: 13px;
-  color: var(--text-secondary);
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  padding: 16px;
+  border: 2px solid var(--border);
+  border-radius: 24px;
+  background: var(--panel);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
 }
-.nav-step:first-child { border-top: 0; }
-.nav-step.is-next { font-size: 16px; font-weight: 600; color: var(--text-primary); }
-.nav-lead { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--series-1); }
+.city-card:disabled { cursor: default; }
+.city-card[aria-current="true"] { border-color: var(--primary); background: var(--soft); }
+.city-head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 12px; }
+.hex {
+  width: 32px; height: 32px;
+  flex: none;
+  clip-path: polygon(25% 6%, 75% 6%, 100% 50%, 75% 94%, 25% 94%, 0 50%);
+  background: var(--border);
+}
+.city-card.is-ready .hex { background: var(--ramp-0); }
+.city-name { display: flex; flex-direction: column; min-width: 0; flex: 1 1 110px; }
+.city-name strong { font-size: 19px; font-weight: 900; line-height: 1.2; }
+.city-name span { font-size: 13px; color: var(--muted); }
+.city-state { margin-left: auto; padding: 3px 10px; border-radius: var(--pill); font-size: 12.5px; font-weight: 800; white-space: nowrap; }
+.city-state.is-viewing { background: var(--primary); color: var(--on-primary); }
+.city-state.is-ready { background: var(--calm-bg); color: var(--calm-text); }
+.city-state.is-loading { background: var(--typ-bg); color: var(--typ-text); }
+.city-card .bar i { background: var(--ramp-0); }
+.city-card.is-loading .bar i { background: var(--primary); }
+.city-foot { font-size: 12.5px; color: var(--muted); }
+.load-progress { display: grid; gap: 8px; padding: 14px 16px; border-radius: 20px; background: var(--soft); }
+.lp-text { font-weight: 800; font-size: 14px; font-variant-numeric: tabular-nums; }
+.lp-bar { background: var(--panel); }
+.lp-detail { font-size: 12.5px; color: var(--muted); }
+.lp-detail:empty { display: none; }
+#cities-tip { margin-top: auto; }
 
-/* The visitor while navigating: a dot, with a point once there is a
-   heading. The marker turns the whole element to it. */
-.user-arrow { width: 26px; height: 26px; }
-.user-arrow span {
+/* ---- the buddy's bubble over the map, and the status pills */
+/* In the top row, after the search and the status pills: always under
+   them, never on top (it was pinned 92 px down, and on a window where the
+   search wrapped it landed on the search and the pill). */
+.tip-float {
+  position: relative;
+  z-index: 7;
+  flex: 0 1 460px;
+  min-width: min(280px, 100%);
+  max-width: 460px;
+  padding: 12px 10px 12px 12px;
+  border-radius: 24px;
+}
+.tip-body { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding-top: 6px; flex: 1; }
+.tip-close { width: var(--tap); height: var(--tap); background: none; }
+.status-pills {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+.status-pills:not(:has(:not([hidden]))) { display: none; }
+.status-pill {
+  pointer-events: auto;
+  appearance: none;
+  min-height: var(--tap);
+  padding: 9px 18px;
+  border: 0;
+  border-radius: var(--pill);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 800;
+}
+button.status-pill { cursor: pointer; }
+/* A failed load stays on screen (refreshLayers) and must read as an error. */
+.loading.is-error { color: var(--danger); }
+
+/* ---- per-view visibility (desktop) */
+/* Outside Explore the top row keeps only its status pills (a load error
+   must still show). */
+body:not([data-view="explore"]) .top-row > :not(.status-pills):not(#locate-note),
+body:not([data-view="explore"]) .see-card { display: none; }
+body:not([data-view="explore"]) .view-bar,
+body:not([data-view="explore"]) .legend-strip { display: flex; }
+body[data-view="cities"] .view-bar,
+body[data-view="cities"] .legend-strip { display: none; }
+body:not([data-view="explore"]) .map-fabs { right: calc(var(--safe-r) + var(--edge)); top: calc(var(--safe-t) + var(--edge) + 64px); }
+body[data-view="cities"] .map-fabs { top: calc(var(--safe-t) + var(--edge)); }
+body:not([data-view="explore"]) .cell-card { --card-r: calc(100vw - var(--safe-r) - var(--edge) - 48px - var(--edge)); }
+/* Outside Explore the top row holds only the status pills: under the time
+   and track bar, from the panel to the round map buttons (not Explore's
+   card, which is not there). */
+body:not([data-view="explore"]) .top-row {
+  top: calc(var(--safe-t) + var(--edge) + 64px);
+  right: calc(var(--safe-r) + var(--edge) + 48px + var(--edge));
+  /* At least room for a pill or the tip when a wide panel leaves none. */
+  left: min(var(--left), calc(100vw - var(--safe-r) - var(--edge) - 48px - var(--edge) - 280px));
+}
+.status-pill { white-space: nowrap; }
+
+/* Past the open panel, so the card, the tip and the status pill sit beside
+   it rather than on it. Set on .app, where --left is read: set on <body>
+   it was overridden by .app's own value and never applied. */
+body[data-view="directions"] .app { --left: calc(var(--rail-right) + 404px + var(--edge)); }
+body[data-view="near"] .app { --left: calc(var(--rail-right) + 420px + var(--edge)); }
+body[data-view="cities"] .app { --left: calc(var(--rail-right) + 560px + var(--edge)); }
+/* The card keeps at least 340 px: on a narrow desktop window there is no
+   room beside a wide panel (Cities is 560 px), and it then overlaps the
+   panel rather than collapsing to nothing. */
+body:not([data-view="explore"]) .cell-card { --card-l: min(var(--left), calc(var(--card-r) - 340px)); }
+body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: var(--ctrl-lift, 56px); }
+
+/* -------------------------------------------------------------- the help --- */
+
+.help {
+  width: min(980px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0;
+  border: 0;
+  border-radius: 40px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+.help::backdrop { background: var(--scrim); backdrop-filter: blur(3px); }
+.help-inner { display: flex; flex-direction: column; gap: 22px; padding: 32px 34px 30px; }
+.help-head { display: flex; align-items: center; gap: 16px; }
+.help-head > div { flex: 1; }
+.help-head h2 { font-size: 30px; }
+.help-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.help-steps li { display: flex; flex-direction: column; gap: 12px; padding: 20px; border-radius: 28px; background: var(--soft); }
+.help-steps h3 { display: flex; align-items: center; gap: 10px; font-size: 17px; }
+.help-steps p { color: var(--muted); font-size: 14px; font-weight: 600; }
+.num { display: grid; place-items: center; width: 32px; height: 32px; flex: none; border-radius: 50%; background: var(--primary); color: var(--on-primary); font-size: 15px; font-weight: 900; }
+.help-art { height: 84px; }
+.help-bars { display: flex; align-items: flex-end; gap: 7px; padding: 0 10px; }
+.help-bars i { flex: 1; border-radius: 8px; background: var(--border); }
+.help-bars i.on { background: var(--primary); }
+.help-hexes { display: flex; flex-wrap: wrap; gap: 3px; align-content: center; overflow: hidden; border-radius: 16px; }
+.help-hexes i { width: 22px; height: 20px; clip-path: polygon(25% 6%, 75% 6%, 100% 50%, 75% 94%, 25% 94%, 0 50%); }
+.help-example { display: flex; align-items: center; gap: 14px; min-height: 84px; }
+.help-example strong { display: block; font-size: 30px; font-weight: 900; line-height: 1.1; }
+.help-notes { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.help-notes li { display: flex; gap: 12px; padding: 14px 16px; border: 2px solid var(--border); border-radius: 22px; font-size: 13.5px; color: var(--muted); }
+.help-notes strong { display: block; color: var(--text); font-weight: 900; font-size: 14.5px; }
+.bang { display: grid; place-items: center; width: 26px; height: 26px; flex: none; border-radius: 50%; background: var(--typ-bg); color: var(--typ-text); font-weight: 900; }
+.help-full summary { min-height: var(--tap); display: inline-flex; align-items: center; color: var(--primary); font-weight: 800; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.help-full-body { padding: 4px 4px 0; font-size: 14px; color: var(--text); }
+.help-full-body h3 { margin: 16px 0 6px; }
+.help-full-body p, .help-full-body ul { margin: 0 0 8px; }
+.help-full-body dl { display: grid; gap: 4px; margin: 0 0 8px; }
+.help-full-body dt { display: inline; font-weight: 800; }
+.help-full-body dd { display: inline; margin: 0 0 0 6px; }
+.help-full-body a { color: var(--primary); }
+.help-full-body .callout { padding: 12px 16px; border-radius: 18px; background: var(--soft); margin-bottom: 8px; }
+.help-foot { display: flex; justify-content: flex-end; }
+
+/* ------------------------------------------------------- map overlay bits --- */
+
+/* The two ends of a trip on the map. */
+.route-pin-marker { width: 30px; height: 30px; }
+.route-pin {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  border: 4px solid #ffffff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  color: #ffffff;
+  font-size: 0;
+}
+.route-pin-from { background: var(--me); }
+.route-pin-to { background: var(--primary); }
+
+/* The searched or dropped place. */
+.search-pin {
+  width: 34px; height: 44px;
+  background: var(--primary);
+  clip-path: path("M17 44C17 44 2 26.5 2 16.5a15 15 0 0 1 30 0C32 26.5 17 44 17 44z");
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+  position: relative;
+}
+.search-pin::after {
+  content: "";
+  position: absolute;
+  left: 11px; top: 10px;
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+}
+
+/* The visitor: a blue dot, with a point once there is a heading. */
+.user-dot, .user-arrow { width: 28px; height: 28px; }
+.user-dot span, .user-arrow span {
   position: absolute;
   inset: 4px;
   border-radius: 50%;
-  background: var(--series-1);
+  background: var(--me);
   border: 3px solid #ffffff;
-  box-shadow: 0 1px 5px rgba(11, 11, 11, 0.4);
+  box-shadow: 0 0 0 8px color-mix(in srgb, var(--me) 22%, transparent), 0 1px 5px rgba(0, 0, 0, 0.35);
 }
 .user-arrow.has-heading::before {
   content: "";
   position: absolute;
   left: 50%;
-  top: -10px;
+  top: -11px;
   transform: translateX(-50%);
   border-left: 8px solid transparent;
   border-right: 8px solid transparent;
-  border-bottom: 13px solid var(--series-1);
+  border-bottom: 13px solid var(--me);
 }
 
-/* The searched address, until it is cleared or replaced. */
-.search-pin {
-  width: 18px; height: 18px;
-  border-radius: 50%;
-  background: var(--series-1);
-  border: 3px solid #ffffff;
-  box-shadow: 0 0 0 2px var(--series-1), 0 2px 6px rgba(11, 11, 11, 0.35);
-}
+/* ================================================================ PHONE ===
+   Under 768 px: a floating tab bar along the bottom, panels as bottom
+   sheets, the search as a pill at the top. */
+@media (max-width: 767.98px) {
+  :root { --edge: 12px; }
+  html, body { font-size: 15px; }
+  .app, body[data-view] .app { --left: calc(var(--safe-l) + var(--edge)); --tabbar: calc(var(--safe-b) + var(--edge) + 72px); }
 
-@media (max-width: 600px) {
-  /* Clear of the zoom buttons on the right. The row wraps in its own order:
-     the search the full width, then Show tiles and the track toggle side by
-     side. */
-  .map-controls { left: 8px; right: 56px; top: 8px; width: auto; max-width: none; max-height: none; }
-  .map-controls-row { width: 100%; gap: 6px; }
-  .map-controls-row .map-control { padding: 5px 6px; }
-  #f-tiles-field { flex-direction: row; align-items: center; gap: 6px; }
-  .map-controls-row .tab { padding: 6px 9px; }
-  .map-search { flex: 1 1 100%; width: auto; padding: 8px 10px; }
-  .dir-input, .dir-modes .tab, .btn, .map-controls-row .tab { min-height: 44px; }
-
-  /* Directions as a bottom sheet, so the route stays in view above it. */
-  .dir-panel {
-    position: fixed;
-    left: 0; right: 0; bottom: 0;
+  .rail {
+    left: calc(var(--safe-l) + var(--edge));
+    right: calc(var(--safe-r) + var(--edge));
+    top: auto;
+    bottom: calc(var(--safe-b) + var(--edge));
     width: auto;
-    z-index: 4;
-    max-height: 52dvh;
-    border-radius: 14px 14px 0 0;
-    box-shadow: 0 -10px 30px rgba(11, 11, 11, 0.18);
+    height: 72px;
+    flex-direction: row;
+    justify-content: space-around;
+    gap: 0;
+    padding: 6px;
+    overflow: visible;
   }
+  .rail-logo, .theme-switch { display: none; }
+  .rail-btn { flex: 1 1 0; width: auto; min-height: 58px; min-width: var(--tap); font-size: clamp(10px, 3.1vw, 11.5px); white-space: nowrap; border-radius: 22px; }
 
-  /* The compass drops to the bottom-left corner, down to its dial and
-     headline, out of the controls' way; the sheet covers it while open. */
-  .compass { top: auto; right: auto; left: 8px; bottom: 28px; width: 104px; padding: 6px 8px; }
-  .compass-title, .compass-foot, .compass-detail { display: none; }
-  .compass-dial { width: 60px; height: 60px; }
-  .compass-cardinal { font-size: 10px; transform: rotate(var(--a)) translateY(-22px) rotate(calc(-1 * var(--a))); }
-  .compass-needle::before { left: -4px; top: -16px; border-left-width: 4px; border-right-width: 4px; border-bottom-width: 16px; }
-  .compass-readout { font-size: 11.5px; line-height: 1.3; margin-top: 4px; }
-  .compass-readout b { font-size: 12.5px; }
-  body.dir-open .compass { display: none; }
+  .top-row {
+    top: calc(var(--safe-t) + var(--edge));
+    left: calc(var(--safe-l) + var(--edge));
+    right: calc(var(--safe-r) + var(--edge));
+  }
+  .compass-mini { display: none; }
+  .search-card { flex: 1 1 100%; max-width: none; }
+  .search-box { min-height: 54px; border-radius: var(--pill); padding: 0 6px 0 18px; }
+  #search-input { font-size: 16px; }
+  .city-chip { min-height: var(--tap); padding: 0 14px; }
 
-  /* Navigating: a shorter sheet, so more of the map shows above it. */
-  .dir-panel.is-navigating { max-height: 40dvh; }
+
+  .view-bar, .legend-strip { display: none !important; }
+
+  .map-fabs, body:not([data-view="explore"]) .map-fabs {
+    top: 38%;
+    right: calc(var(--safe-r) + var(--edge));
+    gap: 12px;
+  }
+  .zoom-pill { display: none; }
+  #btn-key, #theme-fab { display: grid; }
+  .fab { width: 52px; height: 52px; }
+  body[data-view="near"] .map-fabs,
+  body[data-view="cities"] .map-fabs,
+  body[data-view="directions"]:not(.navigating) .map-fabs { display: none; }
+  body.navigating #btn-key { display: none; }
+
+  /* Sheets: radius 30, a drag handle, above the tab bar. */
+  .sheet-handle { display: block; }
+  .see-card, .cell-card, .cities-panel, .dir-sheet {
+    left: calc(var(--safe-l) + 8px);
+    right: calc(var(--safe-r) + 8px);
+    width: auto;
+    max-width: none;
+    border-radius: var(--r-card);
+  }
+  .see-card {
+    top: auto;
+    bottom: calc(var(--tabbar) + 8px);
+    max-height: calc(100dvh - var(--tabbar) - var(--safe-t) - 24px);
+    padding: 16px 20px 20px;
+  }
+  body:not(.key-open) .see-card { display: none; }
+  .see-close { display: grid; position: absolute; top: 12px; right: 12px; }
+
+  .cell-card {
+    bottom: calc(var(--tabbar) + 8px);
+    max-height: calc(100dvh - var(--tabbar) - var(--safe-t) - 90px);
+    padding: 14px 18px 18px;
+  }
+  .cell-card:not(.is-expanded) .cell-more,
+  .cell-card:not(.is-expanded) .cell-today .cell-foot { display: none; }
+  .cell-expand { display: inline-flex; min-height: var(--tap); }
+  /* The mockup's order: name, rating, the day's shape and its sentence,
+     then the buttons. The summary's own pieces join the sheet's column. */
+  .cell-body { display: flex; flex-direction: column; }
+  .cell-body > .cell-summary { display: contents; }
+  .cell-summary > * { order: 1; }
+  .cell-body .cell-today { order: 2; }
+  .cell-summary .cell-actions { order: 3; }
+  .cell-summary .cell-expand { order: 4; }
+  .cell-body .cell-week { order: 5; }
+  /* Collapsed, the sheet is the mockup's short version: name, rating, the
+     day's shape and the quieter-ahead line, the two buttons. */
+  .cell-card:not(.is-expanded) .cell-meta,
+  .cell-card:not(.is-expanded) .cell-today h3 { display: none; }
+  /* Collapsed it is a peek, so the map stays in view: the name, the rating
+     in one row, the two buttons. The day's chart, its sentence and the week
+     are one tap or drag away. */
+  .cell-card:not(.is-expanded) .cell-today,
+  .cell-card:not(.is-expanded) .cell-sub { display: none; }
+  .cell-card:not(.is-expanded) .cell-title { font-size: 18px; }
+  .cell-card:not(.is-expanded) .rating { padding: 8px 12px; gap: 12px; }
+  .cell-card:not(.is-expanded) .face { width: 40px; height: 40px; }
+  .cell-card:not(.is-expanded) .rating-value { font-size: 21px; }
+  .cell-card:not(.is-expanded) .rating-words { font-size: 13px; }
+  .cell-card:not(.is-expanded) .card-close { top: 12px; }
+  .cell-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .cell-actions .btn { padding: 0 10px; font-size: 15px; }
+  .cell-card .hours { height: 54px; }
+  .cell-card .tip-inline { padding: 8px 12px; font-size: 13px; }
+  .cell-card .tip-inline .buddy { width: 28px; height: 28px; }
+  .cell-body > section { gap: 8px; }
+  .rating { padding: 10px 12px; }
+  .rating-value { font-size: 24px; }
+  .cell-actions .btn { min-height: 48px; }
+  .cell-body { grid-template-columns: 1fr; gap: 14px; }
+  .card-close { top: 22px; }
+  /* Near me and Cities are full screens; in Directions a tapped hexagon
+     shows its card (Take me here / Start here) in place of the route sheet,
+     and the sheet returns when the card closes. */
+  body[data-view="near"] .cell-card,
+  body[data-view="cities"] .cell-card { display: none; }
+  body[data-view="directions"] .cell-card { bottom: calc(var(--safe-b) + 8px); }
+  /* A sheet edge to edge in every section; the desktop rules that keep the
+     card beside a panel are more specific and would otherwise apply here. */
+  /* A phone's sheet: edge to edge, centred at 600 px on a wider (landscape)
+     phone rather than stretching. */
+  body[data-view] .cell-card { left: calc(var(--safe-l) + 8px); right: calc(var(--safe-r) + 8px); width: auto; max-width: 600px; margin-inline: auto; }
+  body[data-view="directions"]:has(#cell-card:not([hidden])) .dir-sheet { display: none; }
+
+  /* Directions: where from / to at the top, the routes in a sheet. */
+  .dir-panel {
+    position: static;
+    width: auto;
+    max-width: none;
+    background: none;
+    box-shadow: none;
+    border-radius: 0;
+    overflow: visible;
+  }
+  .dir-top {
+    position: absolute;
+    z-index: 5;
+    top: calc(var(--safe-t) + var(--edge));
+    left: calc(var(--safe-l) + var(--edge));
+    right: calc(var(--safe-r) + var(--edge));
+    padding: 12px;
+    gap: 10px;
+    border-radius: var(--r-card);
+    background: var(--panel);
+    box-shadow: var(--shadow);
+  }
+  /* No heading on a phone, as in the mockup: the close button sits top
+     right and the swap button under it. */
+  .dir-top .panel-head h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .dir-top .panel-head { position: absolute; top: 10px; right: 10px; }
+  .dir-top .panel-head .icon-btn { width: var(--tap); height: var(--tap); }
+  .dir-ends { padding-right: 2px; }
+  .swap-btn { align-self: flex-end; width: 44px; height: 44px; }
+  .dir-field { min-height: 48px; }
+  .dir-modes .seg-btn { padding: 0 8px; font-size: 14px; }
+  .dir-sheet {
+    position: absolute;
+    z-index: 5;
+    bottom: calc(var(--safe-b) + 8px);
+    /* Room for every route row and Let's go, while leaving a strip of map
+       under the top card for the routes themselves. */
+    max-height: min(56dvh, calc(100dvh - var(--safe-t) - 300px));
+    overflow-y: auto;
+    padding: 14px 16px calc(16px + var(--safe-b) * 0);
+    background: var(--panel);
+    box-shadow: var(--shadow);
+  }
+  .dir-sheet:not(:has(.dir-results:not([hidden]), .dir-nav:not([hidden]), .dir-status:not(:empty))) { display: none; }
+  .route-main strong { font-size: 22px; }
+  /* Routes as compact rows: time and distance on the left, the label and
+     the multiple on the right. Only the picked one opens up to show its
+     stretches and why, so all of them fit without scrolling the sheet. */
+  .route-card {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 5px 10px;
+    padding: 8px 14px;
+    border-radius: 18px;
+  }
+  .route-card .route-main strong { font-size: 21px; }
+  .dir-sheet > .sheet-handle { display: none; }
+  .dir-sheet .route-cards { gap: 6px; }
+  /* The button row bleeds to the sheet's edges: the sheet's own 16 px
+     padding here, not the desktop panel's 22 px (6 px too wide, which let
+     the sheet slide sideways). */
+  .dir-sheet .dir-actions { margin: 0 -16px; padding: 8px 16px 12px; bottom: -16px; }
+  /* The sheet scrolls up and down only, and stops at its ends. */
+  .dir-sheet { overflow-x: hidden; touch-action: pan-y; overscroll-behavior: contain; }
+  .route-card .route-main { grid-column: 1; grid-row: 1; }
+  .route-card .route-top { grid-column: 2; grid-row: 1; flex-direction: column; align-items: flex-end; gap: 3px; }
+  .route-card .route-role { padding: 2px 9px; font-size: 12px; }
+  .route-card .route-ratio { font-size: 12px; }
+  .route-card :is(.route-legs, .route-stretches, .route-detail) { grid-column: 1 / -1; }
+  .route-card:not([aria-pressed="true"]) :is(.route-stretches, .route-detail, .route-legs) { display: none; }
+  /* Transit rows: the time and when it leaves on one line -- what tells
+     the options apart. Distance and "+N min" stay on desktop's cards. */
+  .route-card[data-mode="transit"] :is(.route-dist, .route-extra) { display: none; }
+  .route-card[data-mode="transit"] .route-main { flex-wrap: nowrap; white-space: nowrap; }
+  .route-detail {
+    font-size: 12px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .dir-hint { font-size: 12px; }
+  .dir-sheet { gap: 10px; }
+  .dir-results { gap: 10px; }
+  .route-cards { gap: 8px; }
+  body[data-view="directions"] .rail { display: none; }
+
+  /* Turn-by-turn: the next turn as a banner at the top, the trip in the
+     sheet, and no tab bar. */
+  body.navigating .rail { display: none; }
+  body.navigating .dir-top { display: none; }
+  .nav-banner {
+    position: fixed;
+    z-index: 6;
+    top: calc(var(--safe-t) + var(--edge));
+    left: calc(var(--safe-l) + var(--edge));
+    right: calc(var(--safe-r) + var(--edge));
+    box-shadow: var(--shadow);
+  }
+  .dir-panel.is-navigating .dir-sheet { max-height: 46dvh; }
+
+  /* Near me: its own screen over the map; "Show on map" drops it to a
+     short card so the compass drawn on the map shows. */
+  .near-panel {
+    left: 0; right: 0; top: 0;
+    bottom: 0;
+    width: auto;
+    max-width: none;
+    border-radius: 0;
+    background: var(--land);
+    box-shadow: none;
+  }
+  /* The screen ends above the tab bar, so nothing it scrolls can sit under
+     the bar (on a short phone, Show on map did). */
+  .near-panel { bottom: calc(var(--tabbar) + 4px); }
+  .near-panel .panel-scroll { padding: calc(var(--safe-t) + 22px) 22px 16px; gap: 12px; }
+  .near-title { font-size: 32px; }
+  .near-list { grid-template-columns: repeat(3, 1fr); }
+  .near-list li { flex-direction: column; gap: 4px; padding: 12px 6px; text-align: center; border-radius: 22px; background: var(--panel); }
+  .near-list .near-name { display: none; }
+  .near-list .near-num { margin: 0; text-align: center; color: var(--text); font-weight: 900; }
+  /* The toggle and Show on map side by side, or the button on its own line
+     when the screen is too narrow for both. */
+  .near-phone-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .near-phone-row .seg-btn { padding: 0 12px; font-size: 14px; }
+  .near-phone-row .btn { flex: 1 1 150px; min-width: 0; padding: 0 12px; font-size: 15px; }
+  .near-list .near-num strong { display: block; font-size: 15px; font-weight: 900; }
+  .near-list .near-words { display: block; font-size: 12px; color: var(--muted); font-weight: 700; }
+  .near-list .near-words::before { content: none; }
+  .near-origin { margin-top: 0; background: none; padding: 0; justify-content: center; font-size: 12px; }
+  .near-origin svg { display: none; }
+  body.near-on-map .near-panel {
+    top: auto;
+    bottom: calc(var(--tabbar) + 8px);
+    left: calc(var(--safe-l) + 8px);
+    right: calc(var(--safe-r) + 8px);
+    border-radius: var(--r-card);
+    background: var(--panel);
+    box-shadow: var(--shadow);
+  }
+  body.near-on-map .near-panel .panel-scroll { padding: 16px 18px 18px; }
+  body.near-on-map .near-panel :is(.near-lede, .near-dial, .near-list, .near-origin, .kicker) { display: none; }
+  body.near-on-map .near-title { font-size: 22px; }
+  body.near-on-map .near-phone-row .seg { display: none; }
+
+  .cities-panel {
+    top: auto;
+    bottom: calc(var(--tabbar) + 8px);
+    max-height: calc(100dvh - var(--tabbar) - var(--safe-t) - 24px);
+  }
+  .cities-panel .panel-scroll { padding: 20px 18px; }
+  /* Scrolling past the end of a sheet or screen stops there instead of
+     carrying on into the page. */
+  .panel-scroll { overscroll-behavior: contain; overflow-x: hidden; }
+  .cities-panel h2 { font-size: 26px; }
+  .city-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .city-card { padding: 12px; gap: 8px; border-radius: 20px; }
+  .city-name strong { font-size: 16px; }
+  .city-head { flex-wrap: wrap; gap: 8px; }
+  .hex { width: 24px; height: 24px; }
+
+  body:has(#locate-note:not([hidden])) .top-row > :not(#locate-note) { visibility: hidden; }
+  .tip-float {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    max-width: none;
+    background: none;
+    box-shadow: none;
+    padding: 0;
+    align-items: flex-start;
+  }
+  .tip-float .tip-body {
+    padding: 12px 14px;
+    border-radius: 20px;
+    background: var(--panel);
+    box-shadow: var(--shadow);
+  }
+  .tip-float .tip-close { background: var(--panel); box-shadow: var(--shadow); width: var(--tap); height: var(--tap); }
+
+  /* In the top row's flow, under the search and any message it shows, on
+     the right: never on top of either. */
+  .status-pills { align-items: flex-end; }
+  /* Phones keep the top row at the top in every section. */
+  body[data-view] .top-row { top: calc(var(--safe-t) + var(--edge)); right: calc(var(--safe-r) + var(--edge)); left: calc(var(--safe-l) + var(--edge)); }
+  body:not([data-view="explore"]) .load-pill { display: none; }
+
+  /* Just above whichever sheet is open, else the tab bar, so the map's
+     credit line is never hidden under a sheet (placeAboveSheets). */
+  .maplibregl-ctrl-bottom-right,
+  .maplibregl-ctrl-bottom-left,
+  body:not([data-view="explore"]) .maplibregl-ctrl-bottom-right { bottom: calc(var(--sheet-gap, var(--tabbar)) + 4px); }
+  /* #8: with no room above a sheet for all three, only Locate stays. */
+  .map-fabs.is-cramped :is(#btn-key, #theme-fab) { display: none; }
+  .map-fabs.is-buried { visibility: hidden; }
+
+  .help {
+    width: 100vw;
+    max-width: 100vw;
+    max-height: calc(100dvh - var(--safe-t) - 8px);
+    margin: auto 0 0;
+    border-radius: 32px 32px 0 0;
+  }
+  .help-inner { padding: 22px 18px calc(22px + var(--safe-b)); gap: 16px; }
+  .help-head h2 { font-size: 22px; }
+  .help-head .buddy-big { display: none; }
 }
 
-/* -------------------------------------------------------- load progress ---
-   While a city's first load runs: a bar along the bottom of the map with how
-   far the load has got and roughly how long is left. Above the attribution,
-   clear of the controls at the top, and the compass on the right. */
-
-.load-progress {
-  position: absolute;
-  left: 50%;
-  bottom: 34px;
-  transform: translateX(-50%);
-  z-index: 3;
-  width: min(520px, calc(100% - 32px));
-  padding: 10px 14px 9px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: rgba(252, 252, 251, 0.96);
-  backdrop-filter: blur(6px);
-  box-shadow: 0 2px 10px rgba(11, 11, 11, 0.08);
-}
-.lp-text {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text-primary);
-  font-variant-numeric: tabular-nums;
-}
-.lp-bar {
-  height: 8px;
-  margin: 7px 0 6px;
-  border-radius: 999px;
-  background: var(--gridline);
-  overflow: hidden;
-}
-.lp-bar i {
-  display: block;
-  height: 100%;
-  width: 0;
-  border-radius: 999px;
-  background: var(--series-1);
-  transition: width 600ms ease;
-}
-.lp-detail {
-  font-size: 11.5px;
-  color: var(--text-secondary);
-}
-.lp-detail:empty { display: none; }
-
-@media (max-width: 600px) {
-  .load-progress { bottom: 24px; padding: 8px 10px; }
-  body.dir-open .load-progress { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
