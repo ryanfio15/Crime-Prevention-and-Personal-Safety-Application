@@ -480,6 +480,69 @@ The running record. **Newest first.** Append an entry whenever you commit or
 push (Rule 0b). An entry says what changed, why, and what a later reader would
 otherwise have to rediscover.
 
+### Rewrite the README against the pruned tree
+
+- **Branch:** `prune-for-delivery`. Pushed to `origin/prune-for-delivery`.
+- **Scope:** `readme.md` only — 525 lines to 422, +307/−410. No code touched.
+
+The README documented a system that no longer exists: two instances (prod and
+dev) on one home server, a root systemd autodeploy timer gated on the `ci` check,
+`deploy/promote.sh`, Railway, Kubernetes, `db-isolate.sh`, nightly systemd
+backups, and a documentation set of nine files. Sections 8 through 13 were
+almost entirely about that machinery.
+
+**Removed:** the Railway and Kubernetes deployment paths; the systemd deployer,
+candidate ports 18000/18001, promotion and rollback flow; prod/dev dual
+instances and `safety_dev`; the host backup scheme; the `COMPOSE_PROJECT_NAME`
+and `API_PORT`-via-systemd configuration notes; the doc-link table's seven dead
+entries; "What GitHub alone cannot restore"; the "Known doc and config drift"
+list (most of it referred to deleted files); the "Unverified without root"
+list; and the live `ddns.net` URLs, since the deployment target is now
+undetermined and asserting a URL nobody re-checked is how the old drift started.
+
+**Corrected — these were wrong, not merely obsolete:**
+
+- "Applied 17 migration(s)", "18 checksummed", "001–019" → **24**, everywhere.
+- "116 Python tests (21 deselected) and 6 JS tests" → **413 non-db, 58 db, 75
+  JS**. The old figures predated a large amount of the suite.
+- "MapLibre … (unpkg)", "SRI-pinned CDN scripts", "the browser loads unpkg and
+  CARTO" → vendored, and the CSP now permits no third-party script origin.
+- "`docker-compose.yml` — the PostGIS container (the only service)" → three
+  services, and `Dockerfile` described as an "alternative target; unused by the
+  server, not built in CI" is now *the* deployment.
+- "It waits up to 30 s for its pool" → `wait_for_db` is 30 attempts at 2 s, so
+  **60 s**. Checked against `safety/db.py:28` rather than carried over.
+- Dead-code note claiming `/api/v1/cells/lookup` is unused by the frontend: that
+  route does not exist. The live route list is 13 — 9 in `main.py`, 4 in
+  `directions.py`. `deploy/nginx/safety.conf` still mentions `/cells/ring` and
+  `/cells/lookup` in a comment; its `location` matching is unaffected.
+- The `safety.etl.run` subcommand list was missing four. Taken from `--help`:
+  backfill, incremental, reprocess, census, release-geometry, gold, prune,
+  safety, hourly, safety-compare, enable, weights, status, log.
+
+**Verified rather than assumed.** Two claims inherited from the old README were
+checked against the source before being kept: that the cities endpoint lists
+every city with a `gold.city_snapshot` row regardless of `enabled` (true —
+`repository.py:389` joins the registry and selects `enabled` as a field, with no
+`WHERE` on it, which is why the Austin gate matters), and `wait_for_db`'s
+timeout (wrong, corrected above). Every file path the README links to was
+confirmed to exist.
+
+**New, and worth knowing:**
+
+- **Backups are now a documented gap, not a feature.** The nightly `pg_dump`
+  lived in the removed systemd units. Nothing replaced it. This is the largest
+  operational regression from the prune and the README says so plainly.
+- **The API connects as a database superuser.** `POSTGRES_USER` is created as
+  one by the PostGIS image. The old host deployment split this into a
+  non-superuser owner role via the now-deleted `db-isolate.sh`; the container
+  deployment never did. Recorded under Security.
+- The MapLibre 5.9.0 XSS advisory (GHSA-jrc7-96c5-q579) is **unchanged by
+  vendoring** — same version, different origin. Kept as an open item.
+- The no-root deployment constraint (needs `uidmap` plus an `/etc/subuid` range,
+  both administrator-only) is recorded under Known gaps, because the intended
+  target host cannot run Docker without it.
+
 ### Prune to the container deploy, and vendor the CDN libraries
 
 - **Branch:** `prune-for-delivery`, cut from `main` at `051bf37`.

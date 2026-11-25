@@ -2,524 +2,421 @@
 
 A public web map of **relative reported-crime activity** in roughly 500 m hexagonal cells, built from official
 incident-level open data for six US cities: Philadelphia, Chicago, Seattle, Los Angeles, Washington DC and Austin.
+Plus safety-aware directions in four modes.
 
-**Live:** https://ryanfioserver.ddns.net (prod, branch `main`) · https://ryanfioserverdev.ddns.net (dev, branch `testing`)
+It runs as three containers on any Linux host with Docker: PostGIS, the API (which also serves the frontend), and a
+self-hosted Valhalla routing service, with nginx in front for TLS.
 
 | Document | Read it for |
 |---|---|
-| **this README** | Overview, configuration, local development, a summary of every other area, troubleshooting, known gaps |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, tech stack, request flows, data model, networking, security model |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Routine deploys, promotion, rollback, migrations, from-zero server setup, branch protection, deploy internals, database roles, OS users, container image. Replaces the old `docs/DEPLOY.md` |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Schedules, logs, health checks, alerts, backups and restore, limits, runbook |
-| [docs/KUBERNETES.md](docs/KUBERNETES.md) | The horizontally scaled Kubernetes deployment (FABRIC, AWS, Azure): layout, sizing, first deploy and 12-month bootstrap, runbook. FABRIC walkthrough: [deploy/fabric/README.md](deploy/fabric/README.md) |
-| [docs/RAILWAY.md](docs/RAILWAY.md) | The Railway deployment: the whole site with one API, deployed with one command (`deploy/railway/up.sh`) and kept current by an hourly worker |
-| [docs/DESIGN.md](docs/DESIGN.md) | The original system design document (target architecture, roadmap, contributors) |
-| [docs/PHASE1.md](docs/PHASE1.md), [docs/PHASE2.md](docs/PHASE2.md) | What each build phase delivered, per-city data notes |
+| **this README** | What the system is, how it is put together, configuration, local development, troubleshooting, known gaps |
+| [DEPLOY.md](DEPLOY.md) | Deploying on a bare Linux server: requirements, host packages, first load, routing tiles, nginx and TLS |
+| [CLAUDE.md](CLAUDE.md) | The authoritative component inventory, the end-to-end HTTP verification, the test-suite breakdown, and the Git record of what changed and why |
+| [docs/DESIGN.md](docs/DESIGN.md) | The original system design document — the requirements spec the `F4`–`F20` and `S6`/`S13` identifiers in the code comments refer to |
 
-This documentation was written against commit `391c5ad` on 2026-10-08. Claims come from the source and from read-only
-checks on the production host. Anything that could not be verified is marked ⚠️ and collected under
-[Known gaps](#known-gaps-and-unverified-items).
+Figures in this README marked *(measured)* were observed on a verified clean-install run; see
+[CLAUDE.md](CLAUDE.md) for the method and its limits.
 
 ---
 
 ## 1. Overview
 
 **Who uses it.** Residents, commuters and visitors who want to know whether an area is typically quieter or busier
-than others nearby, and researchers who want a documented API (see [docs/DESIGN.md §2](docs/DESIGN.md)).
+than others nearby, and researchers who want a documented API.
 
 **What it shows.** Every covered city on one map, over the last year and nothing else: each city keeps one rolling
-year of incidents and deletes anything 366 or more days old ([ARCHITECTURE.md → One year](docs/ARCHITECTURE.md#one-rolling-year)).
-The only controls are Show tiles and the violent / non-violent toggle; nothing else chooses the data.
+year of incidents and deletes anything 366 or more days old.
+
 - Each H3 cell is coloured by its relative risk: its rate as a multiple of its own city's average, at the hour and
-  weekday it is now in that city. Cities are never compared with each other, because reporting differs too much
+  weekday it is now in that city. **Cities are never compared with each other**, because reporting differs too much
   between police departments. Tapping a cell shows that rating and the cell's 24-hour and 7-day patterns.
 - A severity-weighted "safety" ranking per 1,000 residents plus jobs, kept as two separate rankings: violent and
   non-violent.
-- Time-of-day rankings. For each track, a cell's rate is multiplied by its hour factor, which is how much of the cell's
-  day falls in that hour, blended toward the city's pattern when the cell has little data, and by its weekday factor.
-  Every cell is then ranked again at that time.
-- While a city's first load (the backfill) runs, a progress bar on the map shows how far it has got and roughly how
-  much longer it will take (`GET /api/v1/progress`).
+- Time-of-day rankings: a cell's rate is multiplied by its hour factor and its weekday factor, blended toward the
+  city's pattern when the cell has little data, and every cell is ranked again at that time.
+- While a city's first load runs, a progress bar on the map shows how far it has got (`GET /api/v1/progress`).
 
 It deliberately does not give an address-level "risk score".
 
-**Directions**. Driving, walking, biking and transit directions between two
-addresses, each route annotated with how much reported activity there is *along it* compared with the city average,
-plus a "lower reported activity" alternative when one is clearly lower for a few extra minutes. It is a relative
-description of a route, never a score for an address, and it says nothing about time spent on board transit (see
-[docs/DESIGN.md §13](docs/DESIGN.md)). Driving, walking and biking use a self-hosted Valhalla container whose
-OpenStreetMap tiles are built monthly in GitHub Actions; transit uses the public Transitous service and address search
-uses Photon, both called by the server. Operating it: [docs/OPERATIONS.md → Valhalla routing
-tiles](docs/OPERATIONS.md#valhalla-routing-tiles). The infrastructure is in place; the endpoints and the map UI follow.
+**Directions.** Driving, walking, biking and transit directions between two addresses, each route annotated with how
+much reported activity there is *along it* compared with the city average, plus a "lower reported activity"
+alternative when one is clearly lower for a few extra minutes. It is a relative description of a route, never a score
+for an address. Driving, walking and biking use the self-hosted Valhalla container, whose OpenStreetMap tiles are
+built monthly in GitHub Actions and downloaded by `deploy/valhalla/fetch.sh`; transit uses the public Transitous
+service and address search uses Photon, both called by the server, never the browser.
 
-**Architecture in one paragraph.**
-- A Python ETL (`safety/etl`) pulls each city's incidents from its open-data portal on a 6-hourly systemd timer.
-- It stores the raw responses on disk ("bronze"), normalizes them into one PostGIS table ("silver"), and rebuilds
-  per-cell rollups ("gold").
-- A FastAPI app (`safety/api`) serves those rollups read-only under `/api/v1`, together with a vanilla-JS MapLibre
-  frontend (`web/`).
-- Everything runs on one home server as two instances (prod and dev) behind nginx. Both share one Postgres container.
-- A root systemd timer deploys each branch automatically once its GitHub Actions `ci` check passes.
+**In one paragraph.** A Python ETL (`safety/etl`) pulls each city's incidents from its open-data portal, stores the
+raw responses on disk ("bronze"), normalizes them into one PostGIS table ("silver"), and rebuilds per-cell rollups
+("gold"). A FastAPI app (`safety/api`) serves those rollups read-only under `/api/v1`, together with a vanilla-JS
+MapLibre frontend (`web/`). Nothing in the request path aggregates: the ETL and the API only ever meet through the
+database.
 
 ## 2. Architecture
 
 ```mermaid
 flowchart LR
-  B[Browser<br/>web/ + MapLibre] -->|HTTPS| N[nginx :443]
-  N -->|loopback| A["FastAPI / uvicorn<br/>prod :8000 · dev :8001"]
-  A --> D[("PostGIS 17 · safety_db<br/>127.0.0.1:55432")]
-  T[systemd timers] --> E[ETL: safety.etl.run / safety.ops]
-  E -->|HTTPS| P[(City portals, census.gov)]
-  E --> F[(bronze files I/data)]
+  B[Browser<br/>web/ + MapLibre] -->|HTTPS| N[nginx :443<br/>host]
+  N -->|127.0.0.1:8000| A["api container<br/>FastAPI / uvicorn"]
+  A --> D[("db container<br/>PostGIS 17")]
+  A --> V["valhalla container<br/>drive · walk · bike"]
+  A -->|HTTPS| X[(Transitous · Photon)]
+  C["cron: safety.ops<br/>in the api image"] --> E[ETL]
+  E -->|HTTPS| P[(City portals · census.gov)]
+  E --> F[(bronze volume)]
   E --> D
-  G[GitHub ci check] -.-> AD["safety-autodeploy@ root timer"] --> A
 ```
 
-| Component | Tech | Responsibility | Port | Depends on |
-|---|---|---|---|---|
-| Web frontend | Vanilla JS, MapLibre GL 5.9.0, h3-js 4.2.1 (unpkg) | Map UI | served at `/` by the API | API, CDN, CARTO tiles |
-| API | FastAPI 0.141.1 / uvicorn 0.52.4 | Read-only `/api/v1/*` over `gold` tables; static files | 127.0.0.1:8000 (prod), :8001 (dev) | PostgreSQL |
-| ETL + ops | Python CLIs `safety.etl.run`, `safety.ops` | Portal → bronze → silver → gold | — | Portals, census.gov, PostgreSQL |
-| Database | `postgis/postgis:17-3.5` (Docker) | DB `safety` (prod) and `safety_dev` (dev) | 127.0.0.1:55432 | Docker volume |
-| Reverse proxy | nginx + Let's Encrypt | TLS, rate limits | 80, 443 | API |
-| Deployer | bash + systemd (`deploy/`) | CI-gated deploys, candidate check, rollback | candidates on 18000 / 18001 | GitHub |
+| Component | Tech | Responsibility | Port |
+|---|---|---|---|
+| Web frontend | Vanilla JS, MapLibre GL 5.9.0, h3-js 4.2.1 — **vendored, served from this origin** | Map UI | served at `/` by the API |
+| API | FastAPI 0.141.1 / uvicorn 0.52.4 | Read-only `/api/v1/*` over `gold` tables; static files | `127.0.0.1:8000` |
+| ETL + ops | Python CLIs `safety.etl.run`, `safety.ops`, `safety.bootstrap` | Portal → bronze → silver → gold | — |
+| Database | `postgis/postgis:17-3.5` | Everything persistent | `127.0.0.1:55432` |
+| Routing | `ghcr.io/valhalla/valhalla:3.9.1` (digest-pinned) | Street routing, behind the `routing` profile | `127.0.0.1:58002` |
+| Reverse proxy | nginx + certbot, on the host | TLS, rate limits, gzip | 80, 443 |
+
+The API and the ETL are the **same image** with a different command, because they run identical code and differ only
+in entry point.
 
 Data flow:
-1. A portal returns incidents as gzipped chunks, which are saved to `I/data/bronze/…`.
+1. A portal returns incidents, which are saved to `BRONZE_ROOT/…`.
 2. Records are normalized and validated, then upserted into `silver.incident`.
 3. `gold.*` is rebuilt and `gold.city_snapshot.last_refreshed_at` is set to now.
 4. The API cache and the browsers' 60 s poll notice that timestamp and reload.
 
-Sequence diagrams and the full component table: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
 ## 3. Tech stack
 
-| Layer | Technology | Version | Purpose | Why it matters |
-|---|---|---|---|---|
-| Language | Python | 3.12 | API, ETL, migrations | The deployer hard-codes `/usr/bin/python3.12` |
-| Web | FastAPI, uvicorn[standard] | 0.141.1, 0.52.4 | HTTP API, `/docs` | Single process per instance |
-| DB access | psycopg[binary,pool] | 3.3.5 | Sync pool (API), COPY (ETL) | |
-| Config | pydantic-settings | 2.15.0 | Env vars + `.env` | |
-| Geo | h3, pyproj, pyshp | 4.5.0, 3.7.2, 3.1.6 | Cells, reprojection, census shapefiles | H3 is computed in Python, not in the DB |
-| HTTP client | httpx | 0.28.1 | Portal downloads | |
-| Database | PostgreSQL + PostGIS | 17 / 3.5 | All state except bronze | Shared by prod and dev |
-| Frontend | MapLibre GL JS, h3-js | 5.9.0, 4.2.1 | Map rendering | MapLibre has an open advisory ([Security](#12-security)) |
-| Proxy | nginx, certbot | 1.24.0, 2.9.0 | TLS, rate limiting | |
-| Ops | systemd timers, Docker CE | Ubuntu 24.04, 29.8.2 | Scheduling, DB container | No Airflow, Redis or S3 |
-| CI | GitHub Actions | `ubuntu-latest` | One job named `ci` | The name is the deploy gate |
-| Tests | pytest, node --test | 9.1.1, Node 22 | Unit and DB tests | |
+| Layer | Technology | Version | Notes |
+|---|---|---|---|
+| Language | Python | 3.12 | Every compiled dependency ships a cp312 manylinux wheel, so the image builds with no compiler *(measured)* |
+| Web | FastAPI, uvicorn[standard] | 0.141.1, 0.52.4 | One process; `/docs` when `ENABLE_DOCS` |
+| DB access | psycopg[binary,pool] | 3.3.5 | Sync pool (API), COPY (ETL) |
+| Config | pydantic-settings | 2.15.0 | Env vars + `.env` |
+| Geo | h3, pyproj, pyshp | 4.5.0, 3.7.2, 3.1.6 | H3 is computed in Python, not in the DB |
+| HTTP client | httpx | 0.28.1 | Portal downloads, routing providers |
+| Database | PostgreSQL + PostGIS | 17 / 3.5 | All state except bronze |
+| Frontend | MapLibre GL JS, h3-js | 5.9.0, 4.2.1 | Vendored under `web/vendor/`; see [Security](#11-security) for the MapLibre advisory |
+| Routing | Valhalla | 3.9.1 | Self-hosted; tiles built in CI |
+| Containers | Docker Engine + Compose v2 | 25+ | The only runtime requirement on the host |
+| CI | GitHub Actions | `ubuntu-latest` | One job named `ci` |
+| Tests | pytest, `node --test` | 9.1.1, Node 22+ | 546 tests *(measured)* |
 
 Only the 8 top-level Python packages are pinned (`requirements.txt`). Indirect dependencies are not pinned and there
-is no lockfile. The pieces only interact through the database: the ETL never calls the API, and the API never runs
-aggregations on the request path.
+is no lockfile.
 
 ## 4. Repository layout
 
+182 tracked files. The repository was pruned to the running service; `CLAUDE.md` section 5 records what was removed
+and why, and the history holds all of it.
+
 ```
-safety/                     Python package
+safety/                     Python package (52 files)
   config.py                 every setting (pydantic); REPO_ROOT-relative paths
   db.py                     connections, wait_for_db, silver partition management
   h3grid.py                 lat/lng → H3 cell (res 8/9/10)
   migrate.py                `python -m safety.migrate`: SQL migrations + CSV reference loads
   ops.py                    `python -m safety.ops`: load whatever each enabled city is missing
-  api/main.py               FastAPI app, all /api/v1 routes, response cache, static mount
+  bootstrap.py              `python -m safety.bootstrap`: migrate → enable → converge, the first load
+  api/main.py               FastAPI app, 9 routes, response cache, static mount
+  api/directions.py         the 4 directions / geocoding routes
   api/repository.py         every SQL query the API runs
   api/ratelimit.py          in-process token-bucket limiter
   api/security.py           CSP / HSTS / security-header middleware
-  etl/run.py                `python -m safety.etl.run`: backfill, incremental, reprocess, census, release-geometry,
-                            gold, safety, hourly, safety-compare, enable, weights, status, log
+  etl/run.py                `python -m safety.etl.run`: backfill, incremental, reprocess, census,
+                            release-geometry, gold, prune, safety, hourly, safety-compare, enable,
+                            weights, status, log
   etl/adapters/             one adapter per city (Carto, Socrata, Esri ArcGIS)
-  etl/bronze.py · transform.py · validate.py · gold.py · census.py · boundary.py · withdrawn.py
-db/migrations/              001–019 forward-only SQL migrations
+  etl/                      bronze · transform · validate · gold · census · boundary · withdrawn · retention
+  routing/                  providers, scoring, detours, circuit breaker, daily budgets
+db/migrations/              001–024, forward-only, checksummed, immutable
 reference/crosswalk/        per-city offense code → NIBRS/UCR/category CSVs (loaded on every migrate)
 reference/severity/         severity schemes and weights
-web/                        index.html, app.js, html.js (escape-by-default templating), styles.css
+web/                        index.html, app.js, directions.js, html.js (escape-by-default), styles.css, sw.js
+web/vendor/                 maplibre-gl.js/.css, h3-js.umd.js — vendored, no CDN at runtime
 tests/                      pytest (unit + `db`-marked) and tests/js (node --test)
-scripts/                    crosswalk builders; storage.py (one-off for migration 012)
 deploy/
-  autodeploy.sh             root CI-gated deployer (installed to /usr/local/sbin/safety-autodeploy)
-  deploy.sh · promote.sh    manual redeploy; fast-forward main to testing
-  lib/                      install.sh, release.sh, smoke.sh, backup.sh, notify.sh (installed to /usr/local/lib/safety-deploy)
-  install-deployer.sh       installs the above, unit templates (--units) and nginx sites (--nginx)
-  migrate-layout.sh         builds an instance's first release / `current`
-  db-isolate.sh · os-isolate.sh · db/transfer-ownership.sql   per-instance DB roles and OS user
-  systemd/                  api, etl, etl-hourly, ops, autodeploy, backup, notify units and timers;
-                            *@dev.timer.d/ (dev's schedule offsets); instance-user/dev.conf (installed by os-isolate.sh)
-  nginx/                    safety.conf (prod), safety-dev.conf (dev): byte-identical to the live sites
-  git-hooks/ · setup-worktrees.sh   local guards: no commits on main, main only fast-forwards to testing
-  logs.sh                   ETL/ops history + journal for one instance
-docker-compose.yml          the PostGIS container (the only service)
-Dockerfile · docker-entrypoint.sh   container image (alternative target; unused by the server, not built in CI)
-.github/workflows/ci.yml    the `ci` job
-.env.example                configuration template
-docs/                       this documentation set
+  nginx/safety.conf         the production front end: rate-limit zones, gzip, proxy headers
+  valhalla/                 fetch.sh (install tiles), smoke.sh (route every city), build.sh (runs in CI), regions.tsv
+  lib/smoke.sh              the end-to-end HTTP check, used by CI and by DEPLOY.md
+docker-compose.yml          the three services: db, api, valhalla (profile `routing`)
+Dockerfile                  the API/ETL image
+.github/workflows/          ci.yml (the test gate), valhalla-tiles.yml (monthly tile release)
+docs/DESIGN.md              the original design document
 ```
 
 ## 5. Prerequisites
 
 | For | You need |
 |---|---|
-| Local development | Python **3.12** (CI, Docker and the server all use 3.12; a Dockerfile comment mentioning 3.14 is not a requirement), Docker with Compose v2, Node 22 for JS tests, internet access (no offline sample data). Optional: `shellcheck` |
-| The server | Ubuntu 24.04, `/usr/bin/python3.12` + `python3.12-venv`, Docker CE + compose plugin, nginx, certbot (nginx plugin), git, curl, jq, openssl. Hardware today: 4 CPUs, 7.6 GiB RAM, 116 GB disk. Full list: [DEPLOYMENT.md §0](docs/DEPLOYMENT.md#0-prerequisites) |
-| Access | GitHub push access to `ryanfio15/Crime-Prevention-and-Personal-Safety-Application`. For the server: a sudo login, the No-IP/ddns.net account, router admin, and an email for Let's Encrypt |
+| The server | Any Linux host with Docker Engine 25+ and Compose v2, plus nginx and certbot for TLS. 2 vCPU / 4 GB RAM minimum, 25 GB disk. Full list and the exact apt sequence: [DEPLOY.md](DEPLOY.md#1-requirements) |
+| Local development | Python **3.12**, Docker with Compose v2, Node 22+ for the JS tests, and internet access — there is no offline sample dataset. Optional: `shellcheck` |
+| Access | GitHub push access to the repository. For a public deployment: a domain, and ports 80/443 reachable |
+
+Docker needs either root or membership in the `docker` group. On a host where you have neither, see the note at the
+end of [Known gaps](#known-gaps).
 
 ## 6. Configuration
 
 All application settings live in `safety/config.py`. They are read once at process start, with real environment
 variables taking precedence over `REPO_ROOT/.env`, which takes precedence over the code default. Names are
-case-insensitive and unknown keys are ignored. On the server, each release's `.env` is a symlink to the instance's
-`I/.env` (owned by the instance user, mode 0600). The API also loads that file through systemd's `EnvironmentFile=`.
+case-insensitive and unknown keys are ignored. Use plain `KEY=value` lines: no quotes, no `export`.
 
-Use plain `KEY=value` lines: no quotes, no `export`, comments on their own lines. `db-isolate.sh` matches whole lines,
-and systemd and python-dotenv parse anything fancier differently.
+`POSTGRES_PASSWORD` is the **only** value with no default — deliberately, so that a well-known password cannot reach
+a deployment. `dsn` refuses to build without it, at connect time, so imports and DB-free tests still work.
 
-| Variable | Default | Required | Read by | Purpose |
-|---|---|---|---|---|
-| `POSTGRES_PASSWORD` | *(none)* | **yes** | `config.py` DSN; `docker-compose.yml` | DB password. Use `openssl rand -hex 32`; it is not URL-escaped, so avoid `@:/?#` |
-| `POSTGRES_DB` | `safety` | dev: **yes** (`safety_dev`) | DSN | Database name. The default is prod's database |
-| `POSTGRES_USER` | `safety` | — | DSN | `safety` before isolation; `safety_prod` / `safety_dev` after `db-isolate.sh` |
-| `POSTGRES_HOST` | `127.0.0.1` | — | DSN | Keep the IPv4 literal. `localhost` resolves to `::1` first and the pool times out |
-| `POSTGRES_PORT` | `55432` | — | DSN; compose host port | |
-| `API_PORT` | *(none)* | **server: yes** | `deploy/systemd/safety-api@.service` | 8000 prod, 8001 dev. Must match `deploy/lib/install.sh:53-54` and the nginx upstreams |
-| `COMPOSE_PROJECT_NAME` | directory name | **prod server: yes** | docker compose | Must be `crime-prevention-and-personal-safety-application`, or compose creates an empty volume. Never set it in dev. **Missing from `.env.example`** |
-| `BRONZE_ROOT` | `REPO_ROOT/data/bronze` | — | `safety/etl/bronze.py` | Raw pull storage. Leave it unset on the server; `.env.example`'s `./data/bronze` depends on the working directory |
-| `RETENTION_DAYS` | `365` | — | `etl/retention.py` | Days of incidents each city keeps; older rows and bronze pulls are deleted and never fetched |
-| `BACKFILL_MONTHS` | `12` | — | `etl/run.py` | Backfill window, clamped to the retention cutoff |
-| `ENABLE_DOCS` | `true` | — | `api/main.py:86-88` | Serves `/docs`, `/redoc` and `/openapi.json`. On in prod today |
-| `ENABLE_RATE_LIMIT` | `true` | — | `api/main.py:95` | In-app limiter. Set `false` only locally or for load tests |
-| `CACHE_MAX_ENTRIES` | `192` | — | `api/main.py` | Response cache entry cap |
-| `CACHE_MAX_BYTES` | `268435456` | — | `api/main.py` | Response cache byte budget (256 MiB) |
-| `API_STATEMENT_TIMEOUT_MS` | `15000` | — | `api/main.py:58` | Per-query limit on API connections |
-| `API_POOL_TIMEOUT_SECONDS` | `10` | — | `api/main.py:62` | Wait for a pool slot before returning 503 |
-| `HSTS_MAX_AGE_SECONDS` | `86400` | — | `api/security.py` | HSTS on HTTPS responses |
-| `HTTP_TIMEOUT_SECONDS` | `120` | — | adapters, census | Portal request timeout |
-| `HTTP_MAX_RETRIES` | `4` | — | adapters, census | Portal retries (all but Philadelphia) |
-| `CARTO_MAX_RETRIES` | `6` | — | `etl/adapters/philadelphia.py` | Philadelphia (Carto) attempts; waits 5, 10, 20, 40, then 60 s |
-| `CONNECT_TIMEOUT_SECONDS` | `10` | — | DSN | libpq `connect_timeout` |
-| `MIGRATE_LOCK_WAIT_SECONDS` | `600` | — | `migrate.py` | Wait for a concurrent migrate |
-| `SOCRATA_APP_TOKEN` | *(empty)* | — | `etl/adapters/socrata.py` | Optional `X-App-Token` for chi, sea and lax; raises the quota. Not used by Austin, despite the comment in `config.py` |
-| `OPS_CITY` · `OPS_FORCE` · `OPS_DRY_RUN` | empty · false · false | — | `safety/ops.py` | Steer `safety.ops`; CLI flags win |
-| `OPS_RETRY_COOLDOWN_HOURS` | `6` | — | `safety/ops.py` | How long a failed ops step is left alone |
-| `WITHDRAWN_RECONCILE` | `report` | — | `etl/run.py` | `off` / `report` / `delete` for rows that vanish upstream. Prod stays `report` |
-| `WITHDRAWN_RETENTION_DAYS` | `90` | — | `etl/run.py` | Archive retention for deleted rows |
-| `DIRECTIONS_ENABLED` | `true` | — | `config.py` | Kill switch for directions and address search |
-| `VALHALLA_URL` | `http://127.0.0.1:58002` | — | `config.py` | Self-hosted Valhalla (compose profile `routing`) |
-| `TRANSITOUS_URL` · `TRANSITOUS_PLAN_PATH` | `https://api.transitous.org` · `/api/v6/plan` | — | `config.py` | Public transit planner |
-| `PHOTON_URL` | `https://photon.komoot.io` | — | `config.py` | Public address search |
-| `ROUTING_CONTACT` | the GitHub repo URL | — | `config.py` | Contact in every upstream User-Agent |
-| `ROUTING_TIMEOUT_SECONDS` | `8` | — | `config.py` | Per upstream call |
-| `TRANSIT_DAILY_BUDGET` · `GEOCODE_DAILY_BUDGET` | `500` · `5000` | dev: set `100` for transit | `config.py` | Upstream calls per UTC day; Transitous asks for under 720 a day from us |
-| `ROUTE_MAX_KM` | `100` | — | `config.py` | Longest straight-line trip accepted; above every city's bbox diagonal (LA 84.5 km) |
+| Variable | Default | Required | Purpose |
+|---|---|---|---|
+| `POSTGRES_PASSWORD` | *(none)* | **yes** | DB password. Use `openssl rand -base64 36`; it is not URL-escaped, so avoid `@:/?#` |
+| `POSTGRES_DB` · `POSTGRES_USER` | `safety` · `safety` | — | Database and role |
+| `POSTGRES_HOST` | `127.0.0.1` | — | Keep the IPv4 literal: `localhost` resolves to `::1` first and the pool times out. **Compose overrides this to `db`** for the API container |
+| `POSTGRES_PORT` | `55432` | — | Host-published port; compose overrides to `5432` inside the network |
+| `API_PORT` | `8000` | — | Host port compose publishes on loopback |
+| `BRONZE_ROOT` | `REPO_ROOT/data/bronze` | — | Raw pull storage. Compose sets `/data/bronze`, a named volume |
+| `RETENTION_DAYS` | `365` | — | Days of incidents each city keeps; older rows and bronze pulls are deleted and never refetched |
+| `BACKFILL_MONTHS` | `12` | — | Backfill window, clamped to the retention cutoff |
+| `BOOTSTRAP_CITIES` | all six | — | Which cities `safety.bootstrap` enables. Drop `aus` to leave Austin off (see [Known gaps](#known-gaps)) |
+| `ENABLE_DOCS` | `true` | — | Serves `/docs`, `/redoc`, `/openapi.json` |
+| `ENABLE_RATE_LIMIT` | `true` | — | In-app limiter. Set `false` only locally or for load tests |
+| `CACHE_MAX_ENTRIES` · `CACHE_MAX_BYTES` | `192` · 256 MiB | — | Response cache bounds. The byte budget is what protects the container |
+| `API_STATEMENT_TIMEOUT_MS` | `15000` | — | Per-query limit on API connections; over it, 503 |
+| `API_POOL_TIMEOUT_SECONDS` · `API_POOL_MAX_SIZE` | `10` · `8` | — | Wait for a pool slot before 503; connections per process |
+| `HSTS_MAX_AGE_SECONDS` | `86400` | — | HSTS, sent on https only |
+| `HTTP_TIMEOUT_SECONDS` · `HTTP_MAX_RETRIES` | `120` · `4` | — | Portal requests |
+| `CARTO_MAX_RETRIES` | `6` | — | Philadelphia (Carto) gets more attempts; its endpoint has bad patches of a few minutes |
+| `CONNECT_TIMEOUT_SECONDS` | `10` | — | libpq `connect_timeout`; without it a dead address costs the OS TCP timeout |
+| `MIGRATE_LOCK_WAIT_SECONDS` | `600` | — | Wait for a concurrent migrate |
+| `SOCRATA_APP_TOKEN` | *(empty)* | — | Optional, free. Identifies the caller for quota on the four Socrata cities (chi, sea, lax, aus). Everything works without it |
+| `OPS_CITY` · `OPS_FORCE` · `OPS_DRY_RUN` | empty · false · false | — | Steer `safety.ops`; CLI flags win |
+| `OPS_RETRY_COOLDOWN_HOURS` | `6` | — | How long a failed ops step is left alone |
+| `WITHDRAWN_RECONCILE` · `WITHDRAWN_RETENTION_DAYS` | `report` · `90` | — | `off`/`report`/`delete` for rows that vanish upstream, and how long deleted rows stay recoverable |
+| `DIRECTIONS_ENABLED` | `true` | — | Kill switch for directions and address search. Off: the endpoints answer 503 and the page hides the button |
+| `VALHALLA_URL` | `http://127.0.0.1:58002` | — | **Compose overrides to `http://valhalla:8002`** |
+| `VALHALLA_PORT` · `VALHALLA_DATA_DIR` | `58002` · `/srv/valhalla/current` | — | Read by compose for the `valhalla` service only |
+| `TRANSITOUS_URL` · `TRANSITOUS_PLAN_PATH` | `https://api.transitous.org` · `/api/v6/plan` | — | Public transit planner |
+| `PHOTON_URL` | `https://photon.komoot.io` | — | Public address search |
+| `ROUTING_CONTACT` | the repo URL | — | Contact in every upstream User-Agent, as Transitous and Photon ask |
+| `ROUTING_TIMEOUT_SECONDS` | `8` | — | Per upstream call |
+| `TRANSIT_DAILY_BUDGET` · `GEOCODE_DAILY_BUDGET` | `500` · `5000` | — | Upstream calls per UTC day; Transitous asks for under 720 a day from us |
+| `ROUTE_MAX_KM` | `100` | — | Longest straight-line trip accepted; above every city's bbox diagonal (LA 84.5 km) |
+| `PORT` · `FORWARDED_ALLOW_IPS` | `8000` · `*` | — | Read by the image's `CMD`. Compose sets `FORWARDED_ALLOW_IPS=127.0.0.1`, since nginx is the only hop to trust. The default `*` lets a client spoof its address, which the rate limiter keys on |
 
-Other variables:
-- `SAFETY_TEST_DB=1` enables DB tests (CI only).
-- `PORT` and `FORWARDED_ALLOW_IPS` apply to the Docker image only. Its default of `*` lets clients spoof their IP.
-- `SMOKE_TIMEOUT` (60), `SAFETY_BACKUP_DIR` (`/var/backups/safety`) and `SAFETY_BACKUP_MIN_FREE_GB` (15) are read by the
-  deploy scripts.
-- `VALHALLA_PORT` (58002) and `VALHALLA_DATA_DIR` (`/srv/valhalla/current`) are read by compose for the `valhalla`
-  service only.
+Also present but unused by this deployment: `DB_SHARDS`, `SHARD_CITIES`, `JOBLOCK_HOST`, `JOBLOCK_WAIT_SECONDS`,
+`ROUTING_BUDGET_BACKEND`, `CACHE_STAMP_TTL_SECONDS`, `CACHE_WARM_ON_START`. They exist for a multi-replica,
+multi-database deployment; a single API container needs none of them. `SAFETY_TEST_DB=1` enables the `db`-marked
+tests, and `SMOKE_TIMEOUT` (60) is read by `deploy/lib/smoke.sh`.
 
-**Secrets.**
-- The only application secret is the DB password, which lives in each `I/.env`.
-- `db-isolate.sh` generates instance role passwords (`openssl rand -hex 32`, passed on stdin, never printed). It keeps
-  a root-only copy of the pre-isolation `.env` in `/var/lib/safety-deploy/env-backup/`.
-- CI uses throwaway literal passwords and no GitHub secrets.
-- The deployer uses **no** GitHub token: it fetches anonymously, so the repo must stay public.
-- TLS keys are managed by certbot under `/etc/letsencrypt`.
-- None of these secrets are backed up off the host.
+**Secrets.** The only application secret is the database password, in `.env` (mode 0600). TLS keys are managed by
+certbot under `/etc/letsencrypt`. CI uses a throwaway literal password and no GitHub secrets. None of this is backed
+up anywhere — see [Known gaps](#known-gaps).
 
 ## 7. Local development
 
-Do this on your own machine, **never on the production server**: the compose container name `safety_db`, port
-55432 and the volume would collide with the live database.
-
 ```bash
-git clone git@github.com:ryanfio15/Crime-Prevention-and-Personal-Safety-Application.git
+git clone https://github.com/ryanfio15/Crime-Prevention-and-Personal-Safety-Application.git
 cd Crime-Prevention-and-Personal-Safety-Application
-
-python3.12 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt          # requirements.txt + pytest
 
 cp .env.example .env
 sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
-echo "ENABLE_RATE_LIMIT=false" >> .env                 # optional, local only
+echo "ENABLE_RATE_LIMIT=false" >> .env          # optional, local only
 
-docker compose up -d                                   # PostGIS on 127.0.0.1:55432
-docker compose ps                                      # wait for "healthy"
-
-.venv/bin/python -m safety.migrate                     # → "Applied 17 migration(s): …"
-.venv/bin/python -m safety.ops                         # phl only: backfill → census → gold → hourly (~minutes)
-#   quicker smoke: .venv/bin/python -m safety.etl.run backfill --city phl --months 1 --skip-hourly
-
-.venv/bin/python -m uvicorn safety.api.main:app --reload --port 8000
+docker compose build api
+docker compose up -d db                          # PostGIS on 127.0.0.1:55432
+docker compose run --rm api python -m safety.bootstrap --cities phl
+docker compose up -d api
 # open http://127.0.0.1:8000/   ·   API docs at http://127.0.0.1:8000/docs
 ```
 
-- **The API will not start without a reachable DB.** It waits up to 30 s for its pool. Against an unmigrated DB it
-  starts, but every data route returns 500.
-- Only **Philadelphia** is enabled on a fresh database. For other cities, run
-  `.venv/bin/python -m safety.etl.run enable --city chi`, then `.venv/bin/python -m safety.ops --city chi`. The
-  per-city steps in `docs/PHASE2.md` leave out `enable`. Leave Austin disabled (see
-  [Known gaps](#known-gaps-and-unverified-items)).
-- There is no sample dataset: the first load is a live pull from the portal.
-- Hot reload: `--reload` restarts on Python changes, and `web/` is served from disk with no build step.
-- A smaller load with `--months` is never widened later by `incremental` or `ops`. Run `backfill` again without
-  `--months` to get the full year.
-- Nothing older than a year is kept: `safety.etl.run prune --city <id>` (also run by every incremental) deletes it.
-- `docs/PHASE1.md` uses Windows paths (`.venv/Scripts/python.exe`); use `.venv/bin/python` on macOS and Linux.
+`bootstrap` applies the 24 migrations, enables the city, and runs the first load. A one-city, one-month load took
+about three minutes *(measured)*; the full six-city, twelve-month load is hours, most of it waiting on portals. For a
+quicker smoke, add `-e BACKFILL_MONTHS=1` to the `run` command.
 
-### Tests and lint
-
-These are the checks CI runs that need no database. All of them pass on this commit: 116 Python tests (21 deselected)
-and 6 JS tests.
+To work on the Python outside a container:
 
 ```bash
-.venv/bin/python -m compileall -q safety
-.venv/bin/python -c "import safety.api.main, safety.migrate, safety.etl.run"
-.venv/bin/python -m pytest -q -m "not db"
-node --check web/app.js && node --check web/html.js     # one file per call: `node --check a b` checks only a
-node --test tests/js/*.test.mjs                          # the glob is needed on Node 22
-for f in deploy/*.sh deploy/lib/*.sh deploy/git-hooks/*; do bash -n "$f"; done
-shellcheck deploy/*.sh deploy/lib/*.sh deploy/git-hooks/*
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt    # requirements.txt + pytest
+.venv/bin/python -m uvicorn safety.api.main:app --reload --port 8000
+```
+
+- **The API will not start usefully without a reachable database.** `wait_for_db` retries 30 times at 2 s intervals,
+  so up to 60 s. Against an unmigrated database it starts, but every data route returns 500.
+- Only **Philadelphia** is enabled by the migrations. For another city:
+  `python -m safety.etl.run enable --city chi`, then `python -m safety.ops --city chi`.
+- There is no sample dataset: the first load is a live pull from the portal.
+- `--reload` restarts on Python changes, and `web/` is served from disk with no build step.
+- A smaller load with `--months` is never widened later by `incremental` or `ops`. Run `backfill` again without
+  `--months` for the full year.
+
+### Tests
+
+546 tests, all passing *(measured)*: 413 Python without a database, 58 marked `db`, 75 JS.
+
+```bash
+python -m pytest -q -m "not db"                       # 413
+SAFETY_TEST_DB=1 python -m pytest -q -m db            # 58, needs live PostGIS
+node --test tests/js/*.test.mjs                       # 75; the glob is required
+node --check web/app.js                               # one file per call
+for f in deploy/lib/smoke.sh deploy/valhalla/*.sh; do bash -n "$f"; done
+shellcheck deploy/lib/smoke.sh deploy/valhalla/*.sh
 ```
 
 **DB tests are destructive.** `tests/test_gold_invariants.py` deletes every phl incident and the phl boundary, commits
-synthetic data, and never restores anything. Run them only against a throwaway database, for example a second compose
-project with a different `container_name` and port:
-```bash
-POSTGRES_PORT=<test port> POSTGRES_PASSWORD=<pw> .venv/bin/python -m safety.migrate
-POSTGRES_PORT=<test port> POSTGRES_PASSWORD=<pw> SAFETY_TEST_DB=1 .venv/bin/python -m pytest -q -m db
-```
-Without `SAFETY_TEST_DB=1`, `db`-marked tests are skipped. CI runs them as a non-superuser role, so a migration that
-needs superuser rights passes locally but fails CI.
+synthetic data, and restores nothing. Run them only against a throwaway database — a second compose project with its
+own ports is the easy way.
+
+**Do not run the `db` tests while an ETL is running.** `tests/test_joblock.py` takes the real ETL advisory lock; if
+`safety.ops`, `bootstrap` or an ETL holds it, two tests fail with `assert 75 == 3`. That is lock contention, not a
+defect.
 
 There is no Python or JS linter or formatter configured. Only shell is linted, with shellcheck.
 
 ## 8. Deployment
 
-**Railway** (public URL, no server to run): `railway login`, then
-`deploy/railway/up.sh --cities phl,chi,sea,lax,dc,aus`. On Windows that second line is
-`& "C:\Program Files\Git\bin\bash.exe" deploy/railway/up.sh --cities phl,chi,sea,lax,dc,aus`, typed into
-PowerShell. Full walkthrough: [docs/RAILWAY.md](docs/RAILWAY.md).
+**[DEPLOY.md](DEPLOY.md)** is the guide: host packages, clone, `.env`, build, `safety.bootstrap`, routing tiles,
+nginx and certbot, and the smoke check. In short:
 
-**Home server.** Full guide: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. In short:
+```bash
+sudo docker compose build api
+sudo docker compose up -d db
+sudo docker compose run --rm api python -m safety.bootstrap   # hours, for all six cities
+sudo docker compose up -d api
+sudo deploy/valhalla/fetch.sh                                 # ~1.2 GB of routing tiles
+sudo docker compose --profile routing up -d valhalla
+sudo SMOKE_TIMEOUT=60 deploy/lib/smoke.sh 8000 -              # → "smoke ok on :8000"
+```
 
-1. Commit and push `testing`.
-2. CI (`ci`) passes.
-3. Within about a minute, `safety-autodeploy@dev` builds a release, migrates, tests a candidate on :18001, switches
-   `current`, smoke-tests :8001, and starts `safety-ops@dev`.
-4. Check it: `curl -s https://ryanfioserverdev.ddns.net/api/v1/health | jq .commit`.
-5. Run `deploy/promote.sh` to fast-forward `main` to the head of `origin/testing`, once CI has passed on it. Prod then
-   deploys the same way. Check first that dev's `/api/v1/health` commit matches `origin/testing`.
+Valhalla sits behind a compose profile deliberately: a plain `docker compose up -d` never starts it, and nothing about
+a deploy depends on routing. With it down, the map and transit directions carry on and drive/walk/bike report
+themselves unavailable.
 
-- **Rollback**: a failed live check rolls back automatically. Otherwise `git revert` and push. For an emergency
-  `current` swap, see [DEPLOYMENT.md → Rollback](docs/DEPLOYMENT.md#rollback). Migrations are never undone.
-- **Single instance**: `deploy/deploy.sh prod|dev`. This does not check CI.
-- **Migrations** run on every deploy as the instance's non-superuser role, are forward-only, and must keep the previous
-  release working.
-- **Not zero-downtime**: expect a few seconds of 502 during the restart.
-- **First-time server setup** has 11 steps and is not scripted as a whole:
-  [DEPLOYMENT.md → From-zero setup](docs/DEPLOYMENT.md#from-zero-setup).
+**Nothing is scheduled by the deploy.** Two cron entries cover ongoing operation — `safety.ops` six-hourly to refresh
+data, and `deploy/valhalla/fetch.sh` weekly for tiles. Both are in [DEPLOY.md](DEPLOY.md#7-keeping-data-fresh).
+
+**Updating.** `git pull`, `docker compose build api`, `docker compose run --rm api python -m safety.migrate`, then
+`docker compose up -d api`. Migrations are forward-only and are never undone, so a release must keep working on the
+migrated schema. Expect a few seconds of 502 during the restart.
 
 ## 9. Networking
 
 | Bind | What | Exposure |
 |---|---|---|
-| `:80`, `:443` (IPv4 + IPv6) | nginx | Public via router port-forward; 80 only redirects (and serves certbot renewal) |
-| `127.0.0.1:8000` / `:8001` | prod / dev API | Loopback |
-| `127.0.0.1:18000` / `:18001` | candidate during a deploy | Loopback, ≤ 300 s |
-| `127.0.0.1:55432` → 5432 | PostGIS | Loopback (Docker bypasses UFW, so never publish on 0.0.0.0) |
+| `:80`, `:443` | nginx | Public; 80 redirects and serves certbot renewals |
+| `127.0.0.1:8000` | API | Loopback only |
+| `127.0.0.1:55432` → 5432 | PostGIS | Loopback only |
+| `127.0.0.1:58002` → 8002 | Valhalla | Loopback only |
 
-- **TLS**: Let's Encrypt, `certbot --nginx`, renewed by `certbot.timer`.
-- **DNS**: `ryanfioserver.ddns.net` / `ryanfioserverdev.ddns.net`, DDNS updater unknown (⚠️).
+Everything but nginx is bound to loopback, and deliberately: Docker writes its own iptables rules ahead of UFW, so
+publishing on `0.0.0.0` would expose Postgres to the internet while `ufw status` still claimed the port was blocked.
+
+- **TLS**: Let's Encrypt via `certbot --nginx`, renewed by `certbot.timer`.
+- **Rate limiting**: two layers. nginx caps `/api/v1/cells` at 2 r/s (burst 10) and the rest of `/api/v1/` at 10 r/s
+  (burst 20), with at most 20 concurrent connections per address; the app has its own per-client limiter.
 - **Proxy trust**: uvicorn trusts `X-Forwarded-For` from `127.0.0.1` only.
-- **CORS**: none (same origin).
-- **Security headers**: set by the app.
-- **Outbound**: phl.carto.com, three Socrata portals, DC and Austin ArcGIS, census.gov, GitHub, PyPI, Let's Encrypt;
-  the browser loads unpkg and CARTO.
+- **CORS**: none (same origin). **Security headers**: set by the app.
+- **Outbound**: phl.carto.com, three Socrata portals, DC and Austin ArcGIS, census.gov, api.transitous.org,
+  photon.komoot.io, GitHub (tiles), PyPI and Docker Hub (builds).
+- **From the browser**: this origin only, plus `basemaps.cartocdn.com` for basemap imagery. MapLibre and h3-js are
+  vendored, so no CDN is needed to render the map.
 
-Diagram, all 14 routes and the dependency table: [ARCHITECTURE.md → Networking](docs/ARCHITECTURE.md#networking).
+If you put another proxy in front (a tunnel, a load balancer), set `real_ip_header`/`set_real_ip_from` in
+`deploy/nginx/safety.conf` and match `FORWARDED_ALLOW_IPS` — otherwise every client lands in one rate-limit bucket.
 
 ## 10. Data & persistence
 
-- **Stores**:
-  - PostGIS: `reference`, `etl`, `silver` and `gold` schemas, with the two databases `safety` and `safety_dev` in one
-    cluster.
-  - Bronze raw files: `I/data/bronze`, pruned to the same one-year cutoff as the database.
-  - An in-process API cache.
-- **Migrations**: `python -m safety.migrate`, 18 checksummed forward-only files under an advisory lock. Every run also
-  reloads the crosswalk and severity CSVs.
-- **Backups**: a nightly `pg_dump` of both databases to `/var/backups/safety` (7 days prod, 2 days dev), plus a monthly
-  test restore of prod, which has not yet run. **Same disk, unencrypted, no off-host copy.** Bronze and `.env` files are
-  not backed up.
-- **Loss**: losing the Docker volume loses both prod and dev. Losing the disk loses everything, including the backups.
+- **Stores**: PostGIS (`reference`, `etl`, `silver`, `gold` schemas) in the `safety_db_data` volume; raw bronze files
+  in the `safety_bronze` volume, pruned to the same one-year cutoff; an in-process API cache.
+- **Migrations**: `python -m safety.migrate` — 24 checksummed, forward-only files under an advisory lock. Every run
+  also reloads the crosswalk and severity CSVs (1,224 crosswalk rows, 2 schemes, 66 weights *(measured)*).
+  **Applied migrations are immutable**: editing one that has run is a `MigrationChecksumError`.
+- **Size**: Philadelphia alone, at 38,076 incidents for a rolling year, was 234 MB of bronze and 157 MB of database
+  *(measured)*. Chicago and Los Angeles are several times that. Routing tiles are ~1.2 GB installed.
+- **Backups**: **none are configured.** See [Known gaps](#known-gaps).
+- **Loss**: losing the `safety_db_data` volume loses all data. It reloads from the cities' public sources with
+  `safety.bootstrap`, which takes hours, and records a city has since withdrawn do not come back.
 
-Restore commands: [OPERATIONS.md → Backups](docs/OPERATIONS.md#backups). Schema and loss table:
-[ARCHITECTURE.md → Data model](docs/ARCHITECTURE.md#data-model-and-persistence).
+## 11. Security
 
-## 11. CI/CD
-
-```mermaid
-flowchart LR
-  dev[push testing] --> CI
-  pr[PR / remediation/** push] --> CI
-  prom["deploy/promote.sh<br/>(ff main → testing sha)"] --> main[push main] --> CI
-  CI["GitHub Actions job 'ci'<br/>tests · migrations as superuser then app role ·<br/>P2 self-test · DB tests · smoke"] -.check run.-> AD
-  AD["safety-autodeploy@{dev,prod}<br/>root timer, ~1 min"] -->|"conclusion == success"| INS[install.sh: release → venv → import → migrate → candidate → switch → verify]
-  AD -->|"failure / no run in 30 min"| SK[".skipped (never retried)"]
-```
-
-**Triggers.** CI runs on pushes to `main`, `testing` and `remediation/**`, and on every pull request. It runs on
-`ubuntu-latest` with a `postgis/postgis:17-3.5` service. It uses no secrets and uploads no artifacts.
-
-**Steps.**
-1. Install, compile and import the entry points; `pytest -m "not db"`; JS tests; `bash -n` and shellcheck on `deploy/`.
-2. Apply `main`'s migrations as the superuser, which reproduces the server's history.
-3. Run `transfer-ownership.sql` twice to prove it is idempotent.
-4. Apply this branch's migrations as the non-superuser `safety_app`, then run migrate again.
-5. P2 self-test: a `CREATE ROLE` migration must fail.
-6. DB tests; the ETL log query; uvicorn plus `deploy/lib/smoke.sh`.
-7. Advisory step: the previous commit must still serve on the new schema.
-
-**Mapping.** `testing` deploys dev and `main` deploys prod. Other branches and PRs never deploy. The deployer reads
-GitHub's check run named exactly `ci` from app `github-actions`, anonymously, at most once per 120 s per instance.
-Renaming the job, or adding a matrix, stops all deploys. Details: [DEPLOYMENT.md](docs/DEPLOYMENT.md#routine-deploys).
-
-## 12. Security
-
-- **Authentication**: none, by design. The API is read-only (GET) over aggregated public data. There are no accounts,
-  cookies or writes.
+- **Authentication**: none, by design. The API is read-only (GET, plus POST for geocoding and route *requests*) over
+  aggregated public data. No accounts, cookies or writes.
 - **Controls**:
-  - two layers of per-IP rate limiting (nginx and the app);
-  - pool and statement timeouts that return 503;
-  - parameterized SQL throughout the API;
-  - escape-by-default HTML in the frontend;
-  - SRI-pinned CDN scripts;
-  - CSP, `nosniff`, `X-Frame-Options: DENY` and HSTS.
-- **Trust boundaries**: internet → nginx → uvicorn on loopback (prod as user `safety`, dev as `safety-dev`) →
-  Postgres on loopback, where each instance has its own non-superuser owner role. The root deployer runs repo code
-  only as the instance user.
+  - two layers of per-client rate limiting (nginx and the app) — the only thing standing between a stranger and a
+    repeated full-city layer build;
+  - pool and statement timeouts that return 503 rather than hanging every endpoint;
+  - parameterized SQL throughout;
+  - escape-by-default HTML in the frontend (`web/html.js`);
+  - a CSP that permits **no third-party script or style origin at all**, plus `nosniff`,
+    `X-Frame-Options: DENY` and HSTS;
+  - least privilege in the containers: the API drops root at entry, and Valhalla runs as `nobody`, read-only, with
+    all capabilities dropped and no new privileges.
+- **Trust boundary**: internet → nginx → uvicorn on loopback → Postgres on loopback.
 
 Known concerns, recorded and not fixed:
-- **High**: `main` and `testing` have no branch protection in a public repo.
-- **Medium**:
-  - The prod instance directory is owned by the app user.
-  - Root writes into the extracted tree during a release build, so a committed symlink becomes a root file write.
-  - The API connects as the DB owner role.
-  - MapLibre 5.9.0 has a critical XSS advisory (GHSA-jrc7-96c5-q579).
-  - `deploy.sh` skips the CI check.
-- **Low**: minimal systemd sandboxing, unpinned indirect dependencies, and a public `/docs`.
 
-Full table: [ARCHITECTURE.md → Security model](docs/ARCHITECTURE.md#security-model).
+- **MapLibre 5.9.0 has a critical XSS advisory** (GHSA-jrc7-96c5-q579). Vendoring the library changed where it is
+  served from, not which version it is. Whether the vulnerable sanitizer is reachable from this application has not
+  been established. Upgrading MapLibre is the outstanding fix.
+- **The API connects as the database owner role.** `POSTGRES_USER` is created by the PostGIS image as a superuser, so
+  the application has more rights than it needs. The previous host deployment split this into a separate
+  non-superuser owner role; the container deployment does not.
+- Indirect Python dependencies are unpinned and there is no lockfile.
+- `/docs` is public when `ENABLE_DOCS` is on. It is a kill switch for unwanted attention, not a security control —
+  the frontend names every endpoint in plain JavaScript anyway.
+- There is no branch protection on `main`.
 
-## 13. Observability & operations
+## 12. Observability & operations
 
-- **Logs**: in the systemd journal. Use `journalctl -u safety-api@prod`, `deploy/logs.sh prod` for ETL history, and
-  `journalctl -u safety-autodeploy@prod` for deploys. nginx writes per-site logs.
-- **Health**: `/api/v1/health` proves the DB is reachable and reports the commit. It does not check data freshness.
-- **Metrics and tracing**: none.
-- **Alerts**: `OnFailure=` writes to the journal (`journalctl -t safety-notify -p err`) and to
-  `/var/lib/safety-notify/alerts.log` **only**. Nobody is paged.
-- **Scaling**: on the home server, one uvicorn process per instance, a pool of 8, a 256 MiB cache, and no memory or CPU
-  limits. The Kubernetes deployment scales out instead (docs/KUBERNETES.md).
+- **Logs**: `docker compose logs -f api`, and `python -m safety.etl.run log` for the ETL's own history of every pull
+  and ops step.
+- **Health**: `/api/v1/health` proves the database is reachable and reports the incident count and the deployed
+  commit. It does not check data freshness — `/api/v1/quality` and `/api/v1/cities` carry per-city staleness.
+- **Progress**: `/api/v1/progress` while a backfill runs.
+- **Metrics, tracing and alerting**: none. Nothing pages anyone, and nothing watches certificate expiry.
+- **Scaling**: one uvicorn process, a pool of 8, a 256 MiB response cache. Valhalla is capped at 1.5 GB and 1.5 CPU.
 
-Runbook, schedules and the "site is down" checklist: [docs/OPERATIONS.md](docs/OPERATIONS.md).
-
-## 14. Troubleshooting
+## 13. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `docker compose up` fails: `required variable POSTGRES_PASSWORD is missing a value` | No password in `.env` (there is no default) | Set `POSTGRES_PASSWORD` in `.env` (locally) or prod's `I/.env` |
-| API startup or requests fail with `PoolTimeout: pool initialization incomplete` | DB down, wrong `POSTGRES_*`, or `POSTGRES_HOST=localhost` (tries `::1`; the DB listens on IPv4 only) | Use `127.0.0.1`; `sudo docker ps --filter name=safety_db`; check `I/.env`; `sudo systemctl restart safety-api@<i>` |
-| `RuntimeError: POSTGRES_PASSWORD is not set` | Same, raised lazily at first connection | Set it |
-| `bind: address already in use` on 55432 / 8000 | A second compose stack or uvicorn on the same host, e.g. running a clone on the prod server | Never run the local stack on the server; locally, change `POSTGRES_PORT` or `--port` |
-| Fresh `safety-api@` won't start: uvicorn complains about the port | `API_PORT` missing from `I/.env`, so the unit expands `--port` with an empty value | Add `API_PORT=8000` (prod) / `8001` (dev) |
-| Compose run on the server shows an empty database | Ran from the wrong directory, or without `COMPOSE_PROJECT_NAME`, which created a new volume | Run only from `prod/current` with `COMPOSE_PROJECT_NAME=crime-prevention-and-personal-safety-application` |
-| `/api/v1/health` returns 500, "relation … does not exist" | Schema not migrated (e.g. `migrate-layout.sh cleanup` run before the first deploy) | `deploy/deploy.sh <i>` (runs migrate) |
-| `backfill --city chi`: "source 'chi' is disabled" | Only phl is enabled by migrations | `python -m safety.etl.run enable --city chi` |
-| Migrate: `MigrationChecksumError` | An already-applied migration file was edited | Revert the edit and add a new migration instead |
-| Deploy never happens; journal shows nothing new | Head is in `<i>.skipped`: CI failed, no CI within 30 min, install failed, or a lock timeout during the 02:15 backup | `journalctl -u safety-autodeploy@<i> -p err`; push a fix. If CI itself was the problem, re-run it until it passes, then `sudo rm /var/lib/safety-deploy/<i>.skipped` |
-| Journal: `pending … CI is in_progress` or `HTTP 403` | CI still running, or the anonymous GitHub API quota (60/h per IP) is exhausted | Wait; the deployer honours `x-ratelimit-reset` |
-| Journal: `deferred … ETL running` | An ETL, hourly or ops run holds the instance's lock (exit 75) | Wait, or `sudo systemctl stop safety-ops@<i>` and redeploy |
-| Journal: `rejected <sha> at the candidate check` | The new release failed smoke on 18000/18001; live is untouched | Read the 20 journal lines printed above it; fix and push |
-| Migration fails in CI with `permission denied to …` | The migration needs superuser rights (e.g. `CREATE EXTENSION`) | Apply it by hand as `safety` (see [DEPLOYMENT.md](docs/DEPLOYMENT.md#migrations-during-a-deploy)) |
-| `429 Too Many Requests` | Rate limit (cells 2 r/s, others 10 r/s per IP) | Expected; locally set `ENABLE_RATE_LIMIT=false` |
-| 503 with `Retry-After: 5` | Pool saturated or a query over 15 s | Check for a long migration or ETL; consider `API_STATEMENT_TIMEOUT_MS` |
-| Browser console: CSP blocked a script or style | A new third-party origin not in `safety/api/security.py` | Add it to `APP_CSP` deliberately |
-| Map loads but no basemap | CARTO or unpkg unreachable from the browser | Network or CDN issue; the CSP allows only those hosts |
-| Site down, TLS error in the browser | Certificate expired (nothing alerts on this) or DDNS points at an old IP | `sudo certbot certificates`; `sudo certbot renew`; check the DDNS record |
-| `install-deployer.sh --nginx` refuses with a diff | The live nginx site was edited (e.g. by certbot) and not committed | Commit the live file to the repo first, then re-run |
-| `node --test tests/js/` fails with `Cannot find module` | Node 22 does not accept a directory | `node --test tests/js/*.test.mjs` |
-| Docker image starts but rate limits misbehave | `FORWARDED_ALLOW_IPS=*` (default) trusts client-supplied XFF | Set it to the proxy's IP/CIDR |
+| `required variable POSTGRES_PASSWORD is missing a value` | No password in `.env`; there is no default | Set `POSTGRES_PASSWORD` |
+| `RuntimeError: POSTGRES_PASSWORD is not set` | Same, raised lazily at the first connection | Set it |
+| `permission denied ... /var/run/docker.sock` | Your user is not in the `docker` group | `sudo usermod -aG docker $USER`, then log out and back in — or prefix commands with `sudo` |
+| `PoolTimeout: pool initialization incomplete` | DB down, wrong `POSTGRES_*`, or `POSTGRES_HOST=localhost` (tries `::1`; the DB listens on IPv4) | Use `127.0.0.1`; `docker compose ps`; check `.env` |
+| `/api/v1/health` returns 500, "relation … does not exist" | Schema not migrated | `docker compose run --rm api python -m safety.migrate` |
+| API healthy but the map is empty | The first load has not finished | Watch `/api/v1/progress`; check the bootstrap's exit status and re-run it — it is idempotent |
+| `bind: address already in use` on 55432 / 8000 | Another stack on the same host | Change `POSTGRES_PORT` / `API_PORT` |
+| `backfill --city chi`: "source 'chi' is disabled" | Only phl is enabled by the migrations | `python -m safety.etl.run enable --city chi` |
+| `MigrationChecksumError` | An already-applied migration file was edited | Revert the edit and add a new migration instead |
+| drive/walk/bike report "unavailable" | Valhalla is down or has no tiles | `/api/v1/directions/status` says which; run `deploy/valhalla/fetch.sh`, then start the `routing` profile |
+| `bind source path does not exist` starting valhalla | The tile directory does not exist yet; it is deliberately not auto-created | Run `deploy/valhalla/fetch.sh` first |
+| Directions return 422 `{"code":"outside"}` | Both endpoints must be inside one covered city's bbox | Expected; check `/api/v1/cities` for the bbox |
+| `429 Too Many Requests` | Rate limit (cells 2 r/s, others 10 r/s per client) | Expected; locally set `ENABLE_RATE_LIMIT=false` |
+| Many 429s under light use, behind another proxy | Every client shares one bucket because `$binary_remote_addr` is the proxy | Set `real_ip_header` / `set_real_ip_from` in the nginx config |
+| 503 with `Retry-After` | Pool saturated, or a query over `API_STATEMENT_TIMEOUT_MS` | Check for a long migration or ETL |
+| Browser console: CSP blocked a script or style | A new third-party origin, which the policy now forbids outright | Vendor the asset, or add the origin to `APP_CSP` deliberately |
+| Map draws hexagons but no basemap | `basemaps.cartocdn.com` unreachable | Network issue; the data layer is unaffected |
+| Two `test_joblock` failures (`assert 75 == 3`) | An ETL holds the real advisory lock | Wait for it to finish, then re-run |
+| `node --test tests/js/` fails with `Cannot find module` | Node needs files, not a directory | `node --test tests/js/*.test.mjs` |
 
-## Known gaps and unverified items
+## Known gaps
 
-### Open items
-
-1. **Austin licensing (deferred).** Prod and dev serve `aus` with `enabled: true`, but
-   `db/migrations/016_onboard_austin.sql:10-13` and `docs/PHASE2.md:22` say Austin must stay disabled until the City
-   confirms its CrimeViewer services may be reused. Note that `enable --city aus --off` only stops loading; the API
-   lists every city that has a `gold.city_snapshot` row, enabled or not (`safety/api/repository.py:200-226`).
-2. **Branch protection** on `main` and `testing`: to be turned on as described in
-   [DEPLOYMENT.md → Branch protection](docs/DEPLOYMENT.md#branch-protection-and-github-settings).
-3. **Off-host backups.** The plan is to keep the off-host copy on GitHub; not set up yet. Database dumps must never go
-   into this public repository, and the two `.env` files (database passwords) belong in a password manager, not on
-   GitHub.
-4. **Alerting.** Alerts reach only the host's journal: no webhook or email in `notify.sh`, no external uptime check,
-   no cert-expiry alert.
-5. **Prod directory ownership** (`safety:safety 0700`): whether to harden it to `root:safety 0750` like dev.
-6. **Python version.** Confirm 3.12 and fix the "3.14 for local development" comment in `Dockerfile:10`.
-7. **Docker image.** Keep it and build it in CI, or remove it.
-8. **Firewall.** The UFW rules for this host were not checked, because reading them needs root.
-
-### What GitHub alone cannot restore
-
-The repository holds the code, schema migrations, systemd units, nginx sites and install scripts, so the server can be
-rebuilt from it with [DEPLOYMENT.md → From-zero setup](docs/DEPLOYMENT.md#from-zero-setup). These live only on the
-host and must be recreated or restored from elsewhere:
-
-- the two `.env` files and their secrets (template: `.env.example`);
-- which cities are enabled (database state; set again with `safety.etl.run enable`);
-- the data: bronze files and both databases. They reload from the cities' public sources with `safety.ops`, which
-  takes hours, and records a city has since withdrawn do not come back. A database dump avoids both;
-- TLS certificates (reissued by certbot), the router's port forwarding and the DDNS updater.
-
-The from-zero procedure has never been run end to end.
-
-### Known doc and config drift (not fixed here)
-
-- `.env.example` lacks `COMPOSE_PROJECT_NAME` and 7 tunables listed in [Configuration](#6-configuration).
-- The `safety-backup.timer` comment says a lock-timeout deploy "is retried" (it is skipped).
-- `docs/PHASE2.md`'s per-city steps omit `enable`. `docs/PHASE1.md` uses Windows paths and `requirements.txt` (no
-  pytest).
-- Stale comments:
-  - Railway and "hosted ops service" wording in `.env.example`, `config.py` and `run.py`.
-  - `SOCRATA_APP_TOKEN` "used by Austin".
-  - `deploy/nginx/safety.conf` cites `docs/LINUX-MIGRATION.md`, which does not exist, and old `web/app.js` line
-    numbers.
-  - `tests/js/html.test.mjs:2` suggests a command that fails on Node 22.
-- `safety-etl@` and `safety-etl-hourly@` timers lack `UTC` in `OnCalendar`, so they depend on the host clock being UTC.
-- Dead code: `ops.plan_for_city`, `bronze.BronzePull`. `/api/v1/cells/lookup` is unused by the frontend.
-
-### Top risks
-
-| # | Risk | Why |
-|---|---|---|
-| 1 | Backups on the same disk as the database, no off-host copy yet, restore never yet verified | One disk failure loses prod, dev, every dump, bronze history and the `.env` files |
-| 2 | Branch protection not yet on, in a public repo whose pushes auto-deploy | Until the ruleset is on, a force push or an unchecked commit on `main` goes straight to prod |
-| 3 | Austin data served against the repo's own licensing gate (deferred) | Legal exposure; it reads undocumented endpoints that may change |
-| 4 | One host, one shared Postgres for prod and dev, home ISP, router and DDNS | Any of them failing is a full outage. A dev bug that fills the disk takes prod down. Alerts reach nobody off the box |
-| 5 | Host-only state (see [above](#what-github-alone-cannot-restore)) and an untested from-zero procedure | A rebuild works only if the `.env` secrets are kept somewhere safe, and may hit gaps in the procedure the first time |
-
-### Unverified (could not be checked read-only without root)
-
-- UFW rules.
-- The live `.env` values.
-- The `/var/lib/safety-deploy` state.
-- Bronze size.
-- Whether the superuser password was rotated.
-- The certbot renewal reload.
-- That the Docker image builds.
-- That the from-zero sequence in DEPLOYMENT.md works end to end.
-- GitHub's ordering of `check_runs` when one commit has several `ci` runs.
-- Whether MapLibre's vulnerable sanitizer is reachable.
+1. **No backups.** The previous deployment had a nightly `pg_dump` driven by systemd; that machinery was removed with
+   the rest of the host-specific deploy and **has not been replaced**. A `pg_dump` from the `db` container on a cron
+   schedule, written off-host, is the gap to close. Database dumps must never go into this public repository, and the
+   `.env` password belongs in a password manager.
+2. **Austin licensing (deferred).** `db/migrations/016_onboard_austin.sql` says Austin must stay disabled until the
+   City confirms its CrimeViewer services may be reused, but `BOOTSTRAP_CITIES` enables all six by default. Drop `aus`
+   from it if that confirmation has not been obtained. Note that `enable --city aus --off` only stops *loading*: the
+   API lists every city that has a `gold.city_snapshot` row, enabled or not.
+3. **MapLibre advisory** — see [Security](#11-security).
+4. **nginx and TLS are the least-verified step.** Every other part of `DEPLOY.md` was executed end to end on a clean
+   install; section 5 was transcribed from the config's install header and a working host. Expect to debug it.
+5. **The full six-city load has never been run end to end here.** One city at one month is proven *(measured)*; the
+   hours and the multi-city disk figures are extrapolations.
+6. **No alerting, metrics or uptime checks**, and nothing watches certificate expiry.
+7. **Dangling documentation references.** Surviving code comments still cite documents that were pruned
+   (`docs/PHASE2.md`, the old `docs/DEPLOY.md`, `docs/KUBERNETES.md`, `docs/OPERATIONS.md`, `docs/DEPLOYMENT.md`).
+   The comments are substantial and were kept; the citations point at nothing. `docs/DESIGN.md` references are live.
+8. **Deploying without root.** Docker needs root or `docker`-group membership. Rootless Docker is the alternative, but
+   it needs the `uidmap` package and a `/etc/subuid` range for your user, both of which only an administrator can
+   provide. Without one of those, this stack cannot run — and even then, binding 80/443 for public TLS needs either
+   an administrator or a tunnel.
