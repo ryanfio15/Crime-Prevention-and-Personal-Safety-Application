@@ -483,6 +483,12 @@ otherwise have to rediscover.
 ### Prune to the container deploy, and vendor the CDN libraries
 
 - **Branch:** `prune-for-delivery`, cut from `main` at `051bf37`.
+- **Commits:** `448fd1b` (the prune and the vendoring) and the small commit that
+  added these two lines. Pushed to `origin/prune-for-delivery` on 2026-11-24;
+  not merged, and `main` is untouched. No pull request was opened.
+- **Before merging:** this branch does not contain `origin/main`'s `2d5c6d9`
+  ("Add close buttons to the Near me and Cities panels"). Merge or rebase onto
+  `origin/main` first or that fix is lost — see the last trap in this entry.
 - **Scope:** 102 files deleted, 9 modified, 6 added. The repository goes from 279
   tracked files to 177 plus `web/vendor/` and the two new documents.
 - **Verified:** the pruned tree was built and run from a clean copy before
