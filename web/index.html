@@ -8,17 +8,23 @@
 <!-- Replaced with the city under the map once one is served. -->
 <title>Reported-incident risk</title>
 <link rel="preconnect" href="https://basemaps.cartocdn.com">
-<!-- Third-party assets are pinned to an exact version AND to its hash
-     (subresource integrity): if unpkg ever served different bytes for these
-     URLs, the browser refuses them instead of running them. When bumping a
-     version, recompute each hash and update both together:
-       curl -sSfL <url> | openssl dgst -sha384 -binary | openssl base64 -A
-     crossorigin="anonymous" is required for SRI on a cross-origin fetch; unpkg
-     answers with access-control-allow-origin: *. Same-origin files (styles.css,
-     theme.js, html.js, hours.js, progress.js, app.js) need no integrity attribute. -->
-<link href="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.css" rel="stylesheet"
-      integrity="sha384-gNYNsUmuZqDYiT3gbirWTV5K7rt71RoveS/yXAaU09d4ZUmeDVTD3XoqB6uJAIFR"
-      crossorigin="anonymous">
+<!-- Third-party libraries are vendored under web/vendor/ and served from this
+     origin. They used to come from unpkg with subresource integrity, which
+     protected the bytes but not availability: an unpkg outage left the page
+     with no map at all, and the deployed server would not render for a visitor
+     with no route to unpkg. Serving them ourselves removes that dependency
+     entirely -- and makes SRI unnecessary, since same-origin assets are already
+     covered by the connection serving the page.
+
+     The files are the exact published builds, verified on vendoring against the
+     hashes the unpkg tags carried (maplibre-gl 5.9.0, h3-js 4.2.1). To bump a
+     version, re-download and check it the same way:
+       curl -sSfL <url> -o web/vendor/<file>
+       openssl dgst -sha384 -binary web/vendor/<file> | openssl base64 -A
+     and record the result in CLAUDE.md. The only remaining third-party origin
+     is basemaps.cartocdn.com, which serves the basemap raster tiles -- imagery
+     that cannot be vendored. -->
+<link href="vendor/maplibre-gl.css" rel="stylesheet">
 <!-- Before the stylesheet's tokens are used: sets html[data-theme] (saved
      choice, else the system's), so the page never paints the wrong theme. -->
 <script src="theme.js"></script>
@@ -370,12 +376,9 @@
   </div>
 </dialog>
 
-<script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"
-        integrity="sha384-81ppUWZZO+pveTPk4qU9cZuScEFULHfuOMHVJHFZ7xVBlWQTG1zsPrVIMGAl1WMb"
-        crossorigin="anonymous"></script>
-<script src="https://unpkg.com/h3-js@4.2.1/dist/h3-js.umd.js"
-        integrity="sha384-ViAXEmpUtfR6LTFA4VPFElyF4q6ysOu7yi4fs2v5udUWy6l162CdHpDx1SyS870v"
-        crossorigin="anonymous"></script>
+<!-- Vendored; see the note in <head>. maplibre-gl 5.9.0, h3-js 4.2.1. -->
+<script src="vendor/maplibre-gl.js"></script>
+<script src="vendor/h3-js.umd.js"></script>
 <script src="html.js"></script>
 <script src="hours.js"></script>
 <script src="progress.js"></script>

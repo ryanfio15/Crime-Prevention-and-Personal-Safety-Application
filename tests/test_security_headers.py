@@ -29,7 +29,10 @@ def test_static_page_gets_the_app_policy():
     csp = r.headers["content-security-policy"]
     assert csp == APP_CSP
     assert "frame-ancestors 'none'" in csp
-    assert "script-src 'self' https://unpkg.com" in csp
+    # MapLibre and h3-js are vendored under web/vendor/, so no third-party
+    # script origin is allowed at all.
+    assert "script-src 'self'" in csp
+    assert "unpkg.com" not in csp
     assert "'unsafe-eval'" not in csp
     assert "'unsafe-inline'" not in _script_src(csp)
     assert r.headers["x-content-type-options"] == "nosniff"

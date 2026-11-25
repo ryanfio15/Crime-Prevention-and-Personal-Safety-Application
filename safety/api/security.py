@@ -18,7 +18,11 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from safety.config import settings
 
 # What the map needs, and nothing else:
-#   script/style from self and unpkg (pinned with SRI in index.html);
+#   script/style from self only -- MapLibre and h3-js are vendored under
+#   web/vendor/ and served from this origin, so no third-party script origin is
+#   allowed at all. They used to come from unpkg (pinned with SRI), which the
+#   policy had to permit; removing that also removes a CDN outage as a way to
+#   break the map;
 #   'unsafe-inline' styles only, because app.js builds style="width:...%" bars
 #   and the legend gradient through innerHTML -- scripts stay strictly external;
 #   Carto basemap (verified 2026-10-07): style on basemaps.cartocdn.com; sprite,
@@ -29,8 +33,8 @@ from safety.config import settings
 APP_CSP = "; ".join(
     [
         "default-src 'self'",
-        "script-src 'self' https://unpkg.com",
-        "style-src 'self' 'unsafe-inline' https://unpkg.com",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
         "img-src 'self' data: blob: https://*.basemaps.cartocdn.com",
         "connect-src 'self' https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com",
         "worker-src 'self' blob:",

@@ -1,7 +1,7 @@
 /* Registers the web cache (web/sw.js).
 
    Its own file rather than an inline <script> in index.html: the CSP in
-   safety/api/security.py allows scripts from 'self' and unpkg only, with no
+   safety/api/security.py allows scripts from 'self' only, with no
    'unsafe-inline', so an inline block would be blocked and never run. Kept out
    of app.js because it is infrastructure, not app behaviour.
 

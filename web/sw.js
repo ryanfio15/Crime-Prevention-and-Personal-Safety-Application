@@ -20,11 +20,16 @@
    - /api/ -- the data stays live. The server has its own cache with its own
      invalidation (cached_json in safety/api/main.py); a second copy here would
      be a second rule to keep in sync and an easy way to show stale incidents.
-   - unpkg (MapLibre, h3-js) and every other origin. A service worker's own
+   - basemaps.cartocdn.com and every other origin. A service worker's own
      fetches are held to the CSP it was served with (safety/api/security.py),
-     and connect-src does not list unpkg, so caching those here would fail.
-     They pass straight through to the browser, which already keeps them in its
-     HTTP cache: they are exact pinned versions, checked with SRI.
+     which lists no third-party script or style origin, so caching those here
+     would fail. The basemap tiles pass straight through to the browser, which
+     keeps them in its own HTTP cache.
+
+     MapLibre and h3-js used to be in this list, when they came from unpkg.
+     They are vendored under web/vendor/ now, which makes them same-origin and
+     part of the shell below -- so the map survives both an unpkg outage and
+     going offline after one load.
    - FastAPI's /docs, /redoc and /openapi.json.
 
    Adding a front-end file needs no change here: anything same-origin is stored
@@ -40,7 +45,7 @@
 
 /* Only used to find and delete this worker's caches. Network first refreshes
    the stored copy on every online load, so a deploy never needs a bump here. */
-const CACHE_NAME = "safety-app-shell-v5";
+const CACHE_NAME = "safety-app-shell-v6";
 // "shell-", not just "safety-app-": only this worker's own caches are swept.
 const CACHE_PREFIX = "safety-app-shell-";
 
@@ -60,6 +65,11 @@ const SHELL = [
   "./directions.js",
   "./app.js",
   "./sw-register.js",
+  // Vendored third-party libraries (web/vendor/). ~1.2 MB of the shell, and
+  // the reason an offline or unpkg-less load still draws a map.
+  "./vendor/maplibre-gl.css",
+  "./vendor/maplibre-gl.js",
+  "./vendor/h3-js.umd.js",
 ];
 
 /* Gateway errors: nginx answering because the API behind it is restarting (a
